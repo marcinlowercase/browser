@@ -10,10 +10,12 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -57,13 +59,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
+import kotlinx.coroutines.delay
 
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+
 //        WindowCompat.getInsetsController(window, window.decorView)
         setContent {
             BrowserTheme {
@@ -134,7 +139,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     var cornerRadiusDp by remember {
-        mutableFloatStateOf(sharedPrefs.getFloat("corner_radius_dp", 32f))
+        mutableFloatStateOf(sharedPrefs.getFloat("corner_radius_dp", 24f))
+//        mutableFloatStateOf(sharedPrefs.getFloat("corner_radius_dp", 55f)) // pixel 9
     }
 
     var webView by remember { mutableStateOf<WebView?>(null) }
@@ -144,6 +150,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+
+    var webBackgroundColor by remember { mutableStateOf(Color.Unspecified) }
 
     val cutoutInsets = remember { mutableIntStateOf(WindowInsetsCompat.Type.displayCutout()) }
 
@@ -163,15 +171,47 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val hasDisplayCutout by rememberHasDisplayCutout()
 
 
+
     val animatedPadding by animateDpAsState(
         targetValue = if (isUrlBarVisible) paddingDp.dp else 0.dp,
-        label = "Padding Animation"
+        label = "Padding Animation",
     )
 
     val animatedCornerRadius by animateDpAsState(
         targetValue = if (isUrlBarVisible || hasDisplayCutout) cornerRadiusDp.dp else 0.dp,
-        label = "Corner Radius Animation"
+        label = "Corner Radius Animation",
     )
+
+
+//    // 1. Get the current theme's background as the default.
+//    val themeBackgroundColor = MaterialTheme.colorScheme.background
+//
+//    // 2. *** NEW: State to hold the color we actually want to show. ***
+//    // We initialize it with the theme color.
+//    var displayedBackgroundColor by remember { mutableStateOf(themeBackgroundColor) }
+//
+//    // 3. This effect now orchestrates the delayed color change.
+//    LaunchedEffect(isUrlBarVisible, webBackgroundColor) {
+//        if (!isUrlBarVisible) {
+//            // We are entering fullscreen. Wait for the URL bar to animate away.
+//            delay(300) // This should match your expandVertically/shrinkVertically duration.
+//
+//            // After the animation, if we have a valid color, set it as the target.
+//            if (webBackgroundColor != Color.Unspecified) {
+//                displayedBackgroundColor = webBackgroundColor
+//            }
+//        } else {
+//            // We are exiting fullscreen. Snap back to the theme color immediately.
+//            displayedBackgroundColor = themeBackgroundColor
+//        }
+//    }
+//
+//    // 4. This animation is now driven by our delayed 'displayedBackgroundColor' state.
+//    val animatedBackgroundColor by animateColorAsState(
+//        targetValue = displayedBackgroundColor,
+//        animationSpec = tween(if (isUrlBarVisible) 0 else 300), // The fade itself can have its own duration.
+//        label = "Background Color Animation"
+//    )
 
     LaunchedEffect(isUrlBarVisible) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
@@ -223,10 +263,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 .fillMaxWidth()
                 .weight(1f)
                 .padding(animatedPadding)
-//                .clip(RoundedCornerShape(animatedCornerRadius))
-//                .padding(if (isUrlBarVisible) paddingDp.dp else 0.dp) // No padding in fullscreen
-//
-//                .clip(if (isUrlBarVisible) RoundedCornerShape(cornerRadiusDp.dp) else RoundedCornerShape(0.dp)) // No corners in fullscreen]
                 .windowInsetsPadding(if (isUrlBarVisible) WindowInsets(0) else WindowInsets.displayCutout)
                 .clip(RoundedCornerShape(animatedCornerRadius))
                 .testTag("WebViewContainer")
@@ -237,7 +273,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 factory = { ctx ->
                     WebView(ctx).apply {
 
-                        addJavascriptInterface(WebAppInterface(), "Android")
+                        addJavascriptInterface(
+                            WebAppInterface({ color ->
+                                webBackgroundColor = color
+                            }),
+                            "Android"
+                        )
 
 
                         webViewClient = object : WebViewClient() {
@@ -247,6 +288,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                 favicon: Bitmap?
                             ) {
                                 super.onPageStarted(view, url, favicon)
+                                webBackgroundColor = Color.Unspecified
                                 isLoading = true
                                 if (!isFocusOnTextField) url?.let {
                                     textFieldValue = TextFieldValue(it, TextRange(it.length))
@@ -465,20 +507,27 @@ fun BrowserScreenPreview() {
     }
 }
 
-class WebAppInterface {
-    /**
-     * This method can be called from JavaScript.
-     * It receives the background color of the web page and logs it.
-     */
+
+class WebAppInterface(private val onColorExtracted: (Color) -> Unit) {
     @android.webkit.JavascriptInterface
-    fun logBackgroundColor(color: String) {
-        if (color.isNotBlank() && color != "null") {
-            Log.d("WebViewBackground", "Detected web page background color: $color")
-        } else {
-            Log.d(
-                "WebViewBackground",
-                "Web page background color could not be determined or is transparent."
-            )
+    fun logBackgroundColor(colorString: String) {
+        // We need a robust way to parse the "rgb(r, g, b)" or "rgba(r, g, b, a)" string.
+        try {
+            // Remove "rgb(", "rgba(", ")", and spaces
+            val colorValues = colorString.removePrefix("rgba(").removePrefix("rgb(")
+                .removeSuffix(")").split(",").map { it.trim().toInt() }
+            Log.e("WebViewBackground", "Detected web page background color: $colorString")
+
+            if (colorValues.size >= 3) {
+                val r = colorValues[0]
+                val g = colorValues[1]
+                val b = colorValues[2]
+                // Invoke the callback with the parsed Color
+                onColorExtracted(Color(r, g, b))
+            }
+        } catch (e: Exception) {
+            // If parsing fails for any reason, log it but don't crash.
+            Log.e("WebAppInterface", "Failed to parse color string: $colorString", e)
         }
     }
 }
