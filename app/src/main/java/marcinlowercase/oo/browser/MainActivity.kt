@@ -85,7 +85,8 @@ fun rememberHasDisplayCutout(): State<Boolean> {
 
     // Directly get the PaddingValues at the Composable level
     // WindowInsets.displayCutout here provides the current insets for the composition
-    val displayCutoutPaddingValues = WindowInsets.displayCutout.asPaddingValues() // Pass density if needed, or rely on ambient if appropriate for the API version
+    val displayCutoutPaddingValues =
+        WindowInsets.displayCutout.asPaddingValues() // Pass density if needed, or rely on ambient if appropriate for the API version
 
     // Now, derivedStateOf can read from displayCutoutPaddingValues
     // We also key remember on configuration and density to re-evaluate if they change,
@@ -105,17 +106,27 @@ fun rememberHasDisplayCutout(): State<Boolean> {
 @Composable
 fun BrowserScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val sharedPrefs = remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
+    val sharedPrefs =
+        remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
 
     var url by rememberSaveable {
-        mutableStateOf(sharedPrefs.getString("last_url", "https://www.google.com") ?: "https://www.google.com")
+        mutableStateOf(
+            sharedPrefs.getString("last_url", "https://www.google.com") ?: "https://www.google.com"
+        )
     }
 
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(url, TextRange(url.length)))
     }
 //    var isLockFullscreenMode by remember { mutableStateOf(false) }
-    var isLockFullscreenMode by rememberSaveable { mutableStateOf(sharedPrefs.getBoolean("is_lock_fullscreen_mode", false)) }
+    var isLockFullscreenMode by rememberSaveable {
+        mutableStateOf(
+            sharedPrefs.getBoolean(
+                "is_lock_fullscreen_mode",
+                false
+            )
+        )
+    }
 
 
     var paddingDp by remember {
@@ -146,10 +157,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
 
+    var isBottomPanel by rememberSaveable { mutableStateOf(true) }
+
 
     val hasDisplayCutout by rememberHasDisplayCutout()
-
-
 
 
     val animatedPadding by animateDpAsState(
@@ -169,7 +180,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             insetsController.show(WindowInsetsCompat.Type.systemBars())
         } else {
             insetsController.hide(WindowInsetsCompat.Type.systemBars())
-            insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insetsController.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
 
@@ -229,10 +241,16 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
                         webViewClient = object : WebViewClient() {
-                            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                            override fun onPageStarted(
+                                view: WebView?,
+                                url: String?,
+                                favicon: Bitmap?
+                            ) {
                                 super.onPageStarted(view, url, favicon)
                                 isLoading = true
-                                if (!isFocusOnTextField) url?.let { textFieldValue = TextFieldValue(it, TextRange(it.length)) }
+                                if (!isFocusOnTextField) url?.let {
+                                    textFieldValue = TextFieldValue(it, TextRange(it.length))
+                                }
                             }
 
                             override fun onPageFinished(view: WebView?, currentUrl: String?) {
@@ -241,7 +259,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                 canGoBack = view?.canGoBack() ?: false
                                 currentUrl?.let {
                                     url = it
-                                    if (!isFocusOnTextField) textFieldValue = TextFieldValue(it, TextRange(it.length))
+                                    if (!isFocusOnTextField) textFieldValue =
+                                        TextFieldValue(it, TextRange(it.length))
                                 }
 
                                 val jsScript = """
@@ -280,7 +299,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize()
             )
 
-            if (isUrlBarVisible ) {
+            if (isUrlBarVisible) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -295,7 +314,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                                 // 3. Use awaitTouchSlopOrCancellation. We are most interested
                                 //    in its onSlopCrossed lambda.
-                                val dragOrTap = awaitTouchSlopOrCancellation(down.id) { _,_ ->
+                                val dragOrTap = awaitTouchSlopOrCancellation(down.id) { _, _ ->
                                     // THIS IS THE KEY: This lambda is called the *moment* a
                                     // drag is detected. We set our flag here. This happens
                                     // before the WebView can fully "steal" the gesture,
@@ -314,31 +333,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             }
                         }
                 )
-//                Box(
-//                    modifier = Modifier
-//                        .fillMaxSize()
-//                        // *** MODIFICATION HERE: Using the much simpler detectTapGestures API ***
-//                        .pointerInput(Unit) {
-//                            detectTapGestures(
-//                                // The onPress lambda is called as soon as a finger touches down.
-//                                // It gives us a scope where we can await the release.
-//                                onPress = {
-//                                    // tryAwaitRelease() will wait for the finger to be lifted up.
-//                                    // - If it's lifted (a tap), it returns true.
-//                                    // - If the gesture is consumed by a drag/scroll (a swipe),
-//                                    //   it returns false.
-//                                    val isTap = tryAwaitRelease()
-//
-//                                    if (isTap) {
-//                                        // The finger was lifted without being stolen by a swipe.
-//                                        // This is a confirmed tap.
-//                                        isUrlBarVisible = false
-//                                    }
-//                                    // If it was a swipe (isTap is false), we do nothing.
-//                                }
-//                            )
-//                        }
-//                )
+
             }
         }
 
@@ -346,94 +341,115 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             visible = isUrlBarVisible,
             enter = expandVertically(tween(300)),
             exit = shrinkVertically(tween(300))
-        )  {
-            Row() {
-                OutlinedTextField(
-                    value = textFieldValue.text,
-                    onValueChange = { newValue -> textFieldValue = TextFieldValue(newValue, selection = TextRange(newValue.length)) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(
-                        onGo = {
-                            val input = textFieldValue.text.trim()
-                            if (input.isBlank()) {
-                                textFieldValue = TextFieldValue(url, TextRange(url.length))
+        ) {
+            Column {
+                Row() {
+                    OutlinedTextField(
+                        value = textFieldValue.text,
+                        onValueChange = { newValue ->
+                            textFieldValue =
+                                TextFieldValue(newValue, selection = TextRange(newValue.length))
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(
+                            onGo = {
+                                val input = textFieldValue.text.trim()
+                                if (input.isBlank()) {
+                                    textFieldValue = TextFieldValue(url, TextRange(url.length))
+                                    focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                    return@KeyboardActions
+                                }
+                                val isUrl = try {
+                                    Patterns.WEB_URL.matcher(input).matches() ||
+                                            (input.contains(".") && !input.contains(" "))
+                                } catch (_: Exception) {
+                                    false
+                                }
+
+                                if (isUrl) {
+                                    url =
+                                        if (input.startsWith("http://") || input.startsWith("https://")) {
+                                            input
+                                        } else {
+                                            "https://$input"
+                                        }
+                                } else {
+                                    val encodedQuery =
+                                        URLEncoder.encode(input, StandardCharsets.UTF_8.toString())
+                                    url = "https://www.google.com/search?q=$encodedQuery"
+                                }
                                 focusManager.clearFocus()
                                 keyboardController?.hide()
-                                return@KeyboardActions
+                                if (!isLockFullscreenMode) isUrlBarVisible = false
                             }
-                            val isUrl = try {
-                                Patterns.WEB_URL.matcher(input).matches() ||
-                                        (input.contains(".") && !input.contains(" "))
-                            } catch (_: Exception) {
-                                false
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .onSizeChanged { size ->
+                                textFieldHeightPx = size.height
                             }
-
-                            if (isUrl) {
-                                url = if (input.startsWith("http://") || input.startsWith("https://")) {
-                                    input
-                                } else {
-                                    "https://$input"
-                                }
-                            } else {
-                                val encodedQuery = URLEncoder.encode(input, StandardCharsets.UTF_8.toString())
-                                url = "https://www.google.com/search?q=$encodedQuery"
-                            }
-                            focusManager.clearFocus()
-                            keyboardController?.hide()
-                            if (!isLockFullscreenMode) isUrlBarVisible = false
-                        }
-                    ),
-                    modifier = Modifier
-                        .weight(1f)
-                        .onSizeChanged { size ->
-                            textFieldHeightPx = size.height
-                        }
-                        .fillMaxWidth()
-                        .padding(horizontal = paddingDp.dp, vertical = paddingDp.dp / 2)
-                        .onFocusChanged {
-                            isFocusOnTextField = it.isFocused
-                            if (it.isFocused) {
-                                // Ensure the bar is visible when it gets focus
+                            .fillMaxWidth()
+                            .padding(horizontal = paddingDp.dp, vertical = paddingDp.dp / 2)
+                            .onFocusChanged {
+                                isFocusOnTextField = it.isFocused
+                                if (it.isFocused) {
+                                    // Ensure the bar is visible when it gets focus
 //                            isUrlBarVisible = true
-                                if (textFieldValue.text == url) {
-                                    textFieldValue = TextFieldValue("", TextRange(0))
-                                }
-                            } else {
-                                if (textFieldValue.text.isBlank()) {
-                                    textFieldValue = TextFieldValue(url, TextRange(url.length))
-                                }
-                            }
-                        }
-                        .pointerInput(Unit) {
-                            detectHorizontalDragGestures { _, dragAmount ->
-                                if (dragAmount > 0) {
-                                    textFieldValue =
-                                        TextFieldValue(url, selection = TextRange(url.length))
+                                    if (textFieldValue.text == url) {
+                                        textFieldValue = TextFieldValue("", TextRange(0))
+                                    }
+                                } else {
+                                    if (textFieldValue.text.isBlank()) {
+                                        textFieldValue = TextFieldValue(url, TextRange(url.length))
+                                    }
                                 }
                             }
-                        },
-                    shape = RoundedCornerShape(cornerRadiusDp.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when focused
-                        unfocusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when unfocused
-                        disabledContainerColor = if (isSystemInDarkTheme()) Color.White else Color.Black, // Background when disabled
-                        errorContainerColor = Color.Red // Background when in error state
+                            .pointerInput(Unit) {
+                                detectHorizontalDragGestures { _, dragAmount ->
+                                    if (dragAmount > 0) {
+                                        textFieldValue =
+                                            TextFieldValue(url, selection = TextRange(url.length))
+                                    }
+                                }
+                            },
+                        shape = RoundedCornerShape(cornerRadiusDp.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when focused
+                            unfocusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when unfocused
+                            disabledContainerColor = if (isSystemInDarkTheme()) Color.White else Color.Black, // Background when disabled
+                            errorContainerColor = Color.Red // Background when in error state
+                        )
                     )
-                )
-                IconButton(
-                    onClick = { isLockFullscreenMode = !isLockFullscreenMode },
-                    modifier = Modifier
+                    IconButton(
+                        onClick = { isLockFullscreenMode = !isLockFullscreenMode },
+                        modifier = Modifier
 //                        .padding(start = paddingDp.dp)
-                        .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier)
+                            .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier)
 
-                ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.circle),
-                        contentDescription = "Lock Fullscreen",
-                        modifier = Modifier.background(if (isSystemInDarkTheme()) Color.Black else Color.White)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.circle),
+                            contentDescription = "Lock Fullscreen",
+                            modifier = Modifier.background(if (isSystemInDarkTheme()) Color.Black else Color.White)
 //                        modifier = Modifier.size(100.dp)
-                    )
+                        )
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = isBottomPanel,
+                    enter = expandVertically(tween(300)),
+                    exit = shrinkVertically(tween(300)),
+                ) {
+                    Box(
+                        modifier = Modifier.background(Color.Red)
+                            .height(paddingDp.dp)
+                    ) {
+                        Text("hello")
+
+                    }
                 }
             }
         }
@@ -459,7 +475,10 @@ class WebAppInterface {
         if (color.isNotBlank() && color != "null") {
             Log.d("WebViewBackground", "Detected web page background color: $color")
         } else {
-            Log.d("WebViewBackground", "Web page background color could not be determined or is transparent.")
+            Log.d(
+                "WebViewBackground",
+                "Web page background color could not be determined or is transparent."
+            )
         }
     }
 }
