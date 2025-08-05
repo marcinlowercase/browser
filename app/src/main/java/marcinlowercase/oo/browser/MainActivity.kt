@@ -54,6 +54,7 @@ import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import androidx.compose.material3.Icon
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
@@ -149,7 +150,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val focusManager = LocalFocusManager.current
 
 
-
     var textFieldHeightPx by remember { mutableIntStateOf(0) }
     // Density is needed to convert Px to Dp
     val density = LocalDensity.current
@@ -160,11 +160,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
 
-    var isBottomPanel by rememberSaveable { mutableStateOf(true) }
+    var isBottomPanel by rememberSaveable { mutableStateOf(false) }
 
 
     val hasDisplayCutout by rememberHasDisplayCutout()
-
 
 
     val animatedPadding by animateDpAsState(
@@ -230,6 +229,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 .windowInsetsPadding(if (isUrlBarVisible) WindowInsets(0) else WindowInsets.displayCutout)
                 .clip(RoundedCornerShape(animatedCornerRadius))
                 .testTag("WebViewContainer")
+
+            // TODO
+                .background(Color.Green)
 
 
         ) {
@@ -346,7 +348,14 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             exit = shrinkVertically(tween(300))
         ) {
             Column {
-                Row {
+                Row(
+                    modifier = Modifier
+                        .padding(
+                        horizontal = paddingDp.dp,
+                        vertical = paddingDp.dp / 2,
+                            ),
+                    verticalAlignment = Alignment.CenterVertically // Good practice for vertical alignment
+                ) {
                     OutlinedTextField(
                         value = textFieldValue.text,
                         onValueChange = { newValue ->
@@ -394,7 +403,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                 textFieldHeightPx = size.height
                             }
                             .fillMaxWidth()
-                            .padding(horizontal = paddingDp.dp, vertical = paddingDp.dp / 2)
+//                            .padding(horizontal = paddingDp.dp, vertical = paddingDp.dp / 2)
                             .onFocusChanged {
                                 isFocusOnTextField = it.isFocused
                                 if (it.isFocused) {
@@ -428,15 +437,17 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     IconButton(
                         onClick = { isLockFullscreenMode = !isLockFullscreenMode },
                         modifier = Modifier
-//                        .padding(start = paddingDp.dp)
-                            .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier)
+                        .padding(start = paddingDp.dp)
+                            .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
 
                     ) {
                         Icon(
-                            painter = painterResource(id = R.drawable.circle),
+                            painter = painterResource(id = R.drawable.ic_fullscreen),
                             contentDescription = "Lock Fullscreen",
-                            modifier = Modifier.background(if (isSystemInDarkTheme()) Color.Black else Color.White)
-//                        modifier = Modifier.size(100.dp)
+                            tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                 }
@@ -447,7 +458,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     exit = shrinkVertically(tween(300)),
                 ) {
                     Box(
-                        modifier = Modifier.background(Color.Red)
+                        modifier = Modifier
+                            .background(Color.Red)
                             .height(paddingDp.dp)
                     ) {
                         Text("hello")
