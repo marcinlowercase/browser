@@ -591,7 +591,7 @@ fun OptionsPanel(
                         onClick = { /* TODO: Action 1 */ },
                         modifier = Modifier.fillMaxWidth(), // Fill the column's width
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                            containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {
                         Icon(
@@ -605,7 +605,7 @@ fun OptionsPanel(
                         onClick = { /* TODO: Action 2 */ },
                         modifier = Modifier.fillMaxWidth(), // Fill the column's width
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                            containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {
                         Icon(
@@ -626,7 +626,7 @@ fun OptionsPanel(
                         onClick = { /* TODO: Action 3 */ },
                         modifier = Modifier.fillMaxWidth(), // Fill the column's width
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                            containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {
                         Icon(
@@ -640,7 +640,7 @@ fun OptionsPanel(
                         onClick = { /* TODO: Action 4 */ },
                         modifier = Modifier.fillMaxWidth(), // Fill the column's width
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                            containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {
                         Icon(
