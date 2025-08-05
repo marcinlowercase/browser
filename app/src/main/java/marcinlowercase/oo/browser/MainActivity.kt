@@ -10,12 +10,10 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -59,9 +57,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
-import kotlinx.coroutines.delay
+import androidx.core.content.edit
 
 
 class MainActivity : ComponentActivity() {
@@ -151,11 +148,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
 
-    var webBackgroundColor by remember { mutableStateOf(Color.Unspecified) }
 
-    val cutoutInsets = remember { mutableIntStateOf(WindowInsetsCompat.Type.displayCutout()) }
 
-    var textFieldHeightPx by remember { mutableStateOf(0) }
+    var textFieldHeightPx by remember { mutableIntStateOf(0) }
     // Density is needed to convert Px to Dp
     val density = LocalDensity.current
 
@@ -183,36 +178,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     )
 
 
-//    // 1. Get the current theme's background as the default.
-//    val themeBackgroundColor = MaterialTheme.colorScheme.background
-//
-//    // 2. *** NEW: State to hold the color we actually want to show. ***
-//    // We initialize it with the theme color.
-//    var displayedBackgroundColor by remember { mutableStateOf(themeBackgroundColor) }
-//
-//    // 3. This effect now orchestrates the delayed color change.
-//    LaunchedEffect(isUrlBarVisible, webBackgroundColor) {
-//        if (!isUrlBarVisible) {
-//            // We are entering fullscreen. Wait for the URL bar to animate away.
-//            delay(300) // This should match your expandVertically/shrinkVertically duration.
-//
-//            // After the animation, if we have a valid color, set it as the target.
-//            if (webBackgroundColor != Color.Unspecified) {
-//                displayedBackgroundColor = webBackgroundColor
-//            }
-//        } else {
-//            // We are exiting fullscreen. Snap back to the theme color immediately.
-//            displayedBackgroundColor = themeBackgroundColor
-//        }
-//    }
-//
-//    // 4. This animation is now driven by our delayed 'displayedBackgroundColor' state.
-//    val animatedBackgroundColor by animateColorAsState(
-//        targetValue = displayedBackgroundColor,
-//        animationSpec = tween(if (isUrlBarVisible) 0 else 300), // The fade itself can have its own duration.
-//        label = "Background Color Animation"
-//    )
-
     LaunchedEffect(isUrlBarVisible) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
@@ -226,12 +191,11 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(url, paddingDp, cornerRadiusDp, isLockFullscreenMode) {
-        with(sharedPrefs.edit()) {
+        sharedPrefs.edit { // The KTX extension function automatically handles the editor and apply()
             putString("last_url", url)
             putFloat("padding_dp", paddingDp)
             putFloat("corner_radius_dp", cornerRadiusDp)
             putBoolean("is_lock_fullscreen_mode", isLockFullscreenMode)
-            apply()
         }
     }
 
@@ -274,9 +238,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     WebView(ctx).apply {
 
                         addJavascriptInterface(
-                            WebAppInterface({ color ->
-                                webBackgroundColor = color
-                            }),
+                            WebAppInterface(),
                             "Android"
                         )
 
@@ -288,7 +250,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                 favicon: Bitmap?
                             ) {
                                 super.onPageStarted(view, url, favicon)
-                                webBackgroundColor = Color.Unspecified
                                 isLoading = true
                                 if (!isFocusOnTextField) url?.let {
                                     textFieldValue = TextFieldValue(it, TextRange(it.length))
@@ -385,7 +346,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             exit = shrinkVertically(tween(300))
         ) {
             Column {
-                Row() {
+                Row {
                     OutlinedTextField(
                         value = textFieldValue.text,
                         onValueChange = { newValue ->
@@ -508,23 +469,15 @@ fun BrowserScreenPreview() {
 }
 
 
-class WebAppInterface(private val onColorExtracted: (Color) -> Unit) {
+class WebAppInterface() {
     @android.webkit.JavascriptInterface
     fun logBackgroundColor(colorString: String) {
         // We need a robust way to parse the "rgb(r, g, b)" or "rgba(r, g, b, a)" string.
         try {
-            // Remove "rgb(", "rgba(", ")", and spaces
-            val colorValues = colorString.removePrefix("rgba(").removePrefix("rgb(")
-                .removeSuffix(")").split(",").map { it.trim().toInt() }
+
             Log.e("WebViewBackground", "Detected web page background color: $colorString")
 
-            if (colorValues.size >= 3) {
-                val r = colorValues[0]
-                val g = colorValues[1]
-                val b = colorValues[2]
-                // Invoke the callback with the parsed Color
-                onColorExtracted(Color(r, g, b))
-            }
+
         } catch (e: Exception) {
             // If parsing fails for any reason, log it but don't crash.
             Log.e("WebAppInterface", "Failed to parse color string: $colorString", e)
