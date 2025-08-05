@@ -597,7 +597,7 @@ fun OptionsPanel(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_fullscreen),
                             contentDescription = "Button 1",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                     // Second Button
@@ -611,7 +611,7 @@ fun OptionsPanel(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_fullscreen),
                             contentDescription = "Button 2",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                 }
@@ -632,7 +632,7 @@ fun OptionsPanel(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_fullscreen),
                             contentDescription = "Button 3",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                     // Fourth Button
@@ -646,7 +646,7 @@ fun OptionsPanel(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_fullscreen),
                             contentDescription = "Button 4",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                 }
