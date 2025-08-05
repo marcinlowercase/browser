@@ -18,11 +18,12 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.background
+
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,9 +56,12 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import androidx.compose.material3.Icon
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.content.edit
 
@@ -78,6 +82,25 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+data class BrowserSettings(
+    val paddingDp: Float,
+    val cornerRadiusDp: Float,
+    val isLockFullscreenMode: Boolean,
+    val defaultUrl: String,
+)
+
+
+// This creates the "tunnel" that will provide our settings object.
+// We provide a default value as a fallback.
+val LocalBrowserSettings = compositionLocalOf {
+    BrowserSettings(
+        paddingDp = 8f,
+        cornerRadiusDp = 24f,
+        isLockFullscreenMode = false,
+        defaultUrl = "https://www.google.com",
+    )
 }
 
 @Composable
@@ -112,34 +135,27 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val sharedPrefs =
         remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
 
+    val browserSettings = remember {
+        BrowserSettings(
+            paddingDp = sharedPrefs.getFloat("padding_dp", 8f),
+            cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
+            isLockFullscreenMode = sharedPrefs.getBoolean("is_lock_fullscreen_mode", false),
+            defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com")
+                ?: "https://www.google.com"
+        )
+    }
+
     var url by rememberSaveable {
         mutableStateOf(
-            sharedPrefs.getString("last_url", "https://www.google.com") ?: "https://www.google.com"
+            sharedPrefs.getString("last_url", browserSettings.defaultUrl)
+                ?: browserSettings.defaultUrl
         )
     }
 
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(url, TextRange(url.length)))
     }
-//    var isLockFullscreenMode by remember { mutableStateOf(false) }
-    var isLockFullscreenMode by rememberSaveable {
-        mutableStateOf(
-            sharedPrefs.getBoolean(
-                "is_lock_fullscreen_mode",
-                false
-            )
-        )
-    }
 
-
-    var paddingDp by remember {
-        mutableFloatStateOf(sharedPrefs.getFloat("padding_dp", 8f))
-    }
-
-    var cornerRadiusDp by remember {
-        mutableFloatStateOf(sharedPrefs.getFloat("corner_radius_dp", 24f))
-//        mutableFloatStateOf(sharedPrefs.getFloat("corner_radius_dp", 55f)) // pixel 9
-    }
 
     var webView by remember { mutableStateOf<WebView?>(null) }
     var canGoBack by remember { mutableStateOf(false) }
@@ -148,7 +164,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-
 
     var textFieldHeightPx by remember { mutableIntStateOf(0) }
     // Density is needed to convert Px to Dp
@@ -160,19 +175,19 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
 
-    var isBottomPanel by rememberSaveable { mutableStateOf(false) }
+    var isOptionsPanelVisible by rememberSaveable { mutableStateOf(false) }
 
 
     val hasDisplayCutout by rememberHasDisplayCutout()
 
 
     val animatedPadding by animateDpAsState(
-        targetValue = if (isUrlBarVisible) paddingDp.dp else 0.dp,
+        targetValue = if (isUrlBarVisible) browserSettings.paddingDp.dp else 0.dp,
         label = "Padding Animation",
     )
 
     val animatedCornerRadius by animateDpAsState(
-        targetValue = if (isUrlBarVisible || hasDisplayCutout) cornerRadiusDp.dp else 0.dp,
+        targetValue = if (isUrlBarVisible || hasDisplayCutout) browserSettings.cornerRadiusDp.dp else 0.dp,
         label = "Corner Radius Animation",
     )
 
@@ -189,12 +204,15 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    LaunchedEffect(url, paddingDp, cornerRadiusDp, isLockFullscreenMode) {
-        sharedPrefs.edit { // The KTX extension function automatically handles the editor and apply()
+
+    // The LaunchedEffect now saves the entire settings object (or individual fields)
+    LaunchedEffect(url, browserSettings) {
+        sharedPrefs.edit {
             putString("last_url", url)
-            putFloat("padding_dp", paddingDp)
-            putFloat("corner_radius_dp", cornerRadiusDp)
-            putBoolean("is_lock_fullscreen_mode", isLockFullscreenMode)
+            putFloat("padding_dp", browserSettings.paddingDp)
+            putFloat("corner_radius_dp", browserSettings.cornerRadiusDp)
+            putBoolean("is_lock_fullscreen_mode", browserSettings.isLockFullscreenMode)
+            putString("default_url", browserSettings.defaultUrl)
         }
     }
 
@@ -211,264 +229,430 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars))
-    ) {
+    CompositionLocalProvider(LocalBrowserSettings provides browserSettings) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars))
+        ) {
 
-        if (isLoading) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            if (isLoading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(animatedPadding)
+                    .windowInsetsPadding(if (isUrlBarVisible) WindowInsets(0) else WindowInsets.displayCutout)
+                    .clip(RoundedCornerShape(animatedCornerRadius))
+                    .testTag("WebViewContainer")
+            ) {
+                AndroidView(
+                    factory = { ctx ->
+                        WebView(ctx).apply {
+
+                            addJavascriptInterface(
+                                WebAppInterface(),
+                                "Android"
+                            )
+
+
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageStarted(
+                                    view: WebView?,
+                                    url: String?,
+                                    favicon: Bitmap?
+                                ) {
+                                    super.onPageStarted(view, url, favicon)
+                                    isLoading = true
+                                    if (!isFocusOnTextField) url?.let {
+                                        textFieldValue = TextFieldValue(it, TextRange(it.length))
+                                    }
+                                }
+
+                                override fun onPageFinished(view: WebView?, currentUrl: String?) {
+                                    super.onPageFinished(view, currentUrl)
+                                    isLoading = false
+                                    canGoBack = view?.canGoBack() ?: false
+                                    currentUrl?.let {
+                                        url = it
+                                        if (!isFocusOnTextField) textFieldValue =
+                                            TextFieldValue(it, TextRange(it.length))
+                                    }
+
+                                    val jsScript = """
+                                     (function() {
+                                         var bodyColor = window.getComputedStyle(document.body).backgroundColor;
+                                         var htmlColor = window.getComputedStyle(document.documentElement).backgroundColor;
+                                         // A color of 'rgba(0, 0, 0, 0)' means transparent.
+                                         // If the body is transparent, use the html tag's color as the fallback.
+                                         var finalColor = (bodyColor === 'rgba(0, 0, 0, 0)') ? htmlColor : bodyColor;
+                                         // Call the Kotlin method through the interface we named "Android"
+                                         Android.logBackgroundColor(finalColor);
+                                     })();
+                                 """.trimIndent()
+
+                                    view?.evaluateJavascript(jsScript, null)
+
+                                }
+                            }
+
+
+                            settings.apply {
+                                javaScriptEnabled = true
+                                domStorageEnabled = true
+                                cacheMode = WebSettings.LOAD_DEFAULT
+                            }
+                            loadUrl(url)
+                            webView = this
+                        }
+                    },
+                    update = {
+                        it.loadUrl(url)
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                if (isUrlBarVisible) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            // *** THE DEFINITIVE FIX: Manually track the drag state ***
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    // 1. At the start of each new gesture, reset our flag.
+                                    var isDrag = false
+
+                                    // 2. Wait for the initial press.
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+
+                                    // 3. Use awaitTouchSlopOrCancellation. We are most interested
+                                    //    in its onSlopCrossed lambda.
+                                    val dragOrTap = awaitTouchSlopOrCancellation(down.id) { _, _ ->
+                                        // THIS IS THE KEY: This lambda is called the *moment* a
+                                        // drag is detected. We set our flag here. This happens
+                                        // before the WebView can fully "steal" the gesture,
+                                        // making our flag a reliable source of truth.
+                                        isDrag = true
+                                        // We don't need to do anything with the change object itself.
+                                    }
+
+                                    // 4. AFTER the gesture is over, we check OUR flag, not the
+                                    //    unreliable return value of dragOrTap.
+                                    if (!isDrag) {
+                                        // If our flag is still false, it means onSlopCrossed was
+                                        // never called. Therefore, it must be a tap.
+                                        isUrlBarVisible = false
+                                    }
+                                }
+                            }
+                    )
+
+                }
+            }
+
+            BottomPanel(
+                isUrlBarVisible = isUrlBarVisible,
+                isOptionsPanelVisible = isOptionsPanelVisible,
+                browserSettings = browserSettings,
+                textFieldValue = textFieldValue,
+                url = url,
+                focusManager = focusManager,
+                keyboardController = keyboardController,
+                textFieldHeightDp = textFieldHeightDp,
+                toggleOptionsPanel = { isOptionsPanelVisible = it },
+                changeTextFieldValue = { textFieldValue = it },
+                changeUrl = { url = it },
+                toggleUrlBar = { isUrlBarVisible = it },
+                setTextFieldHeightPx = { textFieldHeightPx = it },
+                setIsFocusOnTextField = { isFocusOnTextField = it }
+
+            )
+
+
         }
+    }
+}
 
+@Composable
+fun BottomPanel(
+    isUrlBarVisible: Boolean,
+    isOptionsPanelVisible: Boolean,
+    browserSettings: BrowserSettings,
+    textFieldValue: TextFieldValue,
+    url: String,
+    focusManager: FocusManager,
+    keyboardController: SoftwareKeyboardController?,
+    textFieldHeightDp: Dp,
+
+    toggleOptionsPanel: (Boolean) -> Unit = {},
+    changeTextFieldValue: (TextFieldValue) -> Unit = {},
+    changeUrl: (String) -> Unit = {},
+    toggleUrlBar: (Boolean) -> Unit = {},
+    setTextFieldHeightPx: (Int) -> Unit = {},
+    setIsFocusOnTextField: (Boolean) -> Unit = {}
+) {
+    AnimatedVisibility(
+        visible = isUrlBarVisible,
+        enter = expandVertically(tween(300)),
+        exit = shrinkVertically(tween(300))
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures(
+                            onVerticalDrag = { change, dragAmount ->
+                                // dragAmount is the change in the Y-axis.
+                                // A negative value means the finger has moved UP.
+                                if (dragAmount < 0) {
+                                    toggleOptionsPanel(true)
+                                }
+                                // A positive value means the finger has moved DOWN.
+                                else if (dragAmount > 0) {
+                                    toggleOptionsPanel(false)
+                                }
+                            })
+                    }
+                    .padding(
+                        horizontal = browserSettings.paddingDp.dp,
+                        vertical = browserSettings.paddingDp.dp / 2
+                    ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = textFieldValue.text,
+                    onValueChange = { newValue ->
+                        changeTextFieldValue(
+                            TextFieldValue(
+                                newValue,
+                                selection = TextRange(newValue.length)
+                            )
+                        )
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(
+                        onGo = {
+                            val input = textFieldValue.text.trim()
+                            if (input.isBlank()) {
+                                changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                                return@KeyboardActions
+                            }
+                            val isUrl = try {
+                                Patterns.WEB_URL.matcher(input).matches() ||
+                                        (input.contains(".") && !input.contains(" "))
+                            } catch (_: Exception) {
+                                false
+                            }
+
+                            if (isUrl) {
+                                changeUrl(
+                                    if (input.startsWith("http://") || input.startsWith("https://")) {
+                                        input
+                                    } else {
+                                        "https://$input"
+                                    }
+                                )
+
+                            } else {
+                                val encodedQuery =
+                                    URLEncoder.encode(
+                                        input,
+                                        StandardCharsets.UTF_8.toString()
+                                    )
+                                changeUrl("https://www.google.com/search?q=$encodedQuery")
+                            }
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                            if (!browserSettings.isLockFullscreenMode) toggleUrlBar(false)
+                        }
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .onSizeChanged { size ->
+                            setTextFieldHeightPx(size.height)
+                        }
+                        .fillMaxWidth()
+                        //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
+                        .onFocusChanged {
+                            setIsFocusOnTextField(it.isFocused)
+                            if (it.isFocused) {
+                                // Ensure the bar is visible when it gets focus
+                                //                            isUrlBarVisible = true
+                                if (textFieldValue.text == url) {
+                                    changeTextFieldValue(TextFieldValue("", TextRange(0)))
+                                }
+                            } else {
+                                if (textFieldValue.text.isBlank()) {
+                                    changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
+                                }
+                            }
+                        }
+                        .pointerInput(Unit) {
+                            detectHorizontalDragGestures { _, dragAmount ->
+                                if (dragAmount > 0) {
+                                    changeTextFieldValue(
+                                        TextFieldValue(
+                                            url,
+                                            selection = TextRange(url.length)
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                    shape = RoundedCornerShape(browserSettings.cornerRadiusDp.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when focused
+                        unfocusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when unfocused
+                        disabledContainerColor = if (isSystemInDarkTheme()) Color.White else Color.Black, // Background when disabled
+                        errorContainerColor = Color.Red // Background when in error state
+                    )
+                )
+                IconButton(
+                    onClick = { toggleUrlBar(!isUrlBarVisible) },
+                    modifier = Modifier
+                        .padding(start = browserSettings.paddingDp.dp)
+                        .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier),
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_fullscreen),
+                        contentDescription = "Lock Fullscreen",
+                        tint = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
+
+
+            // SETTING OPTIONS
+            OptionsPanel(
+                isOptionsPanelVisible = isOptionsPanelVisible,
+                toggleOptionsPanel = toggleOptionsPanel
+            )
+        }
+    }
+}
+
+@Composable
+fun OptionsPanel(
+    isOptionsPanelVisible: Boolean = false,
+    toggleOptionsPanel: (Boolean) -> Unit = {}
+) {
+
+    var browserSettings = LocalBrowserSettings.current
+
+    AnimatedVisibility(
+        visible = isOptionsPanelVisible,
+        enter = expandVertically(tween(300)),
+        exit = shrinkVertically(tween(300)),
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
-                .padding(animatedPadding)
-                .windowInsetsPadding(if (isUrlBarVisible) WindowInsets(0) else WindowInsets.displayCutout)
-                .clip(RoundedCornerShape(animatedCornerRadius))
-                .testTag("WebViewContainer")
-
-            // TODO
-                .background(Color.Green)
-
-
-        ) {
-            AndroidView(
-                factory = { ctx ->
-                    WebView(ctx).apply {
-
-                        addJavascriptInterface(
-                            WebAppInterface(),
-                            "Android"
-                        )
-
-
-                        webViewClient = object : WebViewClient() {
-                            override fun onPageStarted(
-                                view: WebView?,
-                                url: String?,
-                                favicon: Bitmap?
-                            ) {
-                                super.onPageStarted(view, url, favicon)
-                                isLoading = true
-                                if (!isFocusOnTextField) url?.let {
-                                    textFieldValue = TextFieldValue(it, TextRange(it.length))
-                                }
-                            }
-
-                            override fun onPageFinished(view: WebView?, currentUrl: String?) {
-                                super.onPageFinished(view, currentUrl)
-                                isLoading = false
-                                canGoBack = view?.canGoBack() ?: false
-                                currentUrl?.let {
-                                    url = it
-                                    if (!isFocusOnTextField) textFieldValue =
-                                        TextFieldValue(it, TextRange(it.length))
-                                }
-
-                                val jsScript = """
-                                    (function() {
-                                        var bodyColor = window.getComputedStyle(document.body).backgroundColor;
-                                        var htmlColor = window.getComputedStyle(document.documentElement).backgroundColor;
-                                        // A color of 'rgba(0, 0, 0, 0)' means transparent.
-                                        // If the body is transparent, use the html tag's color as the fallback.
-                                        var finalColor = (bodyColor === 'rgba(0, 0, 0, 0)') ? htmlColor : bodyColor;
-                                        // Call the Kotlin method through the interface we named "Android"
-                                        Android.logBackgroundColor(finalColor);
-                                    })();
-                                """.trimIndent()
-
-                                view?.evaluateJavascript(jsScript, null)
-
-                            }
-                        }
-
-//                        setOnTouchListener { _, _ ->
-//                            if (!isLockFullscreenMode) isUrlBarVisible = false
-//                            false
-//                        }
-                        settings.apply {
-                            javaScriptEnabled = true
-                            domStorageEnabled = true
-                            cacheMode = WebSettings.LOAD_DEFAULT
-                        }
-                        loadUrl(url)
-                        webView = this
-                    }
-                },
-                update = {
-                    it.loadUrl(url)
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-
-            if (isUrlBarVisible) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        // *** THE DEFINITIVE FIX: Manually track the drag state ***
-                        .pointerInput(Unit) {
-                            awaitEachGesture {
-                                // 1. At the start of each new gesture, reset our flag.
-                                var isDrag = false
-
-                                // 2. Wait for the initial press.
-                                val down = awaitFirstDown(requireUnconsumed = false)
-
-                                // 3. Use awaitTouchSlopOrCancellation. We are most interested
-                                //    in its onSlopCrossed lambda.
-                                val dragOrTap = awaitTouchSlopOrCancellation(down.id) { _, _ ->
-                                    // THIS IS THE KEY: This lambda is called the *moment* a
-                                    // drag is detected. We set our flag here. This happens
-                                    // before the WebView can fully "steal" the gesture,
-                                    // making our flag a reliable source of truth.
-                                    isDrag = true
-                                    // We don't need to do anything with the change object itself.
-                                }
-
-                                // 4. AFTER the gesture is over, we check OUR flag, not the
-                                //    unreliable return value of dragOrTap.
-                                if (!isDrag) {
-                                    // If our flag is still false, it means onSlopCrossed was
-                                    // never called. Therefore, it must be a tap.
-                                    isUrlBarVisible = false
-                                }
-                            }
-                        }
+                .padding(
+                    horizontal = browserSettings.paddingDp.dp,
+                    vertical = browserSettings.paddingDp.dp / 2
                 )
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onVerticalDrag = { change, dragAmount ->
+                            // dragAmount is the change in the Y-axis.
+                            // A negative value means the finger has moved UP.
+                            if (dragAmount < 0) {
+                                toggleOptionsPanel(true)
+                            }
+                            // A positive value means the finger has moved DOWN.
+                            else if (dragAmount > 0) {
+                                toggleOptionsPanel(false)
+                            }
+                        })
+                }
 
-            }
-        }
-
-        AnimatedVisibility(
-            visible = isUrlBarVisible,
-            enter = expandVertically(tween(300)),
-            exit = shrinkVertically(tween(300))
         ) {
-            Column {
-                Row(
-                    modifier = Modifier
-                        .padding(
-                        horizontal = paddingDp.dp,
-                        vertical = paddingDp.dp / 2,
-                            ),
-                    verticalAlignment = Alignment.CenterVertically // Good practice for vertical alignment
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp) // Adds space between columns
+            ) {
+                // --- First Column ---
+                Column(
+                    modifier = Modifier.weight(1f), // Take up 1 share of the width
+                    verticalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp) // Adds space between buttons
                 ) {
-                    OutlinedTextField(
-                        value = textFieldValue.text,
-                        onValueChange = { newValue ->
-                            textFieldValue =
-                                TextFieldValue(newValue, selection = TextRange(newValue.length))
-                        },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                        keyboardActions = KeyboardActions(
-                            onGo = {
-                                val input = textFieldValue.text.trim()
-                                if (input.isBlank()) {
-                                    textFieldValue = TextFieldValue(url, TextRange(url.length))
-                                    focusManager.clearFocus()
-                                    keyboardController?.hide()
-                                    return@KeyboardActions
-                                }
-                                val isUrl = try {
-                                    Patterns.WEB_URL.matcher(input).matches() ||
-                                            (input.contains(".") && !input.contains(" "))
-                                } catch (_: Exception) {
-                                    false
-                                }
-
-                                if (isUrl) {
-                                    url =
-                                        if (input.startsWith("http://") || input.startsWith("https://")) {
-                                            input
-                                        } else {
-                                            "https://$input"
-                                        }
-                                } else {
-                                    val encodedQuery =
-                                        URLEncoder.encode(input, StandardCharsets.UTF_8.toString())
-                                    url = "https://www.google.com/search?q=$encodedQuery"
-                                }
-                                focusManager.clearFocus()
-                                keyboardController?.hide()
-                                if (!isLockFullscreenMode) isUrlBarVisible = false
-                            }
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .onSizeChanged { size ->
-                                textFieldHeightPx = size.height
-                            }
-                            .fillMaxWidth()
-//                            .padding(horizontal = paddingDp.dp, vertical = paddingDp.dp / 2)
-                            .onFocusChanged {
-                                isFocusOnTextField = it.isFocused
-                                if (it.isFocused) {
-                                    // Ensure the bar is visible when it gets focus
-//                            isUrlBarVisible = true
-                                    if (textFieldValue.text == url) {
-                                        textFieldValue = TextFieldValue("", TextRange(0))
-                                    }
-                                } else {
-                                    if (textFieldValue.text.isBlank()) {
-                                        textFieldValue = TextFieldValue(url, TextRange(url.length))
-                                    }
-                                }
-                            }
-                            .pointerInput(Unit) {
-                                detectHorizontalDragGestures { _, dragAmount ->
-                                    if (dragAmount > 0) {
-                                        textFieldValue =
-                                            TextFieldValue(url, selection = TextRange(url.length))
-                                    }
-                                }
-                            },
-                        shape = RoundedCornerShape(cornerRadiusDp.dp),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when focused
-                            unfocusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when unfocused
-                            disabledContainerColor = if (isSystemInDarkTheme()) Color.White else Color.Black, // Background when disabled
-                            errorContainerColor = Color.Red // Background when in error state
-                        )
-                    )
+                    // First Button
                     IconButton(
-                        onClick = { isLockFullscreenMode = !isLockFullscreenMode },
-                        modifier = Modifier
-                        .padding(start = paddingDp.dp)
-                            .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier),
+                        onClick = { /* TODO: Action 1 */ },
+                        modifier = Modifier.fillMaxWidth(), // Fill the column's width
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
                         )
-
                     ) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_fullscreen),
-                            contentDescription = "Lock Fullscreen",
-                            tint = MaterialTheme.colorScheme.onPrimary
+                            contentDescription = "Button 1",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                    // Second Button
+                    IconButton(
+                        onClick = { /* TODO: Action 2 */ },
+                        modifier = Modifier.fillMaxWidth(), // Fill the column's width
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_fullscreen),
+                            contentDescription = "Button 2",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
 
-                AnimatedVisibility(
-                    visible = isBottomPanel,
-                    enter = expandVertically(tween(300)),
-                    exit = shrinkVertically(tween(300)),
+                // --- Second Column ---
+                Column(
+                    modifier = Modifier.weight(1f), // Take up 1 share of the width
+                    verticalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp) // Adds space between buttons
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .background(Color.Red)
-                            .height(paddingDp.dp)
+                    // Third Button
+                    IconButton(
+                        onClick = { /* TODO: Action 3 */ },
+                        modifier = Modifier.fillMaxWidth(), // Fill the column's width
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
                     ) {
-                        Text("hello")
-
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_fullscreen),
+                            contentDescription = "Button 3",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                    // Fourth Button
+                    IconButton(
+                        onClick = { /* TODO: Action 4 */ },
+                        modifier = Modifier.fillMaxWidth(), // Fill the column's width
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_fullscreen),
+                            contentDescription = "Button 4",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     }
                 }
             }
-        }
 
+        }
     }
 }
 
