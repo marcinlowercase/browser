@@ -15,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -74,11 +75,18 @@ class MainActivity : ComponentActivity() {
 //        WindowCompat.getInsetsController(window, window.decorView)
         setContent {
             BrowserTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    BrowserScreen(
-                        modifier = Modifier.padding(innerPadding)
-                    )
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    BrowserScreen()
                 }
+//                Scaffold(
+//                    modifier = Modifier.fillMaxSize(),
+//                    contentWindowInsets = WindowInsets(0.dp)
+//
+//                ) { innerPadding ->
+//                    BrowserScreen(
+//                        modifier = Modifier.padding(innerPadding)
+//                    )
+//                }
             }
         }
     }
@@ -89,6 +97,7 @@ data class BrowserSettings(
     val cornerRadiusDp: Float,
     val isLockFullscreenMode: Boolean,
     val defaultUrl: String,
+    val animationSpeed: Int
 )
 
 
@@ -100,6 +109,7 @@ val LocalBrowserSettings = compositionLocalOf {
         cornerRadiusDp = 24f,
         isLockFullscreenMode = false,
         defaultUrl = "https://www.google.com",
+        animationSpeed = 300,
     )
 }
 
@@ -141,7 +151,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
             isLockFullscreenMode = sharedPrefs.getBoolean("is_lock_fullscreen_mode", false),
             defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com")
-                ?: "https://www.google.com"
+                ?: "https://www.google.com",
+            animationSpeed = sharedPrefs.getInt("animation_speed", 300)
         )
     }
 
@@ -192,6 +203,60 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     )
 
 
+    // --- NEW: Manually Animate the Cutout Insets ---
+
+    // 1. Get the raw cutout padding values.
+    val cutoutPaddingValues = WindowInsets.displayCutout.asPaddingValues()
+    val cutoutTop = cutoutPaddingValues.calculateTopPadding()
+    val cutoutStart = cutoutPaddingValues.calculateLeftPadding(LayoutDirection.Ltr)
+    val cutoutEnd = cutoutPaddingValues.calculateRightPadding(LayoutDirection.Ltr)
+    val cutoutBottom = cutoutPaddingValues.calculateBottomPadding()
+
+    // 2. Create animated states for each cutout dimension.
+    //    They will animate to the cutout value ONLY when isUrlBarVisible is false.
+    val animatedCutoutTop by animateDpAsState(
+        targetValue = if (!isUrlBarVisible) cutoutTop else 0.dp,
+        animationSpec = tween(browserSettings.animationSpeed),
+        label = "Cutout Top Animation"
+    )
+    val animatedCutoutStart by animateDpAsState(
+        targetValue = if (!isUrlBarVisible) cutoutStart else 0.dp,
+        animationSpec = tween(browserSettings.animationSpeed),
+        label = "Cutout Start Animation"
+    )
+    val animatedCutoutEnd by animateDpAsState(
+        targetValue = if (!isUrlBarVisible) cutoutEnd else 0.dp,
+        animationSpec = tween(browserSettings.animationSpeed),
+        label = "Cutout End Animation"
+    )
+    val animatedCutoutBottom by animateDpAsState(
+        targetValue = if (!isUrlBarVisible) cutoutBottom else 0.dp,
+        animationSpec = tween(browserSettings.animationSpeed),
+        label = "Cutout Bottom Animation"
+    )
+
+
+
+
+
+    // Get the raw system bar padding values.
+    val systemBarPaddingValues = WindowInsets.systemBars.asPaddingValues()
+    val systemBarTop = systemBarPaddingValues.calculateTopPadding()
+    val systemBarBottom = systemBarPaddingValues.calculateBottomPadding()
+
+    // Create animated states for the system bar insets.
+    val animatedSystemBarTop by animateDpAsState(
+        targetValue = if (isUrlBarVisible) systemBarTop else 0.dp,
+        animationSpec = tween(browserSettings.animationSpeed), // Always animate smoothly
+        label = "SystemBar Top Animation"
+    )
+    val animatedSystemBarBottom by animateDpAsState(
+        targetValue = if (isUrlBarVisible) systemBarBottom else 0.dp,
+        animationSpec = tween(browserSettings.animationSpeed), // Always animate smoothly
+        label = "SystemBar Bottom Animation"
+    )
+
+
     LaunchedEffect(isUrlBarVisible) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
@@ -213,6 +278,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             putFloat("corner_radius_dp", browserSettings.cornerRadiusDp)
             putBoolean("is_lock_fullscreen_mode", browserSettings.isLockFullscreenMode)
             putString("default_url", browserSettings.defaultUrl)
+            putInt("animation_speed", browserSettings.animationSpeed)
         }
     }
 
@@ -230,148 +296,168 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     CompositionLocalProvider(LocalBrowserSettings provides browserSettings) {
-        Column(
+        Box(
             modifier = modifier
                 .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars))
+                .padding(top = animatedSystemBarTop, bottom = animatedSystemBarBottom)
         ) {
+            Column(
+                modifier = modifier
+                    .fillMaxSize()
+//                    .padding(top = animatedSystemBarTop, bottom = animatedSystemBarBottom)
+//                    .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars))
+                    .windowInsetsPadding(WindowInsets.ime)
 
-            if (isLoading) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(animatedPadding)
-                    .windowInsetsPadding(if (isUrlBarVisible) WindowInsets(0) else WindowInsets.displayCutout)
-                    .clip(RoundedCornerShape(animatedCornerRadius))
-                    .testTag("WebViewContainer")
             ) {
-                AndroidView(
-                    factory = { ctx ->
-                        WebView(ctx).apply {
 
-                            addJavascriptInterface(
-                                WebAppInterface(),
-                                "Android"
-                            )
+                if (isLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(animatedPadding)
+                        .padding(
+                            top = animatedCutoutTop,
+                            start = animatedCutoutStart,
+                            end = animatedCutoutEnd,
+                            bottom = animatedCutoutBottom
+                        )
+                        //                    .windowInsetsPadding(if (isUrlBarVisible) WindowInsets(0) else WindowInsets.displayCutout)
+                        .clip(RoundedCornerShape(animatedCornerRadius))
+                        .testTag("WebViewContainer")
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+
+                                addJavascriptInterface(
+                                    WebAppInterface(),
+                                    "Android"
+                                )
 
 
-                            webViewClient = object : WebViewClient() {
-                                override fun onPageStarted(
-                                    view: WebView?,
-                                    url: String?,
-                                    favicon: Bitmap?
-                                ) {
-                                    super.onPageStarted(view, url, favicon)
-                                    isLoading = true
-                                    if (!isFocusOnTextField) url?.let {
-                                        textFieldValue = TextFieldValue(it, TextRange(it.length))
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageStarted(
+                                        view: WebView?,
+                                        url: String?,
+                                        favicon: Bitmap?
+                                    ) {
+                                        super.onPageStarted(view, url, favicon)
+                                        isLoading = true
+                                        if (!isFocusOnTextField) url?.let {
+                                            textFieldValue =
+                                                TextFieldValue(it, TextRange(it.length))
+                                        }
+                                    }
+
+                                    override fun onPageFinished(
+                                        view: WebView?,
+                                        currentUrl: String?
+                                    ) {
+                                        super.onPageFinished(view, currentUrl)
+                                        isLoading = false
+                                        canGoBack = view?.canGoBack() ?: false
+                                        currentUrl?.let {
+                                            url = it
+                                            if (!isFocusOnTextField) textFieldValue =
+                                                TextFieldValue(it, TextRange(it.length))
+                                        }
+
+                                        val jsScript = """
+                                      (function() {
+                                          var bodyColor = window.getComputedStyle(document.body).backgroundColor;
+                                          var htmlColor = window.getComputedStyle(document.documentElement).backgroundColor;
+                                          // A color of 'rgba(0, 0, 0, 0)' means transparent.
+                                          // If the body is transparent, use the html tag's color as the fallback.
+                                          var finalColor = (bodyColor === 'rgba(0, 0, 0, 0)') ? htmlColor : bodyColor;
+                                          // Call the Kotlin method through the interface we named "Android"
+                                          Android.logBackgroundColor(finalColor);
+                                      })();
+                                  """.trimIndent()
+
+                                        view?.evaluateJavascript(jsScript, null)
+
                                     }
                                 }
 
-                                override fun onPageFinished(view: WebView?, currentUrl: String?) {
-                                    super.onPageFinished(view, currentUrl)
-                                    isLoading = false
-                                    canGoBack = view?.canGoBack() ?: false
-                                    currentUrl?.let {
-                                        url = it
-                                        if (!isFocusOnTextField) textFieldValue =
-                                            TextFieldValue(it, TextRange(it.length))
-                                    }
 
-                                    val jsScript = """
-                                     (function() {
-                                         var bodyColor = window.getComputedStyle(document.body).backgroundColor;
-                                         var htmlColor = window.getComputedStyle(document.documentElement).backgroundColor;
-                                         // A color of 'rgba(0, 0, 0, 0)' means transparent.
-                                         // If the body is transparent, use the html tag's color as the fallback.
-                                         var finalColor = (bodyColor === 'rgba(0, 0, 0, 0)') ? htmlColor : bodyColor;
-                                         // Call the Kotlin method through the interface we named "Android"
-                                         Android.logBackgroundColor(finalColor);
-                                     })();
-                                 """.trimIndent()
-
-                                    view?.evaluateJavascript(jsScript, null)
-
+                                settings.apply {
+                                    javaScriptEnabled = true
+                                    domStorageEnabled = true
+                                    cacheMode = WebSettings.LOAD_DEFAULT
                                 }
+                                loadUrl(url)
+                                webView = this
                             }
-
-
-                            settings.apply {
-                                javaScriptEnabled = true
-                                domStorageEnabled = true
-                                cacheMode = WebSettings.LOAD_DEFAULT
-                            }
-                            loadUrl(url)
-                            webView = this
-                        }
-                    },
-                    update = {
-                        it.loadUrl(url)
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                if (isUrlBarVisible) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            // *** THE DEFINITIVE FIX: Manually track the drag state ***
-                            .pointerInput(Unit) {
-                                awaitEachGesture {
-                                    // 1. At the start of each new gesture, reset our flag.
-                                    var isDrag = false
-
-                                    // 2. Wait for the initial press.
-                                    val down = awaitFirstDown(requireUnconsumed = false)
-
-                                    // 3. Use awaitTouchSlopOrCancellation. We are most interested
-                                    //    in its onSlopCrossed lambda.
-                                    val dragOrTap = awaitTouchSlopOrCancellation(down.id) { _, _ ->
-                                        // THIS IS THE KEY: This lambda is called the *moment* a
-                                        // drag is detected. We set our flag here. This happens
-                                        // before the WebView can fully "steal" the gesture,
-                                        // making our flag a reliable source of truth.
-                                        isDrag = true
-                                        // We don't need to do anything with the change object itself.
-                                    }
-
-                                    // 4. AFTER the gesture is over, we check OUR flag, not the
-                                    //    unreliable return value of dragOrTap.
-                                    if (!isDrag) {
-                                        // If our flag is still false, it means onSlopCrossed was
-                                        // never called. Therefore, it must be a tap.
-                                        isUrlBarVisible = false
-                                    }
-                                }
-                            }
+                        },
+                        update = {
+                            it.loadUrl(url)
+                        },
+                        modifier = Modifier.fillMaxSize()
                     )
 
+                    if (isUrlBarVisible) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // *** THE DEFINITIVE FIX: Manually track the drag state ***
+                                .pointerInput(Unit) {
+                                    awaitEachGesture {
+                                        // 1. At the start of each new gesture, reset our flag.
+                                        var isDrag = false
+
+                                        // 2. Wait for the initial press.
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+
+                                        // 3. Use awaitTouchSlopOrCancellation. We are most interested
+                                        //    in its onSlopCrossed lambda.
+                                        val dragOrTap =
+                                            awaitTouchSlopOrCancellation(down.id) { _, _ ->
+                                                // THIS IS THE KEY: This lambda is called the *moment* a
+                                                // drag is detected. We set our flag here. This happens
+                                                // before the WebView can fully "steal" the gesture,
+                                                // making our flag a reliable source of truth.
+                                                isDrag = true
+                                                // We don't need to do anything with the change object itself.
+                                            }
+
+                                        // 4. AFTER the gesture is over, we check OUR flag, not the
+                                        //    unreliable return value of dragOrTap.
+                                        if (!isDrag) {
+                                            // If our flag is still false, it means onSlopCrossed was
+                                            // never called. Therefore, it must be a tap.
+                                            isUrlBarVisible = false
+                                        }
+                                    }
+                                }
+                        )
+
+                    }
                 }
+
+                BottomPanel(
+                    isUrlBarVisible = isUrlBarVisible,
+                    isOptionsPanelVisible = isOptionsPanelVisible,
+                    browserSettings = browserSettings,
+                    textFieldValue = textFieldValue,
+                    url = url,
+                    focusManager = focusManager,
+                    keyboardController = keyboardController,
+                    textFieldHeightDp = textFieldHeightDp,
+                    toggleOptionsPanel = { isOptionsPanelVisible = it },
+                    changeTextFieldValue = { textFieldValue = it },
+                    changeUrl = { url = it },
+                    toggleUrlBar = { isUrlBarVisible = it },
+                    setTextFieldHeightPx = { textFieldHeightPx = it },
+                    setIsFocusOnTextField = { isFocusOnTextField = it }
+
+                )
+
+
             }
-
-            BottomPanel(
-                isUrlBarVisible = isUrlBarVisible,
-                isOptionsPanelVisible = isOptionsPanelVisible,
-                browserSettings = browserSettings,
-                textFieldValue = textFieldValue,
-                url = url,
-                focusManager = focusManager,
-                keyboardController = keyboardController,
-                textFieldHeightDp = textFieldHeightDp,
-                toggleOptionsPanel = { isOptionsPanelVisible = it },
-                changeTextFieldValue = { textFieldValue = it },
-                changeUrl = { url = it },
-                toggleUrlBar = { isUrlBarVisible = it },
-                setTextFieldHeightPx = { textFieldHeightPx = it },
-                setIsFocusOnTextField = { isFocusOnTextField = it }
-
-            )
-
-
         }
     }
 }
@@ -396,8 +482,8 @@ fun BottomPanel(
 ) {
     AnimatedVisibility(
         visible = isUrlBarVisible,
-        enter = expandVertically(tween(300)),
-        exit = shrinkVertically(tween(300))
+        enter = expandVertically(tween(browserSettings.animationSpeed)),
+        exit = shrinkVertically(tween(browserSettings.animationSpeed))
     ) {
         Column {
             Row(
@@ -551,8 +637,8 @@ fun OptionsPanel(
 
     AnimatedVisibility(
         visible = isOptionsPanelVisible,
-        enter = expandVertically(tween(300)),
-        exit = shrinkVertically(tween(300)),
+        enter = expandVertically(tween(browserSettings.animationSpeed)),
+        exit = shrinkVertically(tween(browserSettings.animationSpeed)),
     ) {
         Box(
             modifier = Modifier
