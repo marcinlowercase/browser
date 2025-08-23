@@ -66,6 +66,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.content.edit
+import kotlin.math.log
 
 
 class MainActivity : ComponentActivity() {
@@ -96,9 +97,9 @@ class MainActivity : ComponentActivity() {
 data class BrowserSettings(
     val paddingDp: Float,
     val cornerRadiusDp: Float,
-    val isLockFullscreenMode: Boolean,
+    val isInteractable: Boolean,
     val defaultUrl: String,
-    val animationSpeed: Int
+    val animationSpeed: Int,
 )
 
 
@@ -108,7 +109,7 @@ val LocalBrowserSettings = compositionLocalOf {
     BrowserSettings(
         paddingDp = 8f,
         cornerRadiusDp = 24f,
-        isLockFullscreenMode = false,
+        isInteractable = true,
         defaultUrl = "https://www.google.com",
         animationSpeed = 300,
     )
@@ -145,15 +146,15 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val sharedPrefs =
         remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
-
-    val browserSettings = remember {
-        BrowserSettings(
-            paddingDp = sharedPrefs.getFloat("padding_dp", 8f),
-            cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
-            isLockFullscreenMode = sharedPrefs.getBoolean("is_lock_fullscreen_mode", false),
-            defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com")
-                ?: "https://www.google.com",
-            animationSpeed = sharedPrefs.getInt("animation_speed", 300)
+    var browserSettings by remember {
+        mutableStateOf(
+            BrowserSettings(
+                paddingDp = sharedPrefs.getFloat("padding_dp", 8f),
+                cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
+                isInteractable = sharedPrefs.getBoolean("is_interactable", true),
+                defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com") ?: "https://www.google.com",
+                animationSpeed = sharedPrefs.getInt("animation_speed", 300)
+            )
         )
     }
 
@@ -186,6 +187,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
+
 
     var isOptionsPanelVisible by rememberSaveable { mutableStateOf(false) }
 
@@ -259,6 +261,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     )
 
 
+    // functions
+    // This function will be our single, safe way to update settings.
+    val updateBrowserSettings = { newSettings: BrowserSettings ->
+        browserSettings = newSettings;
+        Log.e("updateBrowserSettings", "updateBrowserSettings")
+    }
 
 
     LaunchedEffect(isUrlBarVisible) {
@@ -280,7 +288,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             putString("last_url", url)
             putFloat("padding_dp", browserSettings.paddingDp)
             putFloat("corner_radius_dp", browserSettings.cornerRadiusDp)
-            putBoolean("is_lock_fullscreen_mode", browserSettings.isLockFullscreenMode)
+            putBoolean("is_interactable", browserSettings.isInteractable)
             putString("default_url", browserSettings.defaultUrl)
             putInt("animation_speed", browserSettings.animationSpeed)
         }
@@ -301,6 +309,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     BackHandler(enabled = !isUrlBarVisible || canGoBack) {
         if (!isUrlBarVisible) {
             isUrlBarVisible = true
+            updateBrowserSettings(browserSettings.copy(isInteractable = false))
         } else {
             webView?.goBack()
         }
@@ -460,7 +469,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         },
                         modifier = Modifier.fillMaxSize()
                     )
-                    if (isUrlBarVisible) {
+                    if (!browserSettings.isInteractable) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -491,6 +500,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                             // If our flag is still false, it means onSlopCrossed was
                                             // never called. Therefore, it must be a tap.
                                             isUrlBarVisible = false
+                                            updateBrowserSettings(browserSettings.copy(isInteractable = true))
                                         }
                                     }
                                 }
@@ -503,6 +513,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     isUrlBarVisible = isUrlBarVisible,
                     isOptionsPanelVisible = isOptionsPanelVisible,
                     browserSettings = browserSettings,
+                    updateBrowserSettings = updateBrowserSettings,
                     textFieldValue = textFieldValue,
                     url = url,
                     focusManager = focusManager,
@@ -513,7 +524,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     changeUrl = { url = it },
                     toggleUrlBar = { isUrlBarVisible = it },
                     setTextFieldHeightPx = { textFieldHeightPx = it },
-                    setIsFocusOnTextField = { isFocusOnTextField = it }
+                    setIsFocusOnTextField = { isFocusOnTextField = it },
 
                 )
 
@@ -528,12 +539,12 @@ fun BottomPanel(
     isUrlBarVisible: Boolean,
     isOptionsPanelVisible: Boolean,
     browserSettings: BrowserSettings,
+    updateBrowserSettings: (BrowserSettings) -> Int,
     textFieldValue: TextFieldValue,
     url: String,
     focusManager: FocusManager,
     keyboardController: SoftwareKeyboardController?,
     textFieldHeightDp: Dp,
-
     toggleOptionsPanel: (Boolean) -> Unit = {},
     changeTextFieldValue: (TextFieldValue) -> Unit = {},
     changeUrl: (String) -> Unit = {},
@@ -616,7 +627,10 @@ fun BottomPanel(
                             }
                             focusManager.clearFocus()
                             keyboardController?.hide()
-                            if (!browserSettings.isLockFullscreenMode) toggleUrlBar(false)
+                            if (!browserSettings.isInteractable) {
+                                toggleUrlBar(false)
+                                updateBrowserSettings(browserSettings.copy(isInteractable = true))
+                            }
                         }
                     ),
                     modifier = Modifier
@@ -661,7 +675,7 @@ fun BottomPanel(
                     )
                 )
                 IconButton(
-                    onClick = { toggleUrlBar(!isUrlBarVisible) },
+                    onClick = { updateBrowserSettings(browserSettings.copy(isInteractable = !browserSettings.isInteractable)) },
                     modifier = Modifier
                         .padding(start = browserSettings.paddingDp.dp)
                         .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier),
@@ -671,8 +685,8 @@ fun BottomPanel(
 
                 ) {
                     Icon(
-                        painter = painterResource(id = R.drawable.ic_fullscreen),
-                        contentDescription = "Lock Fullscreen",
+                        painter = if (browserSettings.isInteractable) painterResource(id = R.drawable.ic_transparent) else painterResource(id = R.drawable.ic_immersive),
+                        contentDescription = "Toggle Interactable",
                         tint = MaterialTheme.colorScheme.onPrimary
                     )
                 }
@@ -682,7 +696,8 @@ fun BottomPanel(
             // SETTING OPTIONS
             OptionsPanel(
                 isOptionsPanelVisible = isOptionsPanelVisible,
-                toggleOptionsPanel = toggleOptionsPanel
+                toggleOptionsPanel = toggleOptionsPanel,
+                browserSettings = browserSettings
             )
         }
     }
@@ -691,10 +706,9 @@ fun BottomPanel(
 @Composable
 fun OptionsPanel(
     isOptionsPanelVisible: Boolean = false,
-    toggleOptionsPanel: (Boolean) -> Unit = {}
+    toggleOptionsPanel: (Boolean) -> Unit = {},
+    browserSettings: BrowserSettings = LocalBrowserSettings.current,
 ) {
-
-    var browserSettings = LocalBrowserSettings.current
 
     AnimatedVisibility(
         visible = isOptionsPanelVisible,
