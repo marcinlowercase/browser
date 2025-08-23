@@ -201,9 +201,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         targetValue = if (isUrlBarVisible || hasDisplayCutout) browserSettings.cornerRadiusDp.dp else 0.dp,
         label = "Corner Radius Animation",
     )
+    val isKeyboardVisible = WindowInsets.ime.asPaddingValues().calculateBottomPadding() > 0.dp
 
 
-    // --- NEW: Manually Animate the Cutout Insets ---
+
 
     // 1. Get the raw cutout padding values.
     val cutoutPaddingValues = WindowInsets.displayCutout.asPaddingValues()
@@ -251,10 +252,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         label = "SystemBar Top Animation"
     )
     val animatedSystemBarBottom by animateDpAsState(
-        targetValue = if (isUrlBarVisible) systemBarBottom else 0.dp,
-        animationSpec = if (!isUrlBarVisible) tween(browserSettings.animationSpeed) else snap(0), // Always animate smoothly
+        targetValue = if (isUrlBarVisible && !isKeyboardVisible) systemBarBottom else if (isKeyboardVisible) browserSettings.paddingDp.dp else 0.dp,
+        animationSpec = if (!isUrlBarVisible || !isKeyboardVisible) tween(browserSettings.animationSpeed) else snap(0), // Always animate smoothly
         label = "SystemBar Bottom Animation"
     )
+
+
 
 
     LaunchedEffect(isUrlBarVisible) {
@@ -388,6 +391,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                     javaScriptEnabled = true
                                     domStorageEnabled = true
                                     cacheMode = WebSettings.LOAD_DEFAULT
+
+
                                 }
                                 loadUrl(url)
                                 webView = this
