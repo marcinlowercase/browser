@@ -247,12 +247,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // Create animated states for the system bar insets.
     val animatedSystemBarTop by animateDpAsState(
         targetValue = if (isUrlBarVisible) systemBarTop else 0.dp,
-        animationSpec = tween(browserSettings.animationSpeed), // Always animate smoothly
+        animationSpec = if (hasDisplayCutout) tween(browserSettings.animationSpeed) else snap(0), // Always animate smoothly for cutout and snap for full screen
         label = "SystemBar Top Animation"
     )
     val animatedSystemBarBottom by animateDpAsState(
         targetValue = if (isUrlBarVisible) systemBarBottom else 0.dp,
-        animationSpec = tween(browserSettings.animationSpeed), // Always animate smoothly
+        animationSpec = if (!isUrlBarVisible) tween(browserSettings.animationSpeed) else snap(0), // Always animate smoothly
         label = "SystemBar Bottom Animation"
     )
 
