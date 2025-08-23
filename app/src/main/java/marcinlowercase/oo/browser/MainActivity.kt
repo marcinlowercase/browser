@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import android.util.Patterns
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -289,6 +290,13 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         focusManager.clearFocus()
     }
 
+    // This effect will re-launch whenever the animatedPadding value changes (i.e., every frame).
+    LaunchedEffect(animatedPadding) {
+        // We now have a hook that runs on every animation frame.
+        // We can command our WebView to update its layout.
+        webView?.requestLayout()
+    }
+
 
     BackHandler(enabled = !isUrlBarVisible || canGoBack) {
         if (!isUrlBarVisible) {
@@ -333,77 +341,125 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         .testTag("WebViewContainer")
                 ) {
                     AndroidView(
-                        factory = { ctx ->
-                            WebView(ctx).apply {
+                        factory = { context ->
+                            // 1. Create a FrameLayout to act as a container.
+                            val frameLayout = android.widget.FrameLayout(context)
 
-                                addJavascriptInterface(
-                                    WebAppInterface(),
-                                    "Android"
-                                )
+                            // 2. Create the WebView instance.
+                            val webView = WebView(context).apply {
+                                // Force WebView to be transparent so Compose can control the background
+                                setBackgroundColor(android.graphics.Color.TRANSPARENT)
 
+                                // The WebChromeClient handles UI-related browser events.
+                                webChromeClient = object : WebChromeClient() {
+                                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                        super.onProgressChanged(view, newProgress)
+                                        // Inject our JavaScript helper as the page is loading.
+                                        val js = "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
+                                        view?.evaluateJavascript(js, null)
+                                    }
+                                    override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                                        consoleMessage?.let {
+                                            Log.d("WebViewConsole", "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}")
+                                        }
+                                        return true
+                                    }
+                                }
 
+                                // The WebViewClient handles content loading events.
                                 webViewClient = object : WebViewClient() {
-                                    override fun onPageStarted(
-                                        view: WebView?,
-                                        url: String?,
-                                        favicon: Bitmap?
-                                    ) {
+                                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                         super.onPageStarted(view, url, favicon)
                                         isLoading = true
                                         if (!isFocusOnTextField) url?.let {
-                                            textFieldValue =
-                                                TextFieldValue(it, TextRange(it.length))
+                                            textFieldValue = TextFieldValue(it, TextRange(it.length))
                                         }
                                     }
-
-                                    override fun onPageFinished(
-                                        view: WebView?,
-                                        currentUrl: String?
-                                    ) {
+                                    override fun onPageFinished(view: WebView?, currentUrl: String?) {
                                         super.onPageFinished(view, currentUrl)
                                         isLoading = false
                                         canGoBack = view?.canGoBack() ?: false
                                         currentUrl?.let {
                                             url = it
-                                            if (!isFocusOnTextField) textFieldValue =
-                                                TextFieldValue(it, TextRange(it.length))
+                                            if (!isFocusOnTextField) textFieldValue = TextFieldValue(it, TextRange(it.length))
                                         }
+                                        // Force a scroll to the top to fix coordinate system bugs
+                                        view?.scrollTo(0, 0)
 
-                                        val jsScript = """
-                                      (function() {
-                                          var bodyColor = window.getComputedStyle(document.body).backgroundColor;
-                                          var htmlColor = window.getComputedStyle(document.documentElement).backgroundColor;
-                                          // A color of 'rgba(0, 0, 0, 0)' means transparent.
-                                          // If the body is transparent, use the html tag's color as the fallback.
-                                          var finalColor = (bodyColor === 'rgba(0, 0, 0, 0)') ? htmlColor : bodyColor;
-                                          // Call the Kotlin method through the interface we named "Android"
-                                          Android.logBackgroundColor(finalColor);
-                                      })();
-                                  """.trimIndent()
-
+                                        // Your JS script for getting the background color
+                                        val jsScript = """(function() { ... })();""".trimIndent() // Keep your full script here
                                         view?.evaluateJavascript(jsScript, null)
-
+                                    }
+                                    override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
+                                        request?.requestHeaders?.put("Origin", url)
+                                        return super.shouldInterceptRequest(view, request)
                                     }
                                 }
 
-
+                                // Apply all your production-grade settings
                                 settings.apply {
                                     javaScriptEnabled = true
                                     domStorageEnabled = true
-                                    cacheMode = WebSettings.LOAD_DEFAULT
-
-
+                                    useWideViewPort = true
+                                    loadWithOverviewMode = true
+                                    layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
+                                    cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+//                                    databaseEnabled = true
+                                    allowFileAccess = true
+                                    allowContentAccess = true
+//                                    allowUniversalAccessFromFileURLs = true // Re-enable for max compatibility
+                                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                    javaScriptCanOpenWindowsAutomatically = true
+                                    setSupportZoom(true)
+                                    builtInZoomControls = true
+                                    displayZoomControls = false
+                                    textZoom = 100
+                                    defaultFontSize = 16
+                                    userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
                                 }
+
+                                // Enable remote debugging for debug builds
+                                if (0 != (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)) {
+                                    WebView.setWebContentsDebuggingEnabled(true)
+                                }
+
+                                // Ensure hardware acceleration
+                                setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+
+                                // Add your JS interface
+                                addJavascriptInterface(WebAppInterface(), "Android")
+
+                                // Load the initial URL
                                 loadUrl(url)
+
+                                // Assign to the state variable for external control (like BackHandler)
                                 webView = this
                             }
+
+                            // 3. Define LayoutParams to force the WebView to match the FrameLayout's size.
+                            val layoutParams = android.widget.FrameLayout.LayoutParams(
+                                android.widget.FrameLayout.LayoutParams.MATCH_PARENT, // width
+                                android.widget.FrameLayout.LayoutParams.MATCH_PARENT  // height
+                            )
+
+                            // 4. Set the gravity to center to fix the positioning issue.
+                            layoutParams.gravity = android.view.Gravity.CENTER
+
+                            // 5. Add the fully configured WebView to the FrameLayout.
+                            frameLayout.addView(webView, layoutParams)
+
+                            // 6. Return the FrameLayout as the root view.
+                            frameLayout
                         },
-                        update = {
-                            it.loadUrl(url)
+                        update = { frameLayout ->
+                            // The update block now needs to find the WebView inside the FrameLayout.
+                            val webView = frameLayout.getChildAt(0) as WebView
+                            if (webView.url != url) {
+                                webView.loadUrl(url)
+                            }
                         },
                         modifier = Modifier.fillMaxSize()
                     )
-
                     if (isUrlBarVisible) {
                         Box(
                             modifier = Modifier
