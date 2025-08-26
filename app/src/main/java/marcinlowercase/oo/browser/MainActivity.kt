@@ -2,14 +2,18 @@ package marcinlowercase.oo.browser
 
 import android.app.Activity
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import android.util.Patterns
+import android.view.Gravity
+import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -66,6 +70,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.content.edit
+import kotlinx.coroutines.delay
 import kotlin.math.log
 
 
@@ -170,7 +175,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
-    var webView by remember { mutableStateOf<WebView?>(null) }
+//    var webView by remember { mutableStateOf<WebView?>(null) }
     var canGoBack by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var isFocusOnTextField by remember { mutableStateOf(false) }
@@ -269,6 +274,13 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
+
+    // CUSTOM VIEW
+    var customView by remember { mutableStateOf<android.view.View?>(null) }
+    var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
+
+
+
     LaunchedEffect(isUrlBarVisible) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
@@ -298,6 +310,150 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         focusManager.clearFocus()
     }
 
+
+
+    // We only need the CustomViewCallback as state now.
+    var originalOrientation by remember { mutableIntStateOf(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) }
+
+    val activity = context as? Activity // Get the activity reference
+
+    val webView = remember {
+        WebView(context).apply {
+            // Force WebView to be transparent so Compose can control the background
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+
+            // The WebChromeClient handles UI-related browser events.
+            webChromeClient = object : WebChromeClient() {
+
+                private var fullscreenView: android.view.View? = null
+
+
+                override fun onShowCustomView(view: android.view.View?, callback: CustomViewCallback?) {
+                    if (fullscreenView != null) {
+                        callback?.onCustomViewHidden()
+                        return
+                    }
+
+
+                    originalOrientation = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    customViewCallback = callback
+                    fullscreenView = view
+
+                    // B. Get the root view of the Activity and add our fullscreen view to it.
+                    val decorView = activity?.window?.decorView as? ViewGroup
+                    decorView?.addView(
+                        fullscreenView,
+                        ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
+
+                    // C. Now, control the window
+                    val insetsController = activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView) }
+                    insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+
+                    // Tell the WebView to resume, as it might have paused.
+                    this@apply.onResume()
+                }
+
+                override fun onHideCustomView() {
+                    val decorView = activity?.window?.decorView as? ViewGroup
+                    decorView?.removeView(fullscreenView)
+                    fullscreenView = null
+
+                    val insetsController = activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView) }
+                    insetsController?.show(WindowInsetsCompat.Type.systemBars())
+                    activity?.requestedOrientation = originalOrientation
+
+                    customViewCallback?.onCustomViewHidden()
+                    customViewCallback = null
+
+                    this@apply.onResume()
+                }
+
+                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                    super.onProgressChanged(view, newProgress)
+                    // Inject our JavaScript helper as the page is loading.
+                    val js = "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
+                    view?.evaluateJavascript(js, null)
+                }
+                override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                    consoleMessage?.let {
+                        Log.d("WebViewConsole", "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}")
+                    }
+                    return true
+                }
+            }
+
+            // The WebViewClient handles content loading events.
+            webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    super.onPageStarted(view, url, favicon)
+                    isLoading = true
+                    if (!isFocusOnTextField) url?.let {
+                        textFieldValue = TextFieldValue(it, TextRange(it.length))
+                    }
+                }
+                override fun onPageFinished(view: WebView?, currentUrl: String?) {
+                    super.onPageFinished(view, currentUrl)
+                    isLoading = false
+                    canGoBack = view?.canGoBack() ?: false
+                    currentUrl?.let {
+                        url = it
+                        if (!isFocusOnTextField) textFieldValue = TextFieldValue(it, TextRange(it.length))
+                    }
+                    // Force a scroll to the top to fix coordinate system bugs
+                    view?.scrollTo(0, 0)
+
+                    // Your JS script for getting the background color
+                    val jsScript = """(function() { ... })();""".trimIndent() // Keep your full script here
+                    view?.evaluateJavascript(jsScript, null)
+                }
+                override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
+                    request?.requestHeaders?.put("Origin", url)
+                    return super.shouldInterceptRequest(view, request)
+                }
+            }
+
+            // Apply all your production-grade settings
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                useWideViewPort = true
+                loadWithOverviewMode = true
+                layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
+                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+//                                    databaseEnabled = true
+                allowFileAccess = true
+                allowContentAccess = true
+//                                    allowUniversalAccessFromFileURLs = true // Re-enable for max compatibility
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                javaScriptCanOpenWindowsAutomatically = true
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false
+                textZoom = 100
+                defaultFontSize = 16
+                userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+            }
+
+            // Enable remote debugging for debug builds
+            if (0 != (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)) {
+                WebView.setWebContentsDebuggingEnabled(true)
+            }
+
+            // Ensure hardware acceleration
+            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+
+            // Add your JS interface
+            addJavascriptInterface(WebAppInterface(), "Android")
+
+        }
+    }
+
+
     // This effect will re-launch whenever the animatedPadding value changes (i.e., every frame).
     LaunchedEffect(animatedPadding) {
         // We now have a hook that runs on every animation frame.
@@ -305,233 +461,197 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         webView?.requestLayout()
     }
 
-
-    BackHandler(enabled = !isUrlBarVisible || canGoBack) {
-        if (!isUrlBarVisible) {
-            isUrlBarVisible = true
-            updateBrowserSettings(browserSettings.copy(isInteractable = false))
-        } else {
-            webView?.goBack()
+    LaunchedEffect(url) {
+        if (webView.url != url) {
+            webView.loadUrl(url)
         }
     }
 
-    CompositionLocalProvider(LocalBrowserSettings provides browserSettings) {
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(top = animatedSystemBarTop, bottom = animatedSystemBarBottom)
-        ) {
-            Column(
-                modifier = modifier
-                    .fillMaxSize()
-//                    .padding(top = animatedSystemBarTop, bottom = animatedSystemBarBottom)
-//                    .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars))
-                    .windowInsetsPadding(WindowInsets.ime)
+    BackHandler(enabled = !isUrlBarVisible || canGoBack) {
+        when {
+            // Priority 1: Exit fullscreen video if it's active.
+            customView != null -> {
+                customViewCallback?.onCustomViewHidden()
 
-            ) {
-
-                if (isLoading) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(animatedPadding)
-                        .padding(
-                            top = animatedCutoutTop,
-                            start = animatedCutoutStart,
-                            end = animatedCutoutEnd,
-                            bottom = animatedCutoutBottom
-                        )
-                        //                    .windowInsetsPadding(if (isUrlBarVisible) WindowInsets(0) else WindowInsets.displayCutout)
-                        .clip(RoundedCornerShape(animatedCornerRadius))
-                        .testTag("WebViewContainer")
-                ) {
-                    AndroidView(
-                        factory = { context ->
-                            // 1. Create a FrameLayout to act as a container.
-                            val frameLayout = android.widget.FrameLayout(context)
-
-                            // 2. Create the WebView instance.
-                            val webView = WebView(context).apply {
-                                // Force WebView to be transparent so Compose can control the background
-                                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-
-                                // The WebChromeClient handles UI-related browser events.
-                                webChromeClient = object : WebChromeClient() {
-                                    override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                        super.onProgressChanged(view, newProgress)
-                                        // Inject our JavaScript helper as the page is loading.
-                                        val js = "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
-                                        view?.evaluateJavascript(js, null)
-                                    }
-                                    override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
-                                        consoleMessage?.let {
-                                            Log.d("WebViewConsole", "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}")
-                                        }
-                                        return true
-                                    }
-                                }
-
-                                // The WebViewClient handles content loading events.
-                                webViewClient = object : WebViewClient() {
-                                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                                        super.onPageStarted(view, url, favicon)
-                                        isLoading = true
-                                        if (!isFocusOnTextField) url?.let {
-                                            textFieldValue = TextFieldValue(it, TextRange(it.length))
-                                        }
-                                    }
-                                    override fun onPageFinished(view: WebView?, currentUrl: String?) {
-                                        super.onPageFinished(view, currentUrl)
-                                        isLoading = false
-                                        canGoBack = view?.canGoBack() ?: false
-                                        currentUrl?.let {
-                                            url = it
-                                            if (!isFocusOnTextField) textFieldValue = TextFieldValue(it, TextRange(it.length))
-                                        }
-                                        // Force a scroll to the top to fix coordinate system bugs
-                                        view?.scrollTo(0, 0)
-
-                                        // Your JS script for getting the background color
-                                        val jsScript = """(function() { ... })();""".trimIndent() // Keep your full script here
-                                        view?.evaluateJavascript(jsScript, null)
-                                    }
-                                    override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
-                                        request?.requestHeaders?.put("Origin", url)
-                                        return super.shouldInterceptRequest(view, request)
-                                    }
-                                }
-
-                                // Apply all your production-grade settings
-                                settings.apply {
-                                    javaScriptEnabled = true
-                                    domStorageEnabled = true
-                                    useWideViewPort = true
-                                    loadWithOverviewMode = true
-                                    layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
-                                    cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-//                                    databaseEnabled = true
-                                    allowFileAccess = true
-                                    allowContentAccess = true
-//                                    allowUniversalAccessFromFileURLs = true // Re-enable for max compatibility
-                                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                    javaScriptCanOpenWindowsAutomatically = true
-                                    setSupportZoom(true)
-                                    builtInZoomControls = true
-                                    displayZoomControls = false
-                                    textZoom = 100
-                                    defaultFontSize = 16
-                                    userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
-                                }
-
-                                // Enable remote debugging for debug builds
-                                if (0 != (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)) {
-                                    WebView.setWebContentsDebuggingEnabled(true)
-                                }
-
-                                // Ensure hardware acceleration
-                                setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
-
-                                // Add your JS interface
-                                addJavascriptInterface(WebAppInterface(), "Android")
-
-                                // Load the initial URL
-                                loadUrl(url)
-
-                                // Assign to the state variable for external control (like BackHandler)
-                                webView = this
-                            }
-
-                            // 3. Define LayoutParams to force the WebView to match the FrameLayout's size.
-                            val layoutParams = android.widget.FrameLayout.LayoutParams(
-                                android.widget.FrameLayout.LayoutParams.MATCH_PARENT, // width
-                                android.widget.FrameLayout.LayoutParams.MATCH_PARENT  // height
-                            )
-
-                            // 4. Set the gravity to center to fix the positioning issue.
-                            layoutParams.gravity = android.view.Gravity.CENTER
-
-                            // 5. Add the fully configured WebView to the FrameLayout.
-                            frameLayout.addView(webView, layoutParams)
-
-                            // 6. Return the FrameLayout as the root view.
-                            frameLayout
-                        },
-                        update = { frameLayout ->
-                            // The update block now needs to find the WebView inside the FrameLayout.
-                            val webView = frameLayout.getChildAt(0) as WebView
-                            if (webView.url != url) {
-                                webView.loadUrl(url)
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    if (!browserSettings.isInteractable) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                // *** THE DEFINITIVE FIX: Manually track the drag state ***
-                                .pointerInput(Unit) {
-                                    awaitEachGesture {
-                                        // 1. At the start of each new gesture, reset our flag.
-                                        var isDrag = false
-
-                                        // 2. Wait for the initial press.
-                                        val down = awaitFirstDown(requireUnconsumed = false)
-
-                                        // 3. Use awaitTouchSlopOrCancellation. We are most interested
-                                        //    in its onSlopCrossed lambda.
-                                        val dragOrTap =
-                                            awaitTouchSlopOrCancellation(down.id) { _, _ ->
-                                                // THIS IS THE KEY: This lambda is called the *moment* a
-                                                // drag is detected. We set our flag here. This happens
-                                                // before the WebView can fully "steal" the gesture,
-                                                // making our flag a reliable source of truth.
-                                                isDrag = true
-                                                // We don't need to do anything with the change object itself.
-                                            }
-
-                                        // 4. AFTER the gesture is over, we check OUR flag, not the
-                                        //    unreliable return value of dragOrTap.
-                                        if (!isDrag) {
-                                            // If our flag is still false, it means onSlopCrossed was
-                                            // never called. Therefore, it must be a tap.
-                                            isUrlBarVisible = false
-                                            updateBrowserSettings(browserSettings.copy(isInteractable = true))
-                                        }
-                                    }
-                                }
-                        )
-
-                    }
-                }
-
-                BottomPanel(
-                    isUrlBarVisible = isUrlBarVisible,
-                    isOptionsPanelVisible = isOptionsPanelVisible,
-                    browserSettings = browserSettings,
-                    updateBrowserSettings = updateBrowserSettings,
-                    textFieldValue = textFieldValue,
-                    url = url,
-                    focusManager = focusManager,
-                    keyboardController = keyboardController,
-                    textFieldHeightDp = textFieldHeightDp,
-                    toggleOptionsPanel = { isOptionsPanelVisible = it },
-                    changeTextFieldValue = { textFieldValue = it },
-                    changeUrl = { url = it },
-                    toggleUrlBar = { isUrlBarVisible = it },
-                    setTextFieldHeightPx = { textFieldHeightPx = it },
-                    setIsFocusOnTextField = { isFocusOnTextField = it },
-
-                )
-
-
+            }
+            // Priority 2: Exit main browser's immersive mode.
+            !isUrlBarVisible -> {
+                isUrlBarVisible = true
+                updateBrowserSettings(browserSettings.copy(isInteractable = false))
+            }
+            // Priority 3: Navigate back in the WebView.
+            else -> {
+                webView?.goBack()
             }
         }
     }
+
+//    DisposableEffect(customView) {
+//        val activity = context as? Activity ?: return@DisposableEffect onDispose {}
+//        val insetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+//        val originalOrientation = activity.requestedOrientation
+//
+//        if (customView != null) {
+//            // --- We are ENTERING fullscreen video ---
+//
+//            // 1. Hide the system bars for an immersive video experience.
+//            insetsController.hide(WindowInsetsCompat.Type.systemBars())
+//
+//            // 2. Force the orientation to landscape.
+//            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+//
+//
+//        }
+//
+//        // The onDispose block runs automatically when customView becomes null (i.e., we exit fullscreen).
+//        onDispose {
+//            // --- We are EXITING fullscreen video ---
+//
+//            // 1. Restore the original screen orientation.
+//            activity.requestedOrientation = originalOrientation
+//
+//            // 2. Show the system bars again.
+//            insetsController.show(WindowInsetsCompat.Type.systemBars())
+//
+//            webView.onResume()
+//
+//        }
+//    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalBrowserSettings provides browserSettings) {
+            Box(
+                modifier = modifier
+                    .fillMaxSize()
+                    .padding(top = animatedSystemBarTop, bottom = animatedSystemBarBottom)
+            ) {
+                Column(
+                    modifier = modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.ime)
+
+                ) {
+                    if (isLoading) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(animatedPadding)
+                            .padding(
+                                top = animatedCutoutTop,
+                                start = animatedCutoutStart,
+                                end = animatedCutoutEnd,
+                                bottom = animatedCutoutBottom
+                            )
+                            .clip(RoundedCornerShape(animatedCornerRadius))
+                            .testTag("WebViewContainer")
+                    ) {
+                        AndroidView(
+                            factory = {
+                                FrameLayout(it).apply {
+                                    // If the WebView still has a parent from a previous composition, remove it.
+                                    (webView.parent as? ViewGroup)?.removeView(webView)
+
+                                    // Add our singleton WebView to it.
+                                    addView(
+                                        webView,
+                                        FrameLayout.LayoutParams(
+                                            FrameLayout.LayoutParams.MATCH_PARENT,
+                                            FrameLayout.LayoutParams.MATCH_PARENT
+                                        ).apply {
+                                            gravity = Gravity.CENTER
+                                        }
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                        if (!browserSettings.isInteractable) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(Unit) {
+                                        awaitEachGesture {
+                                            // 1. At the start of each new gesture, reset our flag.
+                                            var isDrag = false
+
+                                            // 2. Wait for the initial press.
+                                            val down = awaitFirstDown(requireUnconsumed = false)
+
+                                            // 3. Use awaitTouchSlopOrCancellation. We are most interested
+                                            //    in its onSlopCrossed lambda.
+                                            val dragOrTap =
+                                                awaitTouchSlopOrCancellation(down.id) { _, _ ->
+                                                    // THIS IS THE KEY: This lambda is called the *moment* a
+                                                    // drag is detected. We set our flag here. This happens
+                                                    // before the WebView can fully "steal" the gesture,
+                                                    // making our flag a reliable source of truth.
+                                                    isDrag = true
+                                                    // We don't need to do anything with the change object itself.
+                                                }
+
+                                            // 4. AFTER the gesture is over, we check OUR flag, not the
+                                            //    unreliable return value of dragOrTap.
+                                            if (!isDrag) {
+                                                // If our flag is still false, it means onSlopCrossed was
+                                                // never called. Therefore, it must be a tap.
+                                                isUrlBarVisible = false
+                                                updateBrowserSettings(
+                                                    browserSettings.copy(
+                                                        isInteractable = true
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+                            )
+
+                        }
+                    }
+
+                    BottomPanel(
+                        isUrlBarVisible = isUrlBarVisible,
+                        isOptionsPanelVisible = isOptionsPanelVisible,
+                        browserSettings = browserSettings,
+                        updateBrowserSettings = updateBrowserSettings,
+                        textFieldValue = textFieldValue,
+                        url = url,
+                        focusManager = focusManager,
+                        keyboardController = keyboardController,
+                        textFieldHeightDp = textFieldHeightDp,
+                        toggleOptionsPanel = { isOptionsPanelVisible = it },
+                        changeTextFieldValue = { textFieldValue = it },
+                        changeUrl = { url = it },
+                        toggleUrlBar = { isUrlBarVisible = it },
+                        setTextFieldHeightPx = { textFieldHeightPx = it },
+                        setIsFocusOnTextField = { isFocusOnTextField = it },
+
+                        )
+
+
+                }
+            }
+        }
+        // This appears on top of everything when customView is not null.
+        if (customView != null) {
+            AndroidView(
+                factory = { customView!! as ViewGroup },
+                // This onRelease block is the KEY to preventing the crash.
+                // When this view is removed from composition (because customView becomes null),
+                // it guarantees the view is detached from its parent.
+                onRelease = { view ->
+                    (view.parent as? ViewGroup)?.removeView(view)
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+
+
+
 }
 
 @Composable
