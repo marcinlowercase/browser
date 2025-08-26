@@ -70,30 +70,18 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.content.edit
-import kotlinx.coroutines.delay
-import kotlin.math.log
+
 
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-
-//        WindowCompat.getInsetsController(window, window.decorView)
         setContent {
             BrowserTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     BrowserScreen()
                 }
-//                Scaffold(
-//                    modifier = Modifier.fillMaxSize(),
-//                    contentWindowInsets = WindowInsets(0.dp)
-//
-//                ) { innerPadding ->
-//                    BrowserScreen(
-//                        modifier = Modifier.padding(innerPadding)
-//                    )
-//                }
             }
         }
     }
@@ -148,6 +136,9 @@ fun rememberHasDisplayCutout(): State<Boolean> {
 
 @Composable
 fun BrowserScreen(modifier: Modifier = Modifier) {
+
+    /// VARIABLES
+
     val context = LocalContext.current
     val sharedPrefs =
         remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
@@ -211,9 +202,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     )
     val isKeyboardVisible = WindowInsets.ime.asPaddingValues().calculateBottomPadding() > 0.dp
 
-
-
-
     // 1. Get the raw cutout padding values.
     val cutoutPaddingValues = WindowInsets.displayCutout.asPaddingValues()
     val cutoutTop = cutoutPaddingValues.calculateTopPadding()
@@ -244,10 +232,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         label = "Cutout Bottom Animation"
     )
 
-
-
-
-
     // Get the raw system bar padding values.
     val systemBarPaddingValues = WindowInsets.systemBars.asPaddingValues()
     val systemBarTop = systemBarPaddingValues.calculateTopPadding()
@@ -265,51 +249,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         label = "SystemBar Bottom Animation"
     )
 
-
-    // functions
-    // This function will be our single, safe way to update settings.
-    val updateBrowserSettings = { newSettings: BrowserSettings ->
-        browserSettings = newSettings;
-        Log.e("updateBrowserSettings", "updateBrowserSettings")
-    }
-
-
-
-    // CUSTOM VIEW
     var customView by remember { mutableStateOf<android.view.View?>(null) }
     var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
-
-
-
-    LaunchedEffect(isUrlBarVisible) {
-        val window = (context as? Activity)?.window ?: return@LaunchedEffect
-        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
-        if (isUrlBarVisible) {
-            insetsController.show(WindowInsetsCompat.Type.systemBars())
-        } else {
-            insetsController.hide(WindowInsetsCompat.Type.systemBars())
-            insetsController.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-    }
-
-
-    // The LaunchedEffect now saves the entire settings object (or individual fields)
-    LaunchedEffect(url, browserSettings) {
-        sharedPrefs.edit {
-            putString("last_url", url)
-            putFloat("padding_dp", browserSettings.paddingDp)
-            putFloat("corner_radius_dp", browserSettings.cornerRadiusDp)
-            putBoolean("is_interactable", browserSettings.isInteractable)
-            putString("default_url", browserSettings.defaultUrl)
-            putInt("animation_speed", browserSettings.animationSpeed)
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        focusManager.clearFocus()
-    }
-
 
 
     // We only need the CustomViewCallback as state now.
@@ -454,6 +395,51 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
+
+    // functions
+    // This function will be our single, safe way to update settings.
+    val updateBrowserSettings = { newSettings: BrowserSettings ->
+        browserSettings = newSettings;
+        Log.e("updateBrowserSettings", "updateBrowserSettings")
+    }
+
+    //
+    //
+    //
+    // LAUNCH EFFECTS
+    //
+
+
+    LaunchedEffect(isUrlBarVisible) {
+        val window = (context as? Activity)?.window ?: return@LaunchedEffect
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        if (isUrlBarVisible) {
+            insetsController.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+            insetsController.hide(WindowInsetsCompat.Type.systemBars())
+            insetsController.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+
+    // The LaunchedEffect now saves the entire settings object (or individual fields)
+    LaunchedEffect(url, browserSettings) {
+        sharedPrefs.edit {
+            putString("last_url", url)
+            putFloat("padding_dp", browserSettings.paddingDp)
+            putFloat("corner_radius_dp", browserSettings.cornerRadiusDp)
+            putBoolean("is_interactable", browserSettings.isInteractable)
+            putString("default_url", browserSettings.defaultUrl)
+            putInt("animation_speed", browserSettings.animationSpeed)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        focusManager.clearFocus()
+    }
+
+
     // This effect will re-launch whenever the animatedPadding value changes (i.e., every frame).
     LaunchedEffect(animatedPadding) {
         // We now have a hook that runs on every animation frame.
@@ -486,38 +472,13 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-//    DisposableEffect(customView) {
-//        val activity = context as? Activity ?: return@DisposableEffect onDispose {}
-//        val insetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
-//        val originalOrientation = activity.requestedOrientation
-//
-//        if (customView != null) {
-//            // --- We are ENTERING fullscreen video ---
-//
-//            // 1. Hide the system bars for an immersive video experience.
-//            insetsController.hide(WindowInsetsCompat.Type.systemBars())
-//
-//            // 2. Force the orientation to landscape.
-//            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-//
-//
-//        }
-//
-//        // The onDispose block runs automatically when customView becomes null (i.e., we exit fullscreen).
-//        onDispose {
-//            // --- We are EXITING fullscreen video ---
-//
-//            // 1. Restore the original screen orientation.
-//            activity.requestedOrientation = originalOrientation
-//
-//            // 2. Show the system bars again.
-//            insetsController.show(WindowInsetsCompat.Type.systemBars())
-//
-//            webView.onResume()
-//
-//        }
-//    }
 
+    //
+    //
+    //
+    // LAYOUT
+    //
+    //
     Box(modifier = Modifier.fillMaxSize()) {
         CompositionLocalProvider(LocalBrowserSettings provides browserSettings) {
             Box(
