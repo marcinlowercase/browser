@@ -3,13 +3,19 @@ package marcinlowercase.oo.browser
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import android.util.Patterns
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -76,7 +82,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.content.edit
 
 
-
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -98,6 +103,8 @@ data class BrowserSettings(
     val defaultUrl: String,
     val animationSpeed: Int,
     val singleLineHeight: Int,
+    val isDesktopMode: Boolean,
+    val desktopModeWidth: Int,
 )
 
 
@@ -111,6 +118,8 @@ val LocalBrowserSettings = compositionLocalOf {
         defaultUrl = "https://www.google.com",
         animationSpeed = 300,
         singleLineHeight = 64,
+        isDesktopMode = false,
+        desktopModeWidth = 820,
     )
 }
 
@@ -154,9 +163,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 paddingDp = sharedPrefs.getFloat("padding_dp", 8f),
                 cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
                 isInteractable = sharedPrefs.getBoolean("is_interactable", true),
-                defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com") ?: "https://www.google.com",
+                defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com")
+                    ?: "https://www.google.com",
                 animationSpeed = sharedPrefs.getInt("animation_speed", 300),
                 singleLineHeight = sharedPrefs.getInt("single_line_height", 64),
+                isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
+                desktopModeWidth = sharedPrefs.getInt("desktop_mode_width", 820),
             )
         )
     }
@@ -252,11 +264,13 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     )
     val animatedSystemBarBottom by animateDpAsState(
         targetValue = if (isUrlBarVisible && !isKeyboardVisible) systemBarBottom else if (isKeyboardVisible) browserSettings.paddingDp.dp else 0.dp,
-        animationSpec = if (!isUrlBarVisible || !isKeyboardVisible) tween(browserSettings.animationSpeed) else snap(0), // Always animate smoothly
+        animationSpec = if (!isUrlBarVisible || !isKeyboardVisible) tween(browserSettings.animationSpeed) else snap(
+            0
+        ), // Always animate smoothly
         label = "SystemBar Bottom Animation"
     )
 
-    var customView by remember { mutableStateOf<android.view.View?>(null) }
+    var customView by remember { mutableStateOf<View?>(null) }
     var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
 
@@ -264,6 +278,30 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     var originalOrientation by remember { mutableIntStateOf(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) }
 
     val activity = context as? Activity // Get the activity reference
+
+    // Define your User Agent strings
+    val mobileUserAgent =
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+    val desktopUserAgent =
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
+    //  function to configure the WebView ---
+    fun updateWebViewSettings(webView: WebView, isDesktop: Boolean) {
+        webView.settings.apply {
+            userAgentString = if (isDesktop) desktopUserAgent else mobileUserAgent
+
+            // THIS IS THE KEY: We toggle the viewport settings based on the mode.
+            useWideViewPort = isDesktop
+            loadWithOverviewMode = isDesktop
+
+            // These settings are always good to have
+            layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+        }
+    }
+
 
     val webView = remember {
         WebView(context).apply {
@@ -273,17 +311,18 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             // The WebChromeClient handles UI-related browser events.
             webChromeClient = object : WebChromeClient() {
 
-                private var fullscreenView: android.view.View? = null
+                private var fullscreenView: View? = null
 
 
-                override fun onShowCustomView(view: android.view.View?, callback: CustomViewCallback?) {
+                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                     if (fullscreenView != null) {
                         callback?.onCustomViewHidden()
                         return
                     }
 
 
-                    originalOrientation = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    originalOrientation = activity?.requestedOrientation
+                        ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                     customViewCallback = callback
                     fullscreenView = view
 
@@ -298,7 +337,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     )
 
                     // C. Now, control the window
-                    val insetsController = activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView) }
+                    val insetsController = activity?.let {
+                        WindowCompat.getInsetsController(
+                            it.window,
+                            it.window.decorView
+                        )
+                    }
                     insetsController?.hide(WindowInsetsCompat.Type.systemBars())
                     activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
 
@@ -311,7 +355,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     decorView?.removeView(fullscreenView)
                     fullscreenView = null
 
-                    val insetsController = activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView) }
+                    val insetsController = activity?.let {
+                        WindowCompat.getInsetsController(
+                            it.window,
+                            it.window.decorView
+                        )
+                    }
                     insetsController?.show(WindowInsetsCompat.Type.systemBars())
                     activity?.requestedOrientation = originalOrientation
 
@@ -324,12 +373,17 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
                     super.onProgressChanged(view, newProgress)
                     // Inject our JavaScript helper as the page is loading.
-                    val js = "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
+                    val js =
+                        "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
                     view?.evaluateJavascript(js, null)
                 }
-                override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+
+                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                     consoleMessage?.let {
-                        Log.d("WebViewConsole", "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}")
+                        Log.d(
+                            "WebViewConsole",
+                            "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}"
+                        )
                     }
                     return true
                 }
@@ -344,51 +398,102 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         textFieldValue = TextFieldValue(it, TextRange(it.length))
                     }
                 }
+
                 override fun onPageFinished(view: WebView?, currentUrl: String?) {
                     super.onPageFinished(view, currentUrl)
                     isLoading = false
                     canGoBack = view?.canGoBack() ?: false
                     currentUrl?.let {
                         url = it
-                        if (!isFocusOnTextField) textFieldValue = TextFieldValue(it, TextRange(it.length))
+                        if (!isFocusOnTextField) textFieldValue =
+                            TextFieldValue(it, TextRange(it.length))
                     }
                     // Force a scroll to the top to fix coordinate system bugs
                     view?.scrollTo(0, 0)
 
                     // Your JS script for getting the background color
-                    val jsScript = """(function() { ... })();""".trimIndent() // Keep your full script here
+                    val jsScript =
+                        """(function() { ... })();""".trimIndent() // Keep your full script here
                     view?.evaluateJavascript(jsScript, null)
+
+                    if (browserSettings.isDesktopMode) {
+                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
+                        view?.evaluateJavascript(
+                            """
+            (function() {
+                // The function we want to run to enforce our viewport.
+                function enforceDesktopViewport() {
+                    console.log('Enforcing desktop viewport...');
+                    var meta = document.querySelector('meta[name=viewport]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.setAttribute('name', 'viewport');
+                        document.getElementsByTagName('head')[0].appendChild(meta);
+                    }
+                    // Crucially, check if the content is already correct.
+                    // This prevents an infinite loop of observer callbacks.
+                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
+                        console.log('Viewport was wrong, correcting to width=${browserSettings.desktopModeWidth}.');
+                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
+                    }
                 }
-                override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
+
+                // 1. Enforce it immediately.
+                enforceDesktopViewport();
+
+                // 2. Create an observer to watch for any changes to the <head> element.
+                //    This will detect if the site's own JS tries to change the viewport.
+                var observer = new MutationObserver(function(mutations) {
+                    // When a change is detected, run our enforcement function again.
+                    enforceDesktopViewport();
+                });
+
+                // 3. Start observing. We watch for changes to child elements in the head.
+                var head = document.getElementsByTagName('head')[0];
+                if (head) {
+                    observer.observe(head, {
+                        childList: true, 
+                        subtree: true 
+                    });
+                }
+            })();
+            """.trimIndent(), null
+                        )
+                    }
+
+                }
+
+                override fun shouldInterceptRequest(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): WebResourceResponse? {
                     request?.requestHeaders?.put("Origin", url)
                     return super.shouldInterceptRequest(view, request)
                 }
             }
 
+
+//            updateWebViewSettings(this, browserSettings.isDesktopMode)
+
             // Apply all your production-grade settings
+            // --- This initial setup block should contain ALL static settings ---
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                useWideViewPort = true
-                loadWithOverviewMode = true
-                layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
-                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-//                                    databaseEnabled = true
                 allowFileAccess = true
                 allowContentAccess = true
-//                                    allowUniversalAccessFromFileURLs = true // Re-enable for max compatibility
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 javaScriptCanOpenWindowsAutomatically = true
+                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+
+                // CRITICAL: Zoom must be supported for overview mode to work reliably.
                 setSupportZoom(true)
                 builtInZoomControls = true
-                displayZoomControls = false
-                textZoom = 100
-                defaultFontSize = 16
-                userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+                displayZoomControls = false // Hide the on-screen +/- buttons
             }
 
             // Enable remote debugging for debug builds
-            if (0 != (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)) {
+            if (0 != (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE)) {
                 WebView.setWebContentsDebuggingEnabled(true)
             }
 
@@ -402,13 +507,14 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
+    // FUNCTIONS
 
-    // functions
     // This function will be our single, safe way to update settings.
     val updateBrowserSettings = { newSettings: BrowserSettings ->
         browserSettings = newSettings;
-        Log.e("updateBrowserSettings", "updateBrowserSettings")
+        Log.e("updateBrowserSettings", browserSettings.toString())
     }
+
 
     //
     //
@@ -416,7 +522,81 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // LAUNCH EFFECTS
     //
 
+    // --- THIS IS THE NEW DEFINITIVE EFFECT FOR DESKTOP MODE ---
+//    LaunchedEffect(browserSettings.isDesktopMode, webView) {
+//        if (browserSettings.isDesktopMode) {
+//            // --- ENTERING DESKTOP MODE ---
+//            // 1. Set the viewport to behave like a desktop.
+//            webView.settings.useWideViewPort = true
+//            webView.settings.loadWithOverviewMode = true
+//
+//            // 2. Set the User Agent to identify as a desktop.
+//            webView.settings.userAgentString = desktopUserAgent
+//
+//            // 3. CRITICAL: Inject a JavaScript snippet to force a wide viewport meta tag.
+//            //    This overrides the website's own mobile-first viewport tag.
+//            webView.evaluateJavascript(
+//                """
+//                (function() {
+//                    var meta = document.createElement('meta');
+//                    console.log("HELLO");
+//                    meta.setAttribute('name', 'viewport');
+//                    meta.setAttribute('content', 'width=1280'); // Adjust scale if needed
+//                    var head = document.getElementsByTagName('head')[0];
+//                    // Remove any existing viewport tags before adding our new one.
+//                    var existingViewports = head.querySelectorAll('meta[name=viewport]');
+//                    existingViewports.forEach(function(vp) { vp.remove(); });
+//                    head.appendChild(meta);
+//                })();
+//                """.trimIndent(),
+//                null
+//            )
+//
+//        } else {
+//            // --- EXITING DESKTOP MODE (Returning to Mobile) ---
+//            // 1. Revert the viewport settings to be mobile-friendly.
+//            webView.settings.useWideViewPort = false
+//            webView.settings.loadWithOverviewMode = false
+//
+//            // 2. Revert the User Agent.
+//            webView.settings.userAgentString = mobileUserAgent
+//
+//            // 3. CRITICAL: Inject JS to restore the default mobile viewport.
+//            webView.evaluateJavascript(
+//                """
+//                (function() {
+//                    var meta = document.createElement('meta');
+//                    meta.setAttribute('name', 'viewport');
+//                    meta.setAttribute('content', 'width=device-width, initial-scale=1.0');
+//                    var head = document.getElementsByTagName('head')[0];
+//                    var existingViewports = head.querySelectorAll('meta[name=viewport]');
+//                    existingViewports.forEach(function(vp) { vp.remove(); });
+//                    head.appendChild(meta);
+//                })();
+//                """.trimIndent(),
+//                null
+//            )
+//        }
+//
+//        // 4. Reload the page to apply all changes.
+//        webView.reload()
+//    }
+    // --- The LaunchedEffect is now simpler. It ONLY triggers the reload. ---
 
+    LaunchedEffect(browserSettings.isDesktopMode) {
+        if (browserSettings.isDesktopMode) {
+            webView.settings.userAgentString = desktopUserAgent
+            webView.settings.useWideViewPort = true
+            webView.settings.loadWithOverviewMode = true
+        } else {
+            webView.settings.userAgentString = mobileUserAgent
+            webView.settings.useWideViewPort = false
+            webView.settings.loadWithOverviewMode = false
+        }
+
+        // This reload is still essential to get the new HTML from the server.
+        webView.reload()
+    }
     LaunchedEffect(isUrlBarVisible) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
@@ -446,6 +626,16 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         focusManager.clearFocus()
     }
 
+
+    // This effect runs whenever the isDesktopMode flag changes.
+    LaunchedEffect(browserSettings.isDesktopMode) {
+        val newAgent = if (browserSettings.isDesktopMode) desktopUserAgent else mobileUserAgent
+        if (webView.settings.userAgentString != newAgent) {
+            webView.settings.userAgentString = newAgent
+            // Reload the page to apply the new User Agent
+            webView.reload()
+        }
+    }
 
     // This effect will re-launch whenever the animatedPadding value changes (i.e., every frame).
     LaunchedEffect(animatedPadding) {
@@ -619,7 +809,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
-
 }
 
 @Composable
@@ -774,7 +963,9 @@ fun BottomPanel(
 
                 ) {
                     Icon(
-                        painter = if (browserSettings.isInteractable) painterResource(id = R.drawable.ic_transparent) else painterResource(id = R.drawable.ic_immersive),
+                        painter = if (browserSettings.isInteractable) painterResource(id = R.drawable.ic_transparent) else painterResource(
+                            id = R.drawable.ic_immersive
+                        ),
                         contentDescription = "Toggle Interactable",
                         tint = MaterialTheme.colorScheme.onPrimary
                     )
@@ -786,6 +977,7 @@ fun BottomPanel(
             OptionsPanel(
                 isOptionsPanelVisible = isOptionsPanelVisible,
                 toggleOptionsPanel = toggleOptionsPanel,
+                updateBrowserSettings = updateBrowserSettings,
                 browserSettings = browserSettings
             )
         }
@@ -802,29 +994,24 @@ data class OptionItem(
 fun OptionsPanel(
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
+    updateBrowserSettings: (BrowserSettings) -> Int,
     browserSettings: BrowserSettings = LocalBrowserSettings.current,
 ) {
 
 
-//    val options = remember {
-//        listOf(
-//            OptionItem(R.drawable.ic_fullscreen, "Button 1") { /* TODO: Action 1 */ },
-//            OptionItem(R.drawable.ic_fullscreen, "Button 2") { /* TODO: Action 2 */ },
-//            OptionItem(R.drawable.ic_fullscreen, "Button 3") { /* TODO: Action 3 */ },
-//            OptionItem(R.drawable.ic_fullscreen, "Button 4") { /* TODO: Action 4 */ },
-//            OptionItem(R.drawable.ic_fullscreen, "Button 5") { /* TODO: Action 5 */ },
-//            OptionItem(R.drawable.ic_fullscreen, "Button 6") { /* TODO: Action 6 */ },
-//            OptionItem(R.drawable.ic_fullscreen, "Button 7") { /* TODO: Action 7 */ },
-//            OptionItem(R.drawable.ic_fullscreen, "Button 8") { /* TODO: Action 8 */ }
-//        )
-//    }
-
     // This remains the same
-    val allOptions = remember {
+    val allOptions = remember(browserSettings) {
         listOf(
-            OptionItem(R.drawable.ic_fullscreen, "Button 1") { /* ... */ },
+            OptionItem(
+                if (browserSettings.isDesktopMode) R.drawable.ic_mobile else R.drawable.ic_desktop,
+                "Desktop layout"
+            ) {
+                updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
+            },
             OptionItem(R.drawable.ic_fullscreen, "Button 2") { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 3") { /* ... */ },
+            OptionItem(R.drawable.ic_bug, "Button 3") {
+                Log.e("BROWSER SETTINGS", browserSettings.toString())
+            },
             OptionItem(R.drawable.ic_fullscreen, "Button 4") { /* ... */ },
             OptionItem(R.drawable.ic_fullscreen, "Button 5") { /* ... */ },
             OptionItem(R.drawable.ic_fullscreen, "Button 6") { /* ... */ },
@@ -894,8 +1081,7 @@ fun OptionsPanel(
                             // Use weight to make the buttons share space equally
                             modifier = Modifier
                                 .weight(1f)
-                                .height(browserSettings.singleLineHeight.dp)
-                            ,
+                                .height(browserSettings.singleLineHeight.dp),
                             colors = IconButtonDefaults.iconButtonColors(
                                 containerColor = MaterialTheme.colorScheme.primaryContainer
                             )
@@ -955,7 +1141,7 @@ fun BrowserScreenPreview() {
 
 
 class WebAppInterface() {
-    @android.webkit.JavascriptInterface
+    @JavascriptInterface
     fun logBackgroundColor(colorString: String) {
         // We need a robust way to parse the "rgb(r, g, b)" or "rgba(r, g, b, a)" string.
         try {
