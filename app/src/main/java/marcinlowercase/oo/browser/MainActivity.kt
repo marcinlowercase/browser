@@ -32,6 +32,10 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -93,6 +97,7 @@ data class BrowserSettings(
     val isInteractable: Boolean,
     val defaultUrl: String,
     val animationSpeed: Int,
+    val singleLineHeight: Int,
 )
 
 
@@ -105,6 +110,7 @@ val LocalBrowserSettings = compositionLocalOf {
         isInteractable = true,
         defaultUrl = "https://www.google.com",
         animationSpeed = 300,
+        singleLineHeight = 64,
     )
 }
 
@@ -149,7 +155,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
                 isInteractable = sharedPrefs.getBoolean("is_interactable", true),
                 defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com") ?: "https://www.google.com",
-                animationSpeed = sharedPrefs.getInt("animation_speed", 300)
+                animationSpeed = sharedPrefs.getInt("animation_speed", 300),
+                singleLineHeight = sharedPrefs.getInt("single_line_height", 64),
             )
         )
     }
@@ -716,6 +723,7 @@ fun BottomPanel(
                     ),
                     modifier = Modifier
                         .weight(1f)
+                        .height(browserSettings.singleLineHeight.dp)
                         .onSizeChanged { size ->
                             setTextFieldHeightPx(size.height)
                         }
@@ -784,12 +792,55 @@ fun BottomPanel(
     }
 }
 
+data class OptionItem(
+    val iconRes: Int, // The drawable resource ID for the icon
+    val contentDescription: String,
+    val onClick: () -> Unit
+)
+
 @Composable
 fun OptionsPanel(
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
     browserSettings: BrowserSettings = LocalBrowserSettings.current,
 ) {
+
+
+//    val options = remember {
+//        listOf(
+//            OptionItem(R.drawable.ic_fullscreen, "Button 1") { /* TODO: Action 1 */ },
+//            OptionItem(R.drawable.ic_fullscreen, "Button 2") { /* TODO: Action 2 */ },
+//            OptionItem(R.drawable.ic_fullscreen, "Button 3") { /* TODO: Action 3 */ },
+//            OptionItem(R.drawable.ic_fullscreen, "Button 4") { /* TODO: Action 4 */ },
+//            OptionItem(R.drawable.ic_fullscreen, "Button 5") { /* TODO: Action 5 */ },
+//            OptionItem(R.drawable.ic_fullscreen, "Button 6") { /* TODO: Action 6 */ },
+//            OptionItem(R.drawable.ic_fullscreen, "Button 7") { /* TODO: Action 7 */ },
+//            OptionItem(R.drawable.ic_fullscreen, "Button 8") { /* TODO: Action 8 */ }
+//        )
+//    }
+
+    // This remains the same
+    val allOptions = remember {
+        listOf(
+            OptionItem(R.drawable.ic_fullscreen, "Button 1") { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 2") { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 3") { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 4") { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 5") { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 6") { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 7") { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 8") { /* ... */ }
+        )
+    }
+
+// --- NEW: Group the options into pages of 4 ---
+    val optionPages = remember(allOptions) {
+        allOptions.chunked(4)
+    }
+
+    // --- Pager State ---
+    // The pagerState remembers the current page and handles scroll animations.
+    val pagerState = rememberPagerState(pageCount = { optionPages.size })
 
     AnimatedVisibility(
         visible = isOptionsPanelVisible,
@@ -819,81 +870,77 @@ fun OptionsPanel(
                 }
 
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp) // Adds space between columns
-            ) {
-                // --- First Column ---
-                Column(
-                    modifier = Modifier.weight(1f), // Take up 1 share of the width
-                    verticalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp) // Adds space between buttons
-                ) {
-                    // First Button
-                    IconButton(
-                        onClick = { /* TODO: Action 1 */ },
-                        modifier = Modifier.fillMaxWidth(), // Fill the column's width
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_fullscreen),
-                            contentDescription = "Button 1",
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
-                    }
-                    // Second Button
-                    IconButton(
-                        onClick = { /* TODO: Action 2 */ },
-                        modifier = Modifier.fillMaxWidth(), // Fill the column's width
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_fullscreen),
-                            contentDescription = "Button 2",
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
-                    }
-                }
 
-                // --- Second Column ---
-                Column(
-                    modifier = Modifier.weight(1f), // Take up 1 share of the width
-                    verticalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp) // Adds space between buttons
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxWidth()
+            ) { pageIndex ->
+                // This composable block is called for each page.
+
+                // A Row holds the 4 buttons for the current page.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = browserSettings.paddingDp.dp), // Add some inner padding
+                    horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
                 ) {
-                    // Third Button
-                    IconButton(
-                        onClick = { /* TODO: Action 3 */ },
-                        modifier = Modifier.fillMaxWidth(), // Fill the column's width
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_fullscreen),
-                            contentDescription = "Button 3",
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
+                    // Get the options for the current page
+                    val pageOptions = optionPages[pageIndex]
+
+                    // Create an IconButton for each option on the page
+                    pageOptions.forEach { option ->
+                        IconButton(
+                            onClick = option.onClick,
+                            // Use weight to make the buttons share space equally
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(browserSettings.singleLineHeight.dp)
+                            ,
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        ) {
+                            Icon(
+                                painter = painterResource(id = option.iconRes),
+                                contentDescription = option.contentDescription,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
                     }
-                    // Fourth Button
-                    IconButton(
-                        onClick = { /* TODO: Action 4 */ },
-                        modifier = Modifier.fillMaxWidth(), // Fill the column's width
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_fullscreen),
-                            contentDescription = "Button 4",
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
+
+                    // If a page has fewer than 4 items, we add spacers to keep the layout consistent.
+                    repeat(4 - pageOptions.size) {
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
             }
 
+//            LazyRow(
+//                modifier = Modifier.fillMaxWidth(),
+//                // Add consistent spacing between each button
+//                horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
+//            ) {
+//                // The `items` block is like a forEach loop for LazyRow/LazyColumn
+//                items(options) { option ->
+//                    // --- 3. Create an IconButton for each option ---
+//                    IconButton(
+//                        onClick = option.onClick,
+//                        // Make each button take up roughly 1/4th of the screen width
+//                        // minus the padding, so four are visible at a time.
+//                        modifier = Modifier.width(IntrinsicSize.Min), // Example sizing
+//                        colors = IconButtonDefaults.iconButtonColors(
+//                            containerColor = MaterialTheme.colorScheme.primaryContainer
+//                        )
+//                    ) {
+//                        Icon(
+//                            painter = painterResource(id = option.iconRes),
+//                            contentDescription = option.contentDescription,
+//                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+//                        )
+//                    }
+//                }
+//
+//            }
         }
     }
 }
