@@ -18,7 +18,7 @@ private val DarkColorScheme = darkColorScheme(
     surface = Black,       // Surface color for components like TextField
     onPrimary = Black,     // Color for text/icons on top of the primary color
     onBackground = White,  // Color for text/icons on top of the background
-    onSurface = White      // Color for text/icons on top of surfaces
+    onSurface = White,      // Color for text/icons on top of surfaces
 )
 
 private val LightColorScheme = lightColorScheme(

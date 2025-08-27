@@ -967,6 +967,7 @@ fun BottomPanel(
                             id = R.drawable.ic_immersive
                         ),
                         contentDescription = "Toggle Interactable",
+//                        tint = MaterialTheme.colorScheme.onPrimary
                         tint = MaterialTheme.colorScheme.onPrimary
                     )
                 }
@@ -1083,13 +1084,14 @@ fun OptionsPanel(
                                 .weight(1f)
                                 .height(browserSettings.singleLineHeight.dp),
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
-                            )
+                                containerColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+
                         ) {
                             Icon(
                                 painter = painterResource(id = option.iconRes),
                                 contentDescription = option.contentDescription,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
