@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
+import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -22,15 +23,16 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
@@ -38,8 +40,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,38 +48,37 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.SoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.edit
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import androidx.compose.material3.Icon
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.focus.FocusManager
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.SoftwareKeyboardController
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.LayoutDirection
-import androidx.core.content.edit
 
 
 class MainActivity : ComponentActivity() {
@@ -302,6 +301,26 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    var pendingGeolocationRequest by remember {
+        mutableStateOf<Pair<String, GeolocationPermissions.Callback>?>(null)
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+        onResult = { permissions ->
+            val origin = pendingGeolocationRequest?.first
+            val callback = pendingGeolocationRequest?.second
+            if (origin != null && callback != null) {
+                val granted = permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true
+                // Stage 2 completion: Tell the WebView the final result.
+                callback.invoke(origin, granted, false)
+            }
+            // Clear the request to hide the panel.
+            pendingGeolocationRequest = null
+        }
+    )
+
+
 
     val webView = remember {
         WebView(context).apply {
@@ -313,6 +332,17 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                 private var fullscreenView: View? = null
 
+
+                override fun onGeolocationPermissionsShowPrompt(
+                    origin: String?,
+                    callback: GeolocationPermissions.Callback?
+                ) {
+                    if (origin != null && callback != null) {
+                        // Stage 1: A website is asking. Just save the request.
+                        // This will trigger our PermissionPanel to become visible.
+                        pendingGeolocationRequest = Pair(origin, callback)
+                    }
+                }
 
                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                     if (fullscreenView != null) {
@@ -522,67 +552,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // LAUNCH EFFECTS
     //
 
-    // --- THIS IS THE NEW DEFINITIVE EFFECT FOR DESKTOP MODE ---
-//    LaunchedEffect(browserSettings.isDesktopMode, webView) {
-//        if (browserSettings.isDesktopMode) {
-//            // --- ENTERING DESKTOP MODE ---
-//            // 1. Set the viewport to behave like a desktop.
-//            webView.settings.useWideViewPort = true
-//            webView.settings.loadWithOverviewMode = true
-//
-//            // 2. Set the User Agent to identify as a desktop.
-//            webView.settings.userAgentString = desktopUserAgent
-//
-//            // 3. CRITICAL: Inject a JavaScript snippet to force a wide viewport meta tag.
-//            //    This overrides the website's own mobile-first viewport tag.
-//            webView.evaluateJavascript(
-//                """
-//                (function() {
-//                    var meta = document.createElement('meta');
-//                    console.log("HELLO");
-//                    meta.setAttribute('name', 'viewport');
-//                    meta.setAttribute('content', 'width=1280'); // Adjust scale if needed
-//                    var head = document.getElementsByTagName('head')[0];
-//                    // Remove any existing viewport tags before adding our new one.
-//                    var existingViewports = head.querySelectorAll('meta[name=viewport]');
-//                    existingViewports.forEach(function(vp) { vp.remove(); });
-//                    head.appendChild(meta);
-//                })();
-//                """.trimIndent(),
-//                null
-//            )
-//
-//        } else {
-//            // --- EXITING DESKTOP MODE (Returning to Mobile) ---
-//            // 1. Revert the viewport settings to be mobile-friendly.
-//            webView.settings.useWideViewPort = false
-//            webView.settings.loadWithOverviewMode = false
-//
-//            // 2. Revert the User Agent.
-//            webView.settings.userAgentString = mobileUserAgent
-//
-//            // 3. CRITICAL: Inject JS to restore the default mobile viewport.
-//            webView.evaluateJavascript(
-//                """
-//                (function() {
-//                    var meta = document.createElement('meta');
-//                    meta.setAttribute('name', 'viewport');
-//                    meta.setAttribute('content', 'width=device-width, initial-scale=1.0');
-//                    var head = document.getElementsByTagName('head')[0];
-//                    var existingViewports = head.querySelectorAll('meta[name=viewport]');
-//                    existingViewports.forEach(function(vp) { vp.remove(); });
-//                    head.appendChild(meta);
-//                })();
-//                """.trimIndent(),
-//                null
-//            )
-//        }
-//
-//        // 4. Reload the page to apply all changes.
-//        webView.reload()
-//    }
-    // --- The LaunchedEffect is now simpler. It ONLY triggers the reload. ---
-
     LaunchedEffect(browserSettings.isDesktopMode) {
         if (browserSettings.isDesktopMode) {
             webView.settings.userAgentString = desktopUserAgent
@@ -786,6 +755,22 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         toggleUrlBar = { isUrlBarVisible = it },
                         setTextFieldHeightPx = { textFieldHeightPx = it },
                         setIsFocusOnTextField = { isFocusOnTextField = it },
+                        pendingGeolocationRequest = pendingGeolocationRequest,
+                        onGeolocationResult = { allow ->
+                            if (allow) {
+                                // User clicked "Allow" on our panel. Now trigger the system dialog.
+                                permissionLauncher.launch(
+                                    arrayOf(
+                                        android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                        android.Manifest.permission.ACCESS_COARSE_LOCATION
+                                    )
+                                )
+                            } else {
+                                // User clicked "Deny" on our panel. Tell the WebView and hide.
+                                pendingGeolocationRequest?.second?.invoke(pendingGeolocationRequest!!.first, false, false)
+                                pendingGeolocationRequest = null
+                            }
+                        },
 
                         )
 
@@ -813,6 +798,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    pendingGeolocationRequest: Pair<String, GeolocationPermissions.Callback>?,
+    onGeolocationResult: (allow: Boolean) -> Unit,
     isUrlBarVisible: Boolean,
     isOptionsPanelVisible: Boolean,
     browserSettings: BrowserSettings,
@@ -835,6 +822,14 @@ fun BottomPanel(
         exit = shrinkVertically(tween(browserSettings.animationSpeed))
     ) {
         Column {
+
+            PermissionPanel(
+                textFieldHeightDp = textFieldHeightDp,
+                browserSettings = browserSettings,
+                request = pendingGeolocationRequest,
+                onPermissionResult = onGeolocationResult
+            )
+
             Row(
                 modifier = Modifier
                     .pointerInput(Unit) {
@@ -985,6 +980,85 @@ fun BottomPanel(
     }
 }
 
+@Composable
+fun PermissionPanel(
+    textFieldHeightDp: Dp,
+    browserSettings: BrowserSettings,
+    // The pending request, which also controls visibility. Null means hidden.
+    request: Pair<String, GeolocationPermissions.Callback>?,
+    // Event for when the user makes a choice on OUR panel.
+    onPermissionResult: (allow: Boolean) -> Unit
+) {
+    val isVisible = request != null
+    val origin = request?.first ?: "" // The website URL
+
+    AnimatedVisibility(
+        visible = isVisible,
+        enter = expandVertically(),
+        exit = shrinkVertically()
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+//                .padding(
+//                    horizontal = browserSettings.paddingDp.dp,
+//                    vertical = browserSettings.paddingDp.dp / 2
+//                )
+            ,
+            colors = CardDefaults.cardColors(
+                containerColor = Color.Transparent
+            ),
+        ) {
+            // Apply padding to the Column to give the content some breathing room
+            Column(modifier = Modifier.padding(browserSettings.paddingDp.dp)) {
+                // --- THIS IS THE MODIFIED ROW ---
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    // This automatically adds space BETWEEN the buttons
+                    horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
+                ) {
+                    // --- Deny Button ---
+                    IconButton(
+                        onClick = { onPermissionResult(false) },
+                        // This makes the button take up one share of the available space
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(browserSettings.singleLineHeight.dp), // Use a fixed height
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer // A less prominent color
+                        )
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_location_off),
+                            contentDescription = "Deny Location Permission",
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+
+                    // --- Allow Button ---
+                    IconButton(
+                        onClick = { onPermissionResult(true) },
+                        // This also takes up one share, creating a 50/50 split
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(browserSettings.singleLineHeight.dp), // Use a fixed height
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primary // The main action color
+                        )
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_location_on),
+                            contentDescription = "Allow Location Permission",
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 data class OptionItem(
     val iconRes: Int, // The drawable resource ID for the icon
     val contentDescription: String,
@@ -1087,7 +1161,7 @@ fun OptionsPanel(
                                 containerColor = MaterialTheme.colorScheme.onPrimary
                             ),
 
-                        ) {
+                            ) {
                             Icon(
                                 painter = painterResource(id = option.iconRes),
                                 contentDescription = option.contentDescription,
