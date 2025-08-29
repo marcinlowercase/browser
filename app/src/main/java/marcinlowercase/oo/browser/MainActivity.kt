@@ -11,6 +11,7 @@ import android.util.Patterns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
 import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
@@ -218,7 +219,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         targetValue = if (isUrlBarVisible || hasDisplayCutout) browserSettings.cornerRadiusDp.dp else 0.dp,
         label = "Corner Radius Animation",
     )
-    val isKeyboardVisible = WindowInsets.ime.asPaddingValues().calculateBottomPadding() > 0.dp
+    val isKeyboardVisibleForPadding = WindowInsets.ime.asPaddingValues().calculateBottomPadding() > 0.dp
 
     // 1. Get the raw cutout padding values.
     val cutoutPaddingValues = WindowInsets.displayCutout.asPaddingValues()
@@ -262,8 +263,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         label = "SystemBar Top Animation"
     )
     val animatedSystemBarBottom by animateDpAsState(
-        targetValue = if (isUrlBarVisible && !isKeyboardVisible) systemBarBottom else if (isKeyboardVisible) browserSettings.paddingDp.dp else 0.dp,
-        animationSpec = if (!isUrlBarVisible || !isKeyboardVisible) tween(browserSettings.animationSpeed) else snap(
+        targetValue = if (isUrlBarVisible && !isKeyboardVisibleForPadding) systemBarBottom else if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else 0.dp,
+        animationSpec = if (!isUrlBarVisible || !isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
             0
         ), // Always animate smoothly
         label = "SystemBar Bottom Animation"
@@ -319,6 +320,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             pendingGeolocationRequest = null
         }
     )
+
+
 
 
 
@@ -537,12 +540,47 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
+
+    var isKeyboardVisible by remember { mutableStateOf(false) }
+
     // FUNCTIONS
 
     // This function will be our single, safe way to update settings.
     val updateBrowserSettings = { newSettings: BrowserSettings ->
         browserSettings = newSettings;
         Log.e("updateBrowserSettings", browserSettings.toString())
+    }
+
+    val showKeyboard = remember(isKeyboardVisible, webView, keyboardController, focusManager, context) {
+        {
+            // Get the InputMethodManager system service once.
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+
+            if (isKeyboardVisible) {
+                // --- To HIDE the keyboard for a View ---
+                // We provide the window token from our WebView. This tells the IMM
+                // which window's keyboard to hide.
+                imm.hideSoftInputFromWindow(webView.windowToken, 0)
+
+                // Clearing focus is still good practice.
+                focusManager.clearFocus()
+                Log.e("KEYBOARD VISIBLE", "Hiding keyboard")
+                isOptionsPanelVisible = true
+                isKeyboardVisible = false
+
+
+            } else {
+                // --- To SHOW the keyboard for a View ---
+                webView.requestFocus()
+                imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)
+                Log.e("KEYBOARD VISIBLE", "Showing keyboard")
+                isOptionsPanelVisible = false
+
+                isKeyboardVisible = true
+
+            }
+
+        }
     }
 
 
@@ -740,6 +778,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     }
 
                     BottomPanel(
+
+                        showKeyboard = showKeyboard,
                         isUrlBarVisible = isUrlBarVisible,
                         isOptionsPanelVisible = isOptionsPanelVisible,
                         browserSettings = browserSettings,
@@ -755,6 +795,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         toggleUrlBar = { isUrlBarVisible = it },
                         setTextFieldHeightPx = { textFieldHeightPx = it },
                         setIsFocusOnTextField = { isFocusOnTextField = it },
+                        setIsKeyboardVisible = {isKeyboardVisible = it},
                         pendingGeolocationRequest = pendingGeolocationRequest,
                         onGeolocationResult = { allow ->
                             if (allow) {
@@ -814,7 +855,9 @@ fun BottomPanel(
     changeUrl: (String) -> Unit = {},
     toggleUrlBar: (Boolean) -> Unit = {},
     setTextFieldHeightPx: (Int) -> Unit = {},
-    setIsFocusOnTextField: (Boolean) -> Unit = {}
+    setIsFocusOnTextField: (Boolean) -> Unit = {},
+    setIsKeyboardVisible: (Boolean) -> Unit = {},
+    showKeyboard: () -> Unit = {},
 ) {
     AnimatedVisibility(
         visible = isUrlBarVisible,
@@ -916,12 +959,15 @@ fun BottomPanel(
                         .onFocusChanged {
                             setIsFocusOnTextField(it.isFocused)
                             if (it.isFocused) {
+                                setIsKeyboardVisible(true)
                                 // Ensure the bar is visible when it gets focus
                                 //                            isUrlBarVisible = true
                                 if (textFieldValue.text == url) {
                                     changeTextFieldValue(TextFieldValue("", TextRange(0)))
                                 }
                             } else {
+                                setIsKeyboardVisible(false)
+
                                 if (textFieldValue.text.isBlank()) {
                                     changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
                                 }
@@ -974,7 +1020,8 @@ fun BottomPanel(
                 isOptionsPanelVisible = isOptionsPanelVisible,
                 toggleOptionsPanel = toggleOptionsPanel,
                 updateBrowserSettings = updateBrowserSettings,
-                browserSettings = browserSettings
+                browserSettings = browserSettings,
+                showKeyboard = showKeyboard,
             )
         }
     }
@@ -1062,7 +1109,7 @@ fun PermissionPanel(
 data class OptionItem(
     val iconRes: Int, // The drawable resource ID for the icon
     val contentDescription: String,
-    val onClick: () -> Unit
+    val onClick: () -> Unit,
 )
 
 @Composable
@@ -1071,6 +1118,7 @@ fun OptionsPanel(
     toggleOptionsPanel: (Boolean) -> Unit = {},
     updateBrowserSettings: (BrowserSettings) -> Int,
     browserSettings: BrowserSettings = LocalBrowserSettings.current,
+    showKeyboard: () -> Unit,
 ) {
 
 
@@ -1083,6 +1131,14 @@ fun OptionsPanel(
             ) {
                 updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
             },
+
+            OptionItem(
+                R.drawable.ic_keyboard, // Your new keyboard icon
+                "Show Keyboard"
+            ) {
+                showKeyboard() // It calls the event lambda
+            },
+
             OptionItem(R.drawable.ic_fullscreen, "Button 2") { /* ... */ },
             OptionItem(R.drawable.ic_bug, "Button 3") {
                 Log.e("BROWSER SETTINGS", browserSettings.toString())
