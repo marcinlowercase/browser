@@ -1,5 +1,6 @@
 package marcinlowercase.oo.browser
 
+import android.R.id.toggle
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
@@ -80,6 +81,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import kotlin.reflect.KMutableProperty0
 
 
 class MainActivity : ComponentActivity() {
@@ -105,6 +107,7 @@ data class BrowserSettings(
     val singleLineHeight: Int,
     val isDesktopMode: Boolean,
     val desktopModeWidth: Int,
+    val isKeyboardMode: Boolean,
 )
 
 
@@ -120,6 +123,7 @@ val LocalBrowserSettings = compositionLocalOf {
         singleLineHeight = 64,
         isDesktopMode = false,
         desktopModeWidth = 820,
+        isKeyboardMode = false,
     )
 }
 
@@ -154,6 +158,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     /// VARIABLES
 
+
     val context = LocalContext.current
     val sharedPrefs =
         remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
@@ -169,6 +174,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 singleLineHeight = sharedPrefs.getInt("single_line_height", 64),
                 isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
                 desktopModeWidth = sharedPrefs.getInt("desktop_mode_width", 820),
+                isKeyboardMode = sharedPrefs.getBoolean("is_keyboard_mode", false),
             )
         )
     }
@@ -276,6 +282,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     // We only need the CustomViewCallback as state now.
     var originalOrientation by remember { mutableIntStateOf(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) }
+
+    var keyboardEffectTrigger by remember { mutableStateOf(false) }
 
     val activity = context as? Activity // Get the activity reference
 
@@ -541,9 +549,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
 
-    var isKeyboardVisible by remember { mutableStateOf(false) }
 
     // FUNCTIONS
+
+
 
     // This function will be our single, safe way to update settings.
     val updateBrowserSettings = { newSettings: BrowserSettings ->
@@ -551,37 +560,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         Log.e("updateBrowserSettings", browserSettings.toString())
     }
 
-    val showKeyboard = remember(isKeyboardVisible, webView, keyboardController, focusManager, context) {
-        {
-            // Get the InputMethodManager system service once.
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-
-            if (isKeyboardVisible) {
-                // --- To HIDE the keyboard for a View ---
-                // We provide the window token from our WebView. This tells the IMM
-                // which window's keyboard to hide.
-                imm.hideSoftInputFromWindow(webView.windowToken, 0)
-
-                // Clearing focus is still good practice.
-                focusManager.clearFocus()
-                Log.e("KEYBOARD VISIBLE", "Hiding keyboard")
-                isOptionsPanelVisible = true
-                isKeyboardVisible = false
-
-
-            } else {
-                // --- To SHOW the keyboard for a View ---
-                webView.requestFocus()
-                imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)
-                Log.e("KEYBOARD VISIBLE", "Showing keyboard")
-                isOptionsPanelVisible = false
-
-                isKeyboardVisible = true
-
-            }
-
-        }
-    }
 
 
     //
@@ -590,6 +568,28 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // LAUNCH EFFECTS
     //
 
+
+
+
+    LaunchedEffect(browserSettings.isKeyboardMode, keyboardEffectTrigger) {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+
+        if (browserSettings.isKeyboardMode) {
+            // User wants the keyboard to be open and sticky.
+            // Give focus to the WebView and show the keyboard.
+            webView.requestFocus()
+            imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)
+            isOptionsPanelVisible = false
+
+        } else {
+            // User wants to release the sticky keyboard.
+            // Hide the keyboard and clear focus from any element.
+            imm.hideSoftInputFromWindow(webView.windowToken, 0)
+            focusManager.clearFocus()
+        }
+    }
+    
+    
     LaunchedEffect(browserSettings.isDesktopMode) {
         if (browserSettings.isDesktopMode) {
             webView.settings.userAgentString = desktopUserAgent
@@ -778,8 +778,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     }
 
                     BottomPanel(
-
-                        showKeyboard = showKeyboard,
                         isUrlBarVisible = isUrlBarVisible,
                         isOptionsPanelVisible = isOptionsPanelVisible,
                         browserSettings = browserSettings,
@@ -795,7 +793,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         toggleUrlBar = { isUrlBarVisible = it },
                         setTextFieldHeightPx = { textFieldHeightPx = it },
                         setIsFocusOnTextField = { isFocusOnTextField = it },
-                        setIsKeyboardVisible = {isKeyboardVisible = it},
                         pendingGeolocationRequest = pendingGeolocationRequest,
                         onGeolocationResult = { allow ->
                             if (allow) {
@@ -812,6 +809,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                 pendingGeolocationRequest = null
                             }
                         },
+                        triggerKeyboardEffect = {
+                            keyboardEffectTrigger = !keyboardEffectTrigger
+                        }
 
                         )
 
@@ -856,8 +856,7 @@ fun BottomPanel(
     toggleUrlBar: (Boolean) -> Unit = {},
     setTextFieldHeightPx: (Int) -> Unit = {},
     setIsFocusOnTextField: (Boolean) -> Unit = {},
-    setIsKeyboardVisible: (Boolean) -> Unit = {},
-    showKeyboard: () -> Unit = {},
+    triggerKeyboardEffect: () -> Unit = {}
 ) {
     AnimatedVisibility(
         visible = isUrlBarVisible,
@@ -959,14 +958,21 @@ fun BottomPanel(
                         .onFocusChanged {
                             setIsFocusOnTextField(it.isFocused)
                             if (it.isFocused) {
-                                setIsKeyboardVisible(true)
-                                // Ensure the bar is visible when it gets focus
-                                //                            isUrlBarVisible = true
+
                                 if (textFieldValue.text == url) {
                                     changeTextFieldValue(TextFieldValue("", TextRange(0)))
                                 }
                             } else {
-                                setIsKeyboardVisible(false)
+
+                                if (browserSettings.isKeyboardMode) {
+                                    // do somethhing here to force the keyboard not hide when i unfocus the textfield
+                                    triggerKeyboardEffect()
+                                } else {
+                                    // just do nothing so the keyboard will be hidden just like its nature,
+                                    // no need to update the isKyeboardMode to false as it have already false
+                                    updateBrowserSettings(browserSettings.copy(isKeyboardMode = false))
+                                }
+
 
                                 if (textFieldValue.text.isBlank()) {
                                     changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
@@ -1021,7 +1027,6 @@ fun BottomPanel(
                 toggleOptionsPanel = toggleOptionsPanel,
                 updateBrowserSettings = updateBrowserSettings,
                 browserSettings = browserSettings,
-                showKeyboard = showKeyboard,
             )
         }
     }
@@ -1118,7 +1123,6 @@ fun OptionsPanel(
     toggleOptionsPanel: (Boolean) -> Unit = {},
     updateBrowserSettings: (BrowserSettings) -> Int,
     browserSettings: BrowserSettings = LocalBrowserSettings.current,
-    showKeyboard: () -> Unit,
 ) {
 
 
@@ -1133,10 +1137,10 @@ fun OptionsPanel(
             },
 
             OptionItem(
-                R.drawable.ic_keyboard, // Your new keyboard icon
+                if  (!browserSettings.isKeyboardMode) R.drawable.ic_keyboard else R.drawable.ic_keyboard_hide,
                 "Show Keyboard"
             ) {
-                showKeyboard() // It calls the event lambda
+                updateBrowserSettings(browserSettings.copy(isKeyboardMode = ! browserSettings.isKeyboardMode))
             },
 
             OptionItem(R.drawable.ic_fullscreen, "Button 2") { /* ... */ },
