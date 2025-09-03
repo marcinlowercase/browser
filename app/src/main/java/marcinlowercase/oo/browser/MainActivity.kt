@@ -111,9 +111,6 @@ data class BrowserSettings(
     val singleLineHeight: Int,
     val isDesktopMode: Boolean,
     val desktopModeWidth: Int,
-    val isKeyboardMode: Boolean,
-    val isTrackpadMode: Boolean,
-    val isNaturalScrolling: Boolean,
 )
 
 
@@ -129,9 +126,6 @@ val LocalBrowserSettings = compositionLocalOf {
         singleLineHeight = 64,
         isDesktopMode = false,
         desktopModeWidth = 820,
-        isKeyboardMode = false,
-        isTrackpadMode = false,
-        isNaturalScrolling = false,
     )
 }
 
@@ -182,9 +176,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 singleLineHeight = sharedPrefs.getInt("single_line_height", 64),
                 isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
                 desktopModeWidth = sharedPrefs.getInt("desktop_mode_width", 820),
-                isKeyboardMode = sharedPrefs.getBoolean("is_keyboard_mode", false),
-                isTrackpadMode = sharedPrefs.getBoolean("is_trackpad_mode", false),
-                isNaturalScrolling = sharedPrefs.getBoolean("is_natural_scrolling", false)
+
             )
         )
     }
@@ -199,6 +191,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(url, TextRange(url.length)))
     }
+
+    var isImmersiveMode by remember { mutableStateOf(false) }
+
+    val setIsImmersiveMode = { value: Boolean -> isImmersiveMode = value }
+
+
 
 
 //    var webView by remember { mutableStateOf<WebView?>(null) }
@@ -227,12 +225,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     val animatedPadding by animateDpAsState(
-        targetValue = if (isUrlBarVisible) browserSettings.paddingDp.dp else 0.dp,
+        targetValue = if (!isImmersiveMode) browserSettings.paddingDp.dp else 0.dp,
         label = "Padding Animation",
     )
 
     val animatedCornerRadius by animateDpAsState(
-        targetValue = if (isUrlBarVisible || hasDisplayCutout) browserSettings.cornerRadiusDp.dp else 0.dp,
+        targetValue = if (!isImmersiveMode || hasDisplayCutout) browserSettings.cornerRadiusDp.dp else 0.dp,
         label = "Corner Radius Animation",
     )
     val isKeyboardVisibleForPadding =
@@ -280,8 +278,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         label = "SystemBar Top Animation"
     )
     val animatedSystemBarBottom by animateDpAsState(
-        targetValue = if (isUrlBarVisible && !isKeyboardVisibleForPadding) systemBarBottom else if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else 0.dp,
-        animationSpec = if (!isUrlBarVisible || !isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
+        targetValue = if (!isImmersiveMode && !isKeyboardVisibleForPadding) systemBarBottom else if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else 0.dp,
+        animationSpec = if (isImmersiveMode || !isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
             0
         ), // Always animate smoothly
         label = "SystemBar Bottom Animation"
@@ -515,20 +513,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     }
 
 
-                    // TODO
-//                    if (browserSettings.isKeyboardMode) {
-//                        if (browserSettings.isKeyboardMode) {
-//                            // User wants the keyboard to be open and sticky.
-//                            // Give focus to the WebView and show the keyboard.
-//
-//                            webView.evaluateJavascript(getVimModeJavaScript(enable = true), null)
-//
-//
-//                        } else {
-//                            webView.evaluateJavascript(getVimModeJavaScript(enable = false), null)
-//
-//                        }
-//                    }
+
                 }
 
                 override fun shouldInterceptRequest(
@@ -577,13 +562,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     // FUNCTIONS
 
-    fun getScrollJavaScript(deltaX: Float, deltaY: Float): String {
-        // We can apply a multiplier to make the scroll feel more or less sensitive.
-        val scrollMultiplier = 1.5f
-        val finalX = deltaX * scrollMultiplier
-        val finalY = deltaY * scrollMultiplier
-        return "window.scrollBy($finalX, $finalY);"
-    }
 
     // This function will be our single, safe way to update settings.
     val updateBrowserSettings = { newSettings: BrowserSettings ->
@@ -591,465 +569,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         Log.e("updateBrowserSettings", browserSettings.toString())
     }
 
-    fun applyTrackpadAcceleration(dragAmount: Offset): Offset {
-        // --- TWEAK THESE VALUES TO YOUR LIKING ---
-        // The speed at which acceleration starts kicking in.
-        val MIN_SPEED_THRESHOLD = 1.5f
-        // The speed at which acceleration is at its maximum.
-        val MAX_SPEED_THRESHOLD = 4.0f
-        // The cursor multiplier for the slowest speed (1.0f = no change).
-        val MIN_ACCELERATION_FACTOR = 1.0f
-        // The maximum cursor multiplier for the fastest speed.
-        val MAX_ACCELERATION_FACTOR = 2.0f
-        // --- END OF TWEAKABLE VALUES ---
-
-        val speed = dragAmount.getDistance()
-
-        // If the movement is very slow, don't apply any acceleration for precision.
-        if (speed < MIN_SPEED_THRESHOLD) {
-            return dragAmount
-        }
-
-        // Calculate how far our speed is between the min and max thresholds (a value from 0.0 to 1.0).
-        val progress =
-            ((speed - MIN_SPEED_THRESHOLD) / (MAX_SPEED_THRESHOLD - MIN_SPEED_THRESHOLD)).coerceIn(
-                0f,
-                1f
-            )
-
-        // Use the progress to find the correct acceleration factor between our min and max factors.
-        // This is a linear interpolation (lerp).
-        val dynamicFactor =
-            MIN_ACCELERATION_FACTOR + (MAX_ACCELERATION_FACTOR - MIN_ACCELERATION_FACTOR) * progress
-
-        // Apply the dynamic factor to the original drag amount.
-        return dragAmount * dynamicFactor
-    }
-
-    fun getTrackpadJavaScript(action: String, x: Float = 0f, y: Float = 0f): String {
-        val script = """
-    (function() {
-        const cursorId = 'virtual-cursor-element';
-
-        function createOrGetCursor() {
-            let cursor = document.getElementById(cursorId);
-            if (!cursor) {
-                cursor = document.createElement('div');
-                cursor.id = cursorId;
-                // --- KEY CHANGE: Use 'fixed' positioning ---
-                // This makes the cursor's coordinates relative to the viewport,
-                // which is exactly what elementFromPoint() expects.
-                cursor.style.position = 'fixed';
-                cursor.style.width = '22px';
-                cursor.style.height = '22px';
-                cursor.style.border = '2px solid white';
-                cursor.style.boxShadow = '0px 0px 5px rgba(0,0,0,0.5)';
-                cursor.style.borderRadius = '50%';
-                cursor.style.backgroundColor = 'rgba(0, 0, 0, 0.4)';
-                cursor.style.zIndex = '999999';
-                cursor.style.pointerEvents = 'none'; // So it doesn't block clicks
-                cursor.style.transition = 'transform 0.1s ease'; // Add click feedback
-                document.body.appendChild(cursor);
-            }
-            return cursor;
-        }
-
-        function moveCursor(posX, posY) {
-            const cursor = createOrGetCursor();
-            // With position:fixed, we NO LONGER need to add scrollX/Y.
-            // The coordinates from Kotlin are already in the correct viewport space.
-            cursor.style.left = posX + 'px';
-            cursor.style.top = posY + 'px';
-            // Translate to center the cursor on the point
-            cursor.style.transform = 'translate(-50%, -50%)';
-        }
-
-        function clickAt(posX, posY) {
-            const cursor = document.getElementById(cursorId);
-            if (cursor) {
-                // Animate the click for better user feedback
-                cursor.style.transform = 'translate(-50%, -50%) scale(1.5)';
-                setTimeout(() => {
-                    cursor.style.transform = 'translate(-50%, -50%) scale(1.0)';
-                    cursor.style.display = 'none'; // Hide cursor to not interfere
-                    
-                    const element = document.elementFromPoint(posX, posY);
-                    if (element) {
-                        // Create and dispatch mouse events for a more robust click
-                        const downEvent = new MouseEvent('mousedown', { view: window, bubbles: true, cancelable: true });
-                        const upEvent = new MouseEvent('mouseup', { view: window, bubbles: true, cancelable: true });
-                        const clickEvent = new MouseEvent('click', { view: window, bubbles: true, cancelable: true });
-                        element.dispatchEvent(downEvent);
-                        element.dispatchEvent(upEvent);
-                        element.dispatchEvent(clickEvent);
-                    }
-
-                    cursor.style.display = 'block'; // Show it again
-                }, 100); // 100ms for the animation
-            }
-        }
-
-        function removeCursor() {
-            const cursor = document.getElementById(cursorId);
-            if (cursor) {
-                cursor.remove();
-            }
-        }
-
-        switch ('${action}') {
-            case 'create':
-                moveCursor(${x}, ${y});
-                break;
-            case 'move':
-                moveCursor(${x}, ${y});
-                break;
-            case 'click':
-                clickAt(${x}, ${y});
-                break;
-            case 'remove':
-                removeCursor();
-                break;
-        }
-    })();
-    """
-        return script.trimIndent()
-    }
-//    fun getTrackpadJavaScript(action: String, x: Float = 0f, y: Float = 0f): String {
-//        val script = """
-//    (function() {
-//        const cursorId = 'virtual-cursor-element';
-//
-//        function createOrGetCursor() {
-//            let cursor = document.getElementById(cursorId);
-//            if (!cursor) {
-//                cursor = document.createElement('div');
-//                cursor.id = cursorId;
-//                cursor.style.position = 'absolute';
-//                cursor.style.width = '20px';
-//                cursor.style.height = '20px';
-//                cursor.style.border = '2px solid white';
-//                cursor.style.borderRadius = '50%';
-//                cursor.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-//                cursor.style.zIndex = '999999';
-//                cursor.style.pointerEvents = 'none'; // So it doesn't block clicks
-//                cursor.style.transition = 'transform 0.05s ease-out'; // Smooth movement
-//                document.body.appendChild(cursor);
-//            }
-//            return cursor;
-//        }
-//
-//        function moveCursor(posX, posY) {
-//            const cursor = createOrGetCursor();
-//            // We add scrollX/Y to position the cursor relative to the document, not the viewport
-//            const absoluteX = window.scrollX + posX;
-//            const absoluteY = window.scrollY + posY;
-//            cursor.style.left = absoluteX + 'px';
-//            cursor.style.top = absoluteY + 'px';
-//        }
-//
-//        function clickAt(posX, posY) {
-//            const cursor = document.getElementById(cursorId);
-//            if (cursor) {
-//                cursor.style.display = 'none'; // Hide cursor to not interfere
-//            }
-//
-//            // Find the element at the cursor's viewport position
-//            const element = document.elementFromPoint(posX, posY);
-//            if (element) {
-//                element.click();
-//            }
-//
-//            if (cursor) {
-//                cursor.style.display = 'block'; // Show it again
-//            }
-//        }
-//
-//        function removeCursor() {
-//            const cursor = document.getElementById(cursorId);
-//            if (cursor) {
-//                cursor.remove();
-//            }
-//        }
-//
-//        switch ('${action}') {
-//            case 'create':
-//                createOrGetCursor();
-//                moveCursor(${x}, ${y});
-//                break;
-//            case 'move':
-//                moveCursor(${x}, ${y});
-//                break;
-//            case 'click':
-//                clickAt(${x}, ${y});
-//                break;
-//            case 'remove':
-//                removeCursor();
-//                break;
-//        }
-//    })();
-//    """
-//        return script.trimIndent()
-//    }
-
-    // A helper function to generate the Vim navigation JavaScript
-//    fun getVimModeJavaScript(enable: Boolean, scrollAmount: Int = 50): String {
-//        val script = """
-//    (function() {
-//        // Define our listener function and attach it to the window object
-//        // so we can easily add/remove it without creating duplicates.
-//        if (typeof window.vimKeyListener !== 'function') {
-//            window.vimKeyListener = function(event) {
-//                // We don't want to scroll if the user is typing in a text field.
-//                const activeElement = document.activeElement;
-//                if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.isContentEditable)) {
-//                    return;
-//                }
-//
-//                // Check which key was pressed and scroll accordingly.
-//                switch (event.key) {
-//                    case 'j':
-//                        window.scrollBy(0, ${scrollAmount}); // Down
-//                        event.preventDefault();
-//                        break;
-//                    case 'k':
-//                        window.scrollBy(0, -${scrollAmount}); // Up
-//                        event.preventDefault();
-//                        break;
-//                    case 'h':
-//                        window.scrollBy(-${scrollAmount}, 0); // Left
-//                        event.preventDefault();
-//                        break;
-//                    case 'l':
-//                        window.scrollBy(${scrollAmount}, 0); // Right
-//                        event.preventDefault();
-//                        break;
-//                }
-//            };
-//        }
-//
-//        // Add or remove the event listener based on the 'enable' flag.
-//        if (${enable}) {
-//            document.addEventListener('keydown', window.vimKeyListener);
-//            console.log('Vim navigation enabled.');
-//        } else {
-//            document.removeEventListener('keydown', window.vimKeyListener);
-//            console.log('Vim navigation disabled.');
-//        }
-//    })();
-//    """
-//        return script.trimIndent()
-//    }
-
-    // A helper function to generate the Vim navigation JavaScript
-    fun getVimModeJavaScript(enable: Boolean, scrollAmount: Int = 50): String {
-        // Note the fix in the 'window.vimiumF.start' function to avoid Kotlin string template issues.
-        val script = """
-    (function() {
-        // --- NAMESPACE FOR LINK HINTING ---
-        window.vimiumF = {
-            hintChars: 'asdfghjkl',
-            hints: new Map(),
-            hintElements: [],
-            inputString: '',
-
-            generateHintStrings: function(count) {
-                const hints = [];
-                let i = 0;
-                while (hints.length < count) {
-                    let hint = '';
-                    let num = i;
-                    do {
-                        hint = this.hintChars[num % this.hintChars.length] + hint;
-                        num = Math.floor(num / this.hintChars.length) - 1;
-                    } while (num >= 0);
-                    hints.push(hint);
-                    i++;
-                }
-                return hints;
-            },
-
-            cleanup: function() {
-                this.hintElements.forEach(el => el.remove());
-                this.hintElements = [];
-                this.hints.clear();
-                this.inputString = '';
-                document.removeEventListener('keydown', this.hintKeyListener, true);
-                document.addEventListener('keydown', window.vimKeyListener);
-            },
-
-            hintKeyListener: function(event) {
-                event.preventDefault();
-                event.stopPropagation();
-                if (event.key === 'Escape') {
-                    window.vimiumF.cleanup();
-                    return;
-                }
-                if (event.key === 'Enter') {
-                    const match = window.vimiumF.hints.get(window.vimiumF.inputString);
-                    if (match) {
-                        match.click();
-                        window.vimiumF.cleanup();
-                    }
-                    return;
-                }
-                if (event.key.length > 1) return;
-                window.vimiumF.inputString += event.key.toLowerCase();
-                const perfectMatch = window.vimiumF.hints.get(window.vimiumF.inputString);
-                if (perfectMatch) {
-                    perfectMatch.focus();
-                    perfectMatch.click();
-                    window.vimiumF.cleanup();
-                } else {
-                    window.vimiumF.hintElements.forEach(el => {
-                        if (el.textContent.startsWith(window.vimiumF.inputString)) {
-                            el.style.opacity = '1';
-                        } else {
-                            el.style.opacity = '0.3';
-                        }
-                    });
-                }
-            },
-
-            start: function() {
-                const selectors = 'a, button, input, [role="button"], [onclick]';
-                const elements = Array.from(document.querySelectorAll(selectors)).filter(el => {
-                    const rect = el.getBoundingClientRect();
-                    return rect.top >= 0 && rect.left >= 0 &&
-                           rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-                           rect.right <= (window.innerWidth || document.documentElement.clientWidth) &&
-                           rect.width > 0 && rect.height > 0;
-                });
-
-                if (elements.length === 0) return;
-
-                const hintStrings = this.generateHintStrings(elements.length);
-                elements.forEach((el, i) => {
-                    const rect = el.getBoundingClientRect();
-                    const hintText = hintStrings[i];
-                    this.hints.set(hintText, el);
-                    const hintEl = document.createElement('div');
-                    hintEl.textContent = hintText;
-                    hintEl.style.position = 'fixed';
-                    // --- FIX IS HERE ---
-                    hintEl.style.top = (window.scrollY + rect.top) + 'px';
-                    hintEl.style.left = (window.scrollX + rect.left) + 'px';
-                    // --- END OF FIX ---
-                    hintEl.style.zIndex = '99999';
-                    hintEl.style.background = '#FFD700';
-                    hintEl.style.color = 'black';
-                    hintEl.style.border = '1px solid black';
-                    hintEl.style.borderRadius = '3px';
-                    hintEl.style.padding = '1px 3px';
-                    hintEl.style.fontSize = '12px';
-                    hintEl.style.fontFamily = 'monospace';
-                    hintEl.style.textTransform = 'uppercase';
-                    document.body.appendChild(hintEl);
-                    this.hintElements.push(hintEl);
-                });
-
-                document.removeEventListener('keydown', window.vimKeyListener);
-                document.addEventListener('keydown', this.hintKeyListener, true);
-            }
-        };
-
-        // --- MAIN VIM KEY LISTENER ---
-        if (typeof window.vimKeyListener !== 'function') {
-            window.vimKeyListener = function(event) {
-                const activeElement = document.activeElement;
-                if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.isContentEditable)) {
-                    if (event.key === 'Escape') {
-                        activeElement.blur();
-                    }
-                    return;
-                }
-
-                switch (event.key) {
-                    case 'j':
-                        window.scrollBy(0, ${scrollAmount});
-                        event.preventDefault();
-                        break;
-                    case 'k':
-                        window.scrollBy(0, -${scrollAmount});
-                        event.preventDefault();
-                        break;
-                    case 'h':
-                        window.scrollBy(-${scrollAmount}, 0);
-                        event.preventDefault();
-                        break;
-                    case 'l':
-                        window.scrollBy(${scrollAmount}, 0);
-                        event.preventDefault();
-                        break;
-                    case 'f':
-                        event.preventDefault();
-                        window.vimiumF.start();
-                        break;
-                }
-            };
-        }
-
-        // Add or remove the main event listener
-        if (${enable}) {
-            document.addEventListener('keydown', window.vimKeyListener);
-            console.log('Vim navigation enabled.');
-        } else {
-            document.removeEventListener('keydown', window.vimKeyListener);
-            window.vimiumF.cleanup();
-            console.log('Vim navigation disabled.');
-        }
-    })();
-    """
-        return script.trimIndent()
-    }
-    //
-    //
-    //
     // LAUNCH EFFECTS
     //
-
-
-// Effect to manage the cursor's existence (create/remove)
-    LaunchedEffect(browserSettings.isTrackpadMode) {
-        if (browserSettings.isTrackpadMode) {
-            // When trackpad mode is enabled, create the cursor
-            val (x, y) = cursorPositionPx
-            webView.evaluateJavascript(getTrackpadJavaScript("create", x, y), null)
-            isOptionsPanelVisible = false
-        } else {
-            // When disabled, remove it
-            webView.evaluateJavascript(getTrackpadJavaScript("remove"), null)
-        }
-    }
-
-// Effect to move the cursor when its position state changes
-    LaunchedEffect(cursorPositionPx) {
-        if (browserSettings.isTrackpadMode) {
-            val (x, y) = cursorPositionPx
-            webView.evaluateJavascript(getTrackpadJavaScript("move", x, y), null)
-        }
-    }
-
-    LaunchedEffect(browserSettings.isKeyboardMode, keyboardEffectTrigger) {
-        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-
-        if (browserSettings.isKeyboardMode) {
-            // User wants the keyboard to be open and sticky.
-            // Give focus to the WebView and show the keyboard.
-            webView.requestFocus()
-            imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)
-            isOptionsPanelVisible = false
-            webView.evaluateJavascript(getVimModeJavaScript(enable = true), null)
-
-
-        } else {
-            // User wants to release the sticky keyboard.
-            // Hide the keyboard and clear focus from any element.
-            imm.hideSoftInputFromWindow(webView.windowToken, 0)
-            focusManager.clearFocus()
-            webView.evaluateJavascript(getVimModeJavaScript(enable = false), null)
-
-        }
-    }
 
 
     LaunchedEffect(browserSettings.isDesktopMode) {
@@ -1065,6 +586,18 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
         // This reload is still essential to get the new HTML from the server.
         webView.reload()
+    }
+
+    LaunchedEffect(isUrlBarVisible, pendingGeolocationRequest) {
+        // Determine if the permission panel should be visible.
+        val isPermissionPanelVisible = pendingGeolocationRequest != null
+
+
+        isImmersiveMode = if (isPermissionPanelVisible) {
+            false
+        } else {
+            !isUrlBarVisible
+        }
     }
     LaunchedEffect(isUrlBarVisible) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
@@ -1090,7 +623,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             putInt("animation_speed", browserSettings.animationSpeed)
             putInt("single_line_height", browserSettings.singleLineHeight)
             putInt("desktop_mode_width", browserSettings.desktopModeWidth)
-            putBoolean("is_natural_scrolling", browserSettings.isNaturalScrolling) // Add this
 
         }
     }
@@ -1246,24 +778,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
                     }
 
-                    BottomPanel(
-                        isUrlBarVisible = isUrlBarVisible,
-                        isOptionsPanelVisible = isOptionsPanelVisible,
-                        browserSettings = browserSettings,
-                        updateBrowserSettings = updateBrowserSettings,
-                        textFieldValue = textFieldValue,
-                        url = url,
-                        focusManager = focusManager,
-                        keyboardController = keyboardController,
+                    PermissionPanel(
+                        setIsImmersiveMode= setIsImmersiveMode,
                         textFieldHeightDp = textFieldHeightDp,
-                        toggleOptionsPanel = { isOptionsPanelVisible = it },
-                        changeTextFieldValue = { textFieldValue = it },
-                        changeUrl = { url = it },
-                        toggleUrlBar = { isUrlBarVisible = it },
-                        setTextFieldHeightPx = { textFieldHeightPx = it },
-                        setIsFocusOnTextField = { isFocusOnTextField = it },
-                        pendingGeolocationRequest = pendingGeolocationRequest,
-                        onGeolocationResult = { allow ->
+                        browserSettings = browserSettings,
+                        request = pendingGeolocationRequest,
+                        onPermissionResult = { allow ->
                             if (allow) {
                                 // User clicked "Allow" on our panel. Now trigger the system dialog.
                                 permissionLauncher.launch(
@@ -1281,62 +801,30 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                 )
                                 pendingGeolocationRequest = null
                             }
-                        },
+                        }
+                    )
+
+                    BottomPanel(
+                        isUrlBarVisible = isUrlBarVisible,
+                        isOptionsPanelVisible = isOptionsPanelVisible,
+                        browserSettings = browserSettings,
+                        updateBrowserSettings = updateBrowserSettings,
+                        textFieldValue = textFieldValue,
+                        url = url,
+                        focusManager = focusManager,
+                        keyboardController = keyboardController,
+                        textFieldHeightDp = textFieldHeightDp,
+                        toggleOptionsPanel = { isOptionsPanelVisible = it },
+                        changeTextFieldValue = { textFieldValue = it },
+                        changeUrl = { url = it },
+                        toggleUrlBar = { isUrlBarVisible = it },
+                        setTextFieldHeightPx = { textFieldHeightPx = it },
+                        setIsFocusOnTextField = { isFocusOnTextField = it },
+                        pendingGeolocationRequest = pendingGeolocationRequest,
                         triggerKeyboardEffect = {
                             keyboardEffectTrigger = !keyboardEffectTrigger
                         },
-                        onTrackpadDrag = { dragAmount ->
-                            // --- THIS IS THE ONLY CHANGE NEEDED ---
 
-                            // 1. Apply our acceleration function to the raw drag amount.
-                            val acceleratedDrag = applyTrackpadAcceleration(dragAmount)
-
-                            // 2. Use the new accelerated value for the rest of the logic.
-                            val newX = (cursorPositionPx.x + acceleratedDrag.x).coerceIn(
-                                0f,
-                                webViewSizePx.x
-                            )
-                            val newY = (cursorPositionPx.y + acceleratedDrag.y).coerceIn(
-                                0f,
-                                webViewSizePx.y
-                            )
-                            cursorPositionPx = Offset(newX, newY)
-                        },
-                        onTrackpadTap = {
-                            val (x, y) = cursorPositionPx
-                            webView.evaluateJavascript(getTrackpadJavaScript("click", x, y), null)
-                        },
-                        onTrackpadScroll = { scrollAmount ->
-                            // Determine the final scroll direction based on the user's setting.
-                            val finalScrollAmount = if (browserSettings.isNaturalScrolling) {
-                                scrollAmount
-                            } else {
-                                // Invert the vector for traditional scrolling
-                                scrollAmount * -1f
-                            }
-                            webView.evaluateJavascript(
-                                getScrollJavaScript(
-                                    finalScrollAmount.x,
-                                    finalScrollAmount.y
-                                ), null
-                            )
-                        },
-                        onTrackpadScrollStateChange = { isScrolling ->
-                            isTrackpadInScrollMode = isScrolling
-                        },
-                        isTrackpadInScrollMode = isTrackpadInScrollMode,
-//                        onTrackpadDrag = { dragAmount ->
-//                            // Clamp the new position to be within the WebView's bounds
-//                            val newX =
-//                                (cursorPositionPx.x + dragAmount.x).coerceIn(0f, webViewSizePx.x)
-//                            val newY =
-//                                (cursorPositionPx.y + dragAmount.y).coerceIn(0f, webViewSizePx.y)
-//                            cursorPositionPx = Offset(newX, newY)
-//                        },
-//                        onTrackpadTap = {
-//                            val (x, y) = cursorPositionPx
-//                            webView.evaluateJavascript(getTrackpadJavaScript("click", x, y), null)
-//                        }
 
                     )
 
@@ -1365,7 +853,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 @Composable
 fun BottomPanel(
     pendingGeolocationRequest: Pair<String, GeolocationPermissions.Callback>?,
-    onGeolocationResult: (allow: Boolean) -> Unit,
     isUrlBarVisible: Boolean,
     isOptionsPanelVisible: Boolean,
     browserSettings: BrowserSettings,
@@ -1382,11 +869,7 @@ fun BottomPanel(
     setTextFieldHeightPx: (Int) -> Unit = {},
     setIsFocusOnTextField: (Boolean) -> Unit = {},
     triggerKeyboardEffect: () -> Unit = {},
-    onTrackpadDrag: (Offset) -> Unit,
-    onTrackpadTap: () -> Unit,
-    onTrackpadScroll: (Offset) -> Unit,
-    onTrackpadScrollStateChange: (Boolean) -> Unit,
-    isTrackpadInScrollMode: Boolean,
+
 ) {
     AnimatedVisibility(
         visible = isUrlBarVisible,
@@ -1395,12 +878,7 @@ fun BottomPanel(
     ) {
         Column {
 
-            PermissionPanel(
-                textFieldHeightDp = textFieldHeightDp,
-                browserSettings = browserSettings,
-                request = pendingGeolocationRequest,
-                onPermissionResult = onGeolocationResult
-            )
+
 
             // URL BAR
             Row(
@@ -1495,16 +973,6 @@ fun BottomPanel(
                                 }
                             } else {
 
-                                if (browserSettings.isKeyboardMode) {
-                                    // do something here to force the keyboard not hide when i unfocus the text field
-                                    triggerKeyboardEffect()
-                                } else {
-                                    // just do nothing so the keyboard will be hidden just like its nature,
-                                    // no need to update the isKeyboardMode to false as it have already false
-                                    updateBrowserSettings(browserSettings.copy(isKeyboardMode = false))
-                                }
-
-
                                 if (textFieldValue.text.isBlank()) {
                                     changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
                                 }
@@ -1551,17 +1019,6 @@ fun BottomPanel(
                 }
             }
 
-            AnimatedVisibility(visible = browserSettings.isTrackpadMode) {
-                Trackpad(
-                    browserSettings = browserSettings,
-                    onDrag = onTrackpadDrag,
-                    onTap = onTrackpadTap,
-                    onScroll = onTrackpadScroll,
-                    onScrollStateChange = onTrackpadScrollStateChange,
-                    isScrollMode = isTrackpadInScrollMode
-
-                )
-            }
 
 
             // SETTING OPTIONS
@@ -1578,6 +1035,7 @@ fun BottomPanel(
 @Composable
 fun PermissionPanel(
     textFieldHeightDp: Dp,
+    setIsImmersiveMode: (Boolean) -> Unit,
     browserSettings: BrowserSettings,
     // The pending request, which also controls visibility. Null means hidden.
     request: Pair<String, GeolocationPermissions.Callback>?,
@@ -1586,6 +1044,7 @@ fun PermissionPanel(
 ) {
     val isVisible = request != null
     val origin = request?.first ?: "" // The website URL
+
 
     AnimatedVisibility(
         visible = isVisible,
@@ -1678,19 +1137,19 @@ fun OptionsPanel(
                 updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
             },
 
-            OptionItem(
-                if (!browserSettings.isKeyboardMode) R.drawable.ic_keyboard else R.drawable.ic_keyboard_hide,
-                "Show Keyboard"
-            ) {
-                updateBrowserSettings(browserSettings.copy(isKeyboardMode = !browserSettings.isKeyboardMode))
-            },
-
-            OptionItem(
-                if (browserSettings.isTrackpadMode) R.drawable.ic_touch else R.drawable.ic_mouse_cursor, // Use your new icon
-                "Trackpad Mode"
-            ) {
-                updateBrowserSettings(browserSettings.copy(isTrackpadMode = !browserSettings.isTrackpadMode))
-            },
+//            OptionItem(
+//                if (!browserSettings.isKeyboardMode) R.drawable.ic_keyboard else R.drawable.ic_keyboard_hide,
+//                "Show Keyboard"
+//            ) {
+//                updateBrowserSettings(browserSettings.copy(isKeyboardMode = !browserSettings.isKeyboardMode))
+//            },
+//
+//            OptionItem(
+//                if (browserSettings.isTrackpadMode) R.drawable.ic_touch else R.drawable.ic_mouse_cursor, // Use your new icon
+//                "Trackpad Mode"
+//            ) {
+//                updateBrowserSettings(browserSettings.copy(isTrackpadMode = !browserSettings.isTrackpadMode))
+//            },
 
             OptionItem(R.drawable.ic_bug, "logBrowserSettings") {
                 Log.e("BROWSER SETTINGS", browserSettings.toString())
