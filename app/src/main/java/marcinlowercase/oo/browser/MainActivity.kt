@@ -84,7 +84,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalHapticFeedback
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -195,6 +197,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 ?: browserSettings.defaultUrl
         )
     }
+    var isAnyOtherViewMode by rememberSaveable { mutableStateOf(false) }
 
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(url, TextRange(url.length)))
@@ -216,9 +219,14 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // Convert the pixel height to Dp
     val textFieldHeightDp = with(density) { textFieldHeightPx.toDp() }
 
+    val scrollChannel = remember { Channel<Offset>(Channel.UNLIMITED) }
+
+
+    var isBottomPanelVisible by rememberSaveable { mutableStateOf(true) }
 
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
 
+    var isOnlyWebViewVisible by rememberSaveable { mutableStateOf(false) }
 
     var isOptionsPanelVisible by rememberSaveable { mutableStateOf(false) }
 
@@ -227,7 +235,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     val animatedPadding by animateDpAsState(
-        targetValue = if (isUrlBarVisible) browserSettings.paddingDp.dp else 0.dp,
+        targetValue = if (isBottomPanelVisible) browserSettings.paddingDp.dp else 0.dp,
         label = "Padding Animation",
     )
 
@@ -246,7 +254,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val cutoutBottom = cutoutPaddingValues.calculateBottomPadding()
 
     // 2. Create animated states for each cutout dimension.
-    //    They will animate to the cutout value ONLY when isUrlBarVisible is false.
+    //    They will animate to the cutout value ONLY when isBottomPanelVisible is false.
     val animatedCutoutTop by animateDpAsState(
         targetValue = if (!isUrlBarVisible) cutoutTop else 0.dp,
         animationSpec = tween(browserSettings.animationSpeed),
@@ -275,13 +283,13 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     // Create animated states for the system bar insets.
     val animatedSystemBarTop by animateDpAsState(
-        targetValue = if (isUrlBarVisible) systemBarTop else 0.dp,
+        targetValue = if (isBottomPanelVisible) systemBarTop else 0.dp,
         animationSpec = if (hasDisplayCutout) tween(browserSettings.animationSpeed) else snap(0), // Always animate smoothly for cutout and snap for full screen
         label = "SystemBar Top Animation"
     )
     val animatedSystemBarBottom by animateDpAsState(
-        targetValue = if (isUrlBarVisible && !isKeyboardVisibleForPadding) systemBarBottom else if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else 0.dp,
-        animationSpec = if (!isUrlBarVisible || !isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
+        targetValue = if (isAnyOtherViewMode && !isKeyboardVisibleForPadding) systemBarBottom else if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else if (isOnlyWebViewVisible) 0.dp else systemBarBottom,
+        animationSpec = if (!isAnyOtherViewMode || !isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
             0
         ), // Always animate smoothly
         label = "SystemBar Bottom Animation"
@@ -343,6 +351,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     var cursorPositionPx by remember { mutableStateOf(Offset(300f, 300f)) }
     var webViewSizePx by remember { mutableStateOf(Offset(0f, 0f)) }
     var isTrackpadInScrollMode by remember { mutableStateOf(false) }
+
 
 
     val webView = remember {
@@ -573,6 +582,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
         }
     }
+
 
 
     // FUNCTIONS
@@ -1007,6 +1017,31 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // LAUNCH EFFECTS
     //
 
+    // This coroutine listens for scroll events from the channel and executes the JS.
+    // This decouples the slow WebView work from the fast gesture detection.
+    LaunchedEffect(scrollChannel, webView) {
+        for (scrollAmount in scrollChannel) {
+            // Determine the final scroll direction based on the user's setting.
+            val finalScrollAmount = if (browserSettings.isNaturalScrolling) {
+                scrollAmount
+            } else {
+                // Invert the vector for traditional scrolling
+                scrollAmount * -1f
+            }
+            webView.evaluateJavascript(
+                getScrollJavaScript(finalScrollAmount.x, finalScrollAmount.y),
+                null
+            )
+        }
+    }
+
+    LaunchedEffect(browserSettings.isKeyboardMode, browserSettings.isTrackpadMode) {
+        isAnyOtherViewMode = browserSettings.isKeyboardMode || browserSettings.isTrackpadMode
+    }
+
+    LaunchedEffect(isBottomPanelVisible, isUrlBarVisible) {
+        isOnlyWebViewVisible = !(isBottomPanelVisible && isUrlBarVisible)
+    }
 
 // Effect to manage the cursor's existence (create/remove)
     LaunchedEffect(browserSettings.isTrackpadMode) {
@@ -1123,7 +1158,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    BackHandler(enabled = !isUrlBarVisible || canGoBack) {
+    BackHandler(enabled = !isBottomPanelVisible || !isUrlBarVisible || canGoBack) {
         when {
             // Priority 1: Exit fullscreen video if it's active.
             customView != null -> {
@@ -1131,8 +1166,15 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
             }
             // Priority 2: Exit main browser's immersive mode.
+
             !isUrlBarVisible -> {
                 isUrlBarVisible = true
+                updateBrowserSettings(browserSettings.copy(isInteractable = false))
+
+            }
+
+            !isBottomPanelVisible -> {
+                isBottomPanelVisible = true
                 updateBrowserSettings(browserSettings.copy(isInteractable = false))
             }
             // Priority 3: Navigate back in the WebView.
@@ -1232,7 +1274,13 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                             if (!isDrag) {
                                                 // If our flag is still false, it means onSlopCrossed was
                                                 // never called. Therefore, it must be a tap.
-                                                isUrlBarVisible = false
+                                                if (isAnyOtherViewMode) {
+                                                    isUrlBarVisible = false
+                                                    isOptionsPanelVisible = false
+                                                } else {
+                                                    isBottomPanelVisible = false
+                                                }
+
                                                 updateBrowserSettings(
                                                     browserSettings.copy(
                                                         isInteractable = true
@@ -1247,7 +1295,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     }
 
                     BottomPanel(
+                        isAnyOtherViewMode = isAnyOtherViewMode,
                         isUrlBarVisible = isUrlBarVisible,
+                        isKeyboardVisibleForPadding = isKeyboardVisibleForPadding,
+                        isBottomPanelVisible = isBottomPanelVisible,
                         isOptionsPanelVisible = isOptionsPanelVisible,
                         browserSettings = browserSettings,
                         updateBrowserSettings = updateBrowserSettings,
@@ -1259,7 +1310,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         toggleOptionsPanel = { isOptionsPanelVisible = it },
                         changeTextFieldValue = { textFieldValue = it },
                         changeUrl = { url = it },
-                        toggleUrlBar = { isUrlBarVisible = it },
+                        toggleUrlBar = { isBottomPanelVisible = it },
                         setTextFieldHeightPx = { textFieldHeightPx = it },
                         setIsFocusOnTextField = { isFocusOnTextField = it },
                         pendingGeolocationRequest = pendingGeolocationRequest,
@@ -1307,19 +1358,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             webView.evaluateJavascript(getTrackpadJavaScript("click", x, y), null)
                         },
                         onTrackpadScroll = { scrollAmount ->
-                            // Determine the final scroll direction based on the user's setting.
-                            val finalScrollAmount = if (browserSettings.isNaturalScrolling) {
-                                scrollAmount
-                            } else {
-                                // Invert the vector for traditional scrolling
-                                scrollAmount * -1f
-                            }
-                            webView.evaluateJavascript(
-                                getScrollJavaScript(
-                                    finalScrollAmount.x,
-                                    finalScrollAmount.y
-                                ), null
-                            )
+                            // Convert the Dp value to Px.
+                            val scrollAmountPx = scrollAmount * density.density
+                            // Simply try to send the scroll delta to the channel.
+                            // This is non-blocking and extremely fast, allowing the gesture
+                            // detector to continue working smoothly.
+                            scrollChannel.trySend(scrollAmountPx)
                         },
                         onTrackpadScrollStateChange = { isScrolling ->
                             isTrackpadInScrollMode = isScrolling
@@ -1364,9 +1408,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    isAnyOtherViewMode: Boolean,
+    isUrlBarVisible: Boolean,
+    isKeyboardVisibleForPadding: Boolean,
     pendingGeolocationRequest: Pair<String, GeolocationPermissions.Callback>?,
     onGeolocationResult: (allow: Boolean) -> Unit,
-    isUrlBarVisible: Boolean,
+    isBottomPanelVisible: Boolean,
     isOptionsPanelVisible: Boolean,
     browserSettings: BrowserSettings,
     updateBrowserSettings: (BrowserSettings) -> Int,
@@ -1389,7 +1436,7 @@ fun BottomPanel(
     isTrackpadInScrollMode: Boolean,
 ) {
     AnimatedVisibility(
-        visible = isUrlBarVisible,
+        visible = isBottomPanelVisible,
         enter = expandVertically(tween(browserSettings.animationSpeed)),
         exit = shrinkVertically(tween(browserSettings.animationSpeed))
     ) {
@@ -1401,158 +1448,178 @@ fun BottomPanel(
                 request = pendingGeolocationRequest,
                 onPermissionResult = onGeolocationResult
             )
-
-            // URL BAR
-            Row(
-                modifier = Modifier
-                    .pointerInput(Unit) {
-                        detectVerticalDragGestures(
-                            onVerticalDrag = { change, dragAmount ->
-                                // dragAmount is the change in the Y-axis.
-                                // A negative value means the finger has moved UP.
-                                if (dragAmount < 0) {
-                                    toggleOptionsPanel(true)
-                                }
-                                // A positive value means the finger has moved DOWN.
-                                else if (dragAmount > 0) {
-                                    toggleOptionsPanel(false)
-                                }
-                            })
-                    }
-                    .padding(
-                        horizontal = browserSettings.paddingDp.dp,
-                        vertical = browserSettings.paddingDp.dp / 2
-                    ),
-                verticalAlignment = Alignment.CenterVertically
+            AnimatedVisibility(
+                visible = isUrlBarVisible,
+                enter = expandVertically(tween(browserSettings.animationSpeed)),
+                exit = shrinkVertically(tween(browserSettings.animationSpeed))
             ) {
-                OutlinedTextField(
-                    value = textFieldValue.text,
-                    onValueChange = { newValue ->
-                        changeTextFieldValue(
-                            TextFieldValue(
-                                newValue,
-                                selection = TextRange(newValue.length)
+                // URL BAR
+                Row(
+                    modifier = Modifier
+                        .pointerInput(Unit) {
+                            detectVerticalDragGestures(
+                                onVerticalDrag = { change, dragAmount ->
+                                    // dragAmount is the change in the Y-axis.
+                                    // A negative value means the finger has moved UP.
+                                    if (dragAmount < 0) {
+                                        toggleOptionsPanel(true)
+                                    }
+                                    // A positive value means the finger has moved DOWN.
+                                    else if (dragAmount > 0) {
+                                        toggleOptionsPanel(false)
+                                    }
+                                })
+                        }
+                        .padding(
+                            horizontal = browserSettings.paddingDp.dp,
+                            vertical = browserSettings.paddingDp.dp / 2
+                        ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = textFieldValue.text,
+                        onValueChange = { newValue ->
+                            changeTextFieldValue(
+                                TextFieldValue(
+                                    newValue,
+                                    selection = TextRange(newValue.length)
+                                )
                             )
-                        )
-                    },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(
-                        onGo = {
-                            val input = textFieldValue.text.trim()
-                            if (input.isBlank()) {
-                                changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(
+                            onGo = {
+                                val input = textFieldValue.text.trim()
+                                if (input.isBlank()) {
+                                    changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
+                                    focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                    return@KeyboardActions
+                                }
+                                val isUrl = try {
+                                    Patterns.WEB_URL.matcher(input).matches() ||
+                                            (input.contains(".") && !input.contains(" "))
+                                } catch (_: Exception) {
+                                    false
+                                }
+
+                                if (isUrl) {
+                                    changeUrl(
+                                        if (input.startsWith("http://") || input.startsWith("https://")) {
+                                            input
+                                        } else {
+                                            "https://$input"
+                                        }
+                                    )
+
+                                } else {
+                                    val encodedQuery =
+                                        URLEncoder.encode(
+                                            input,
+                                            StandardCharsets.UTF_8.toString()
+                                        )
+                                    changeUrl("https://www.google.com/search?q=$encodedQuery")
+                                }
                                 focusManager.clearFocus()
                                 keyboardController?.hide()
-                                return@KeyboardActions
-                            }
-                            val isUrl = try {
-                                Patterns.WEB_URL.matcher(input).matches() ||
-                                        (input.contains(".") && !input.contains(" "))
-                            } catch (_: Exception) {
-                                false
-                            }
-
-                            if (isUrl) {
-                                changeUrl(
-                                    if (input.startsWith("http://") || input.startsWith("https://")) {
-                                        input
-                                    } else {
-                                        "https://$input"
-                                    }
-                                )
-
-                            } else {
-                                val encodedQuery =
-                                    URLEncoder.encode(
-                                        input,
-                                        StandardCharsets.UTF_8.toString()
-                                    )
-                                changeUrl("https://www.google.com/search?q=$encodedQuery")
-                            }
-                            focusManager.clearFocus()
-                            keyboardController?.hide()
-                            if (!browserSettings.isInteractable) {
-                                toggleUrlBar(false)
-                                updateBrowserSettings(browserSettings.copy(isInteractable = true))
-                            }
-                        }
-                    ),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(browserSettings.singleLineHeight.dp)
-                        .onSizeChanged { size ->
-                            setTextFieldHeightPx(size.height)
-                        }
-                        .fillMaxWidth()
-                        //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
-                        .onFocusChanged {
-                            setIsFocusOnTextField(it.isFocused)
-                            if (it.isFocused) {
-
-                                if (textFieldValue.text == url) {
-                                    changeTextFieldValue(TextFieldValue("", TextRange(0)))
-                                }
-                            } else {
-
-                                if (browserSettings.isKeyboardMode) {
-                                    // do something here to force the keyboard not hide when i unfocus the text field
-                                    triggerKeyboardEffect()
-                                } else {
-                                    // just do nothing so the keyboard will be hidden just like its nature,
-                                    // no need to update the isKeyboardMode to false as it have already false
-                                    updateBrowserSettings(browserSettings.copy(isKeyboardMode = false))
-                                }
-
-
-                                if (textFieldValue.text.isBlank()) {
-                                    changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
+                                if (!browserSettings.isInteractable) {
+                                    toggleUrlBar(false)
+                                    updateBrowserSettings(browserSettings.copy(isInteractable = true))
                                 }
                             }
-                        }
-                        .pointerInput(Unit) {
-                            detectHorizontalDragGestures { _, dragAmount ->
-                                if (dragAmount > 0) {
-                                    changeTextFieldValue(
-                                        TextFieldValue(
-                                            url,
-                                            selection = TextRange(url.length)
-                                        )
-                                    )
-                                }
-                            }
-                        },
-                    shape = RoundedCornerShape(browserSettings.cornerRadiusDp.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when focused
-                        unfocusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when unfocused
-                        disabledContainerColor = if (isSystemInDarkTheme()) Color.White else Color.Black, // Background when disabled
-                        errorContainerColor = Color.Red // Background when in error state
-                    )
-                )
-                IconButton(
-                    onClick = { updateBrowserSettings(browserSettings.copy(isInteractable = !browserSettings.isInteractable)) },
-                    modifier = Modifier
-                        .padding(start = browserSettings.paddingDp.dp)
-                        .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier),
-                    colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    )
-
-                ) {
-                    Icon(
-                        painter = if (browserSettings.isInteractable) painterResource(id = R.drawable.ic_transparent) else painterResource(
-                            id = R.drawable.ic_immersive
                         ),
-                        contentDescription = "Toggle Interactable",
-//                        tint = MaterialTheme.colorScheme.onPrimary
-                        tint = MaterialTheme.colorScheme.onPrimary
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(browserSettings.singleLineHeight.dp)
+                            .onSizeChanged { size ->
+                                setTextFieldHeightPx(size.height)
+                            }
+                            .fillMaxWidth()
+                            //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
+                            .onFocusChanged {
+                                setIsFocusOnTextField(it.isFocused)
+                                if (it.isFocused) {
+
+                                    if (textFieldValue.text == url) {
+                                        changeTextFieldValue(TextFieldValue("", TextRange(0)))
+                                    }
+                                } else {
+
+                                    if (browserSettings.isKeyboardMode) {
+                                        // do something here to force the keyboard not hide when i unfocus the text field
+                                        triggerKeyboardEffect()
+                                    } else {
+                                        // just do nothing so the keyboard will be hidden just like its nature,
+                                        // no need to update the isKeyboardMode to false as it have already false
+                                        updateBrowserSettings(browserSettings.copy(isKeyboardMode = false))
+                                    }
+
+
+                                    if (textFieldValue.text.isBlank()) {
+                                        changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
+                                    }
+                                }
+                            }
+                            .pointerInput(Unit) {
+                                detectHorizontalDragGestures { _, dragAmount ->
+                                    if (dragAmount > 0) {
+                                        changeTextFieldValue(
+                                            TextFieldValue(
+                                                url,
+                                                selection = TextRange(url.length)
+                                            )
+                                        )
+                                    }
+                                }
+                            },
+                        shape = RoundedCornerShape(browserSettings.cornerRadiusDp.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when focused
+                            unfocusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when unfocused
+                            disabledContainerColor = if (isSystemInDarkTheme()) Color.White else Color.Black, // Background when disabled
+                            errorContainerColor = Color.Red // Background when in error state
+                        )
                     )
+                    IconButton(
+                        onClick = { updateBrowserSettings(browserSettings.copy(isInteractable = !browserSettings.isInteractable)) },
+                        modifier = Modifier
+                            .padding(start = browserSettings.paddingDp.dp)
+                            .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+
+                    ) {
+                        Icon(
+                            painter = if (browserSettings.isInteractable) painterResource(id = R.drawable.ic_transparent) else painterResource(
+                                id = R.drawable.ic_immersive
+                            ),
+                            contentDescription = "Toggle Interactable",
+//                        tint = MaterialTheme.colorScheme.onPrimary
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
                 }
             }
 
+            
+
+
+
+
+            // SETTING OPTIONS
+            OptionsPanel(
+                isAnyOtherViewMode = isAnyOtherViewMode,
+                isOptionsPanelVisible = isOptionsPanelVisible,
+                toggleOptionsPanel = toggleOptionsPanel,
+                updateBrowserSettings = updateBrowserSettings,
+                browserSettings = browserSettings,
+            )
+            
             AnimatedVisibility(visible = browserSettings.isTrackpadMode) {
                 Trackpad(
+                    isKeyboardVisibleForPadding = isKeyboardVisibleForPadding,
                     browserSettings = browserSettings,
                     onDrag = onTrackpadDrag,
                     onTap = onTrackpadTap,
@@ -1562,15 +1629,6 @@ fun BottomPanel(
 
                 )
             }
-
-
-            // SETTING OPTIONS
-            OptionsPanel(
-                isOptionsPanelVisible = isOptionsPanelVisible,
-                toggleOptionsPanel = toggleOptionsPanel,
-                updateBrowserSettings = updateBrowserSettings,
-                browserSettings = browserSettings,
-            )
         }
     }
 }
@@ -1661,6 +1719,7 @@ data class OptionItem(
 
 @Composable
 fun OptionsPanel(
+    isAnyOtherViewMode: Boolean = false,
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
     updateBrowserSettings: (BrowserSettings) -> Int,
@@ -1694,6 +1753,7 @@ fun OptionsPanel(
 
             OptionItem(R.drawable.ic_bug, "logBrowserSettings") {
                 Log.e("BROWSER SETTINGS", browserSettings.toString())
+                Log.e("isAnyOptionVisible", isAnyOtherViewMode.toString())
             },
             OptionItem(R.drawable.ic_fullscreen, "Button 4") { /* ... */ },
             OptionItem(R.drawable.ic_fullscreen, "Button 5") { /* ... */ },
@@ -1819,6 +1879,7 @@ fun OptionsPanel(
 @Composable
 fun Trackpad(
     browserSettings: BrowserSettings = LocalBrowserSettings.current,
+    isKeyboardVisibleForPadding: Boolean ,
     modifier: Modifier = Modifier,
     onDrag: (Offset) -> Unit,
     onTap: () -> Unit,
@@ -1839,11 +1900,16 @@ fun Trackpad(
         else MaterialTheme.colorScheme.onSecondaryContainer,
         label = "TrackpadContentColorAnimation"
     )
+    val trackpadHeight by animateDpAsState(
+        targetValue = if (!isKeyboardVisibleForPadding) browserSettings.singleLineHeight.dp * 4 else browserSettings.singleLineHeight.dp * 2,
+        label = "Trackpad Height",
+    )
 
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .height(browserSettings.singleLineHeight.dp * 4)
+            .height(trackpadHeight)
+//            .height(if (!isKeyboardVisibleForPadding) browserSettings.singleLineHeight.dp * 4 else browserSettings.singleLineHeight.dp * 2)
             .padding(
                 horizontal = browserSettings.paddingDp.dp,
                 vertical = browserSettings.paddingDp.dp / 2
