@@ -1,5 +1,8 @@
 package marcinlowercase.oo.browser
 
+
+import android.Manifest
+import android.os.Build
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
@@ -367,6 +370,34 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     )
                 }
 
+
+                override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
+                    // We explicitly use "android.webkit.PermissionRequest" in the signature.
+
+                    // Check if the website is asking for the microphone.
+                    if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
+                        // This is a microphone request. Let's create our custom UI prompt for it.
+                        pendingPermissionRequest = PermissionRequest(
+                            title = "Microphone Access",
+                            rationale = "'${request.origin}' would like to use your microphone.",
+                            iconResAllow = R.drawable.ic_mic_on,
+                            iconResDeny = R.drawable.ic_mic_off,
+                            permissionsToRequest = listOf(Manifest.permission.RECORD_AUDIO),
+                            onResult = { permissionsResult ->
+                                val wasGranted = permissionsResult[Manifest.permission.RECORD_AUDIO] == true
+                                if (wasGranted) {
+                                    request.grant(arrayOf(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                                } else {
+                                    request.deny()
+                                }
+                            }
+                        )
+                    } else {
+                        // If it's for any other permission that we don't handle, deny it.
+                        request.deny()
+                    }
+                }
+
                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                     if (fullscreenView != null) {
                         callback?.onCustomViewHidden()
@@ -540,6 +571,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 javaScriptCanOpenWindowsAutomatically = true
                 cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+
+                mediaPlaybackRequiresUserGesture = false
 
                 // CRITICAL: Zoom must be supported for overview mode to work reliably.
                 setSupportZoom(true)
@@ -1099,7 +1132,7 @@ fun PermissionPanel(
                         )
                     ) {
                         Icon(
-                            painter = painterResource(id = request.iconResDeny), // You can make this icon generic too
+                            painter = painterResource(id = request.iconResAllow), // You can make this icon generic too
                             contentDescription = "Allow Permission",
                             tint = MaterialTheme.colorScheme.onPrimary
                         )
@@ -1109,84 +1142,6 @@ fun PermissionPanel(
         }
     }
 }
-//@Composable
-//fun PermissionPanel(
-//    textFieldHeightDp: Dp,
-//    setIsImmersiveMode: (Boolean) -> Unit,
-//    browserSettings: BrowserSettings,
-//    // The pending request, which also controls visibility. Null means hidden.
-//    request: Pair<String, GeolocationPermissions.Callback>?,
-//    // Event for when the user makes a choice on OUR panel.
-//    onPermissionResult: (allow: Boolean) -> Unit
-//) {
-//    val isVisible = request != null
-//    val origin = request?.first ?: "" // The website URL
-//
-//
-//    AnimatedVisibility(
-//        visible = isVisible,
-//        enter = expandVertically(),
-//        exit = shrinkVertically()
-//    ) {
-//        Card(
-//            modifier = Modifier
-//                .fillMaxWidth(),
-////                .padding(
-////                    horizontal = browserSettings.paddingDp.dp,
-////                    vertical = browserSettings.paddingDp.dp / 2
-////                )
-//            colors = CardDefaults.cardColors(
-//                containerColor = Color.Transparent
-//            ),
-//        ) {
-//            // Apply padding to the Column to give the content some breathing room
-//            Column(modifier = Modifier.padding(browserSettings.paddingDp.dp)) {
-//                // --- THIS IS THE MODIFIED ROW ---
-//                Row(
-//                    modifier = Modifier.fillMaxWidth(),
-//                    // This automatically adds space BETWEEN the buttons
-//                    horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
-//                ) {
-//                    // --- Deny Button ---
-//                    IconButton(
-//                        onClick = { onPermissionResult(false) },
-//                        // This makes the button take up one share of the available space
-//                        modifier = Modifier
-//                            .weight(1f)
-//                            .height(browserSettings.singleLineHeight.dp), // Use a fixed height
-//                        colors = IconButtonDefaults.iconButtonColors(
-//                            containerColor = MaterialTheme.colorScheme.secondaryContainer // A less prominent color
-//                        )
-//                    ) {
-//                        Icon(
-//                            painter = painterResource(id = R.drawable.ic_location_off),
-//                            contentDescription = "Deny Location Permission",
-//                            tint = MaterialTheme.colorScheme.onSecondaryContainer
-//                        )
-//                    }
-//
-//                    // --- Allow Button ---
-//                    IconButton(
-//                        onClick = { onPermissionResult(true) },
-//                        // This also takes up one share, creating a 50/50 split
-//                        modifier = Modifier
-//                            .weight(1f)
-//                            .height(browserSettings.singleLineHeight.dp), // Use a fixed height
-//                        colors = IconButtonDefaults.iconButtonColors(
-//                            containerColor = MaterialTheme.colorScheme.primary // The main action color
-//                        )
-//                    ) {
-//                        Icon(
-//                            painter = painterResource(id = R.drawable.ic_location_on),
-//                            contentDescription = "Allow Location Permission",
-//                            tint = MaterialTheme.colorScheme.onPrimary
-//                        )
-//                    }
-//                }
-//            }
-//        }
-//    }
-//}
 
 
 data class OptionItem(
