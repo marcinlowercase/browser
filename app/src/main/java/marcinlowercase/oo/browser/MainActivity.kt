@@ -32,7 +32,10 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
@@ -697,9 +700,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         .windowInsetsPadding(WindowInsets.ime)
 
                 ) {
-                    if (isLoading) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
+
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -779,33 +780,11 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             )
 
                         }
+
+                        LoadingOverlay(isLoading = isLoading)
                     }
 
-//                    PermissionPanel(
-//                        setIsImmersiveMode= setIsImmersiveMode,
-//                        textFieldHeightDp = textFieldHeightDp,
-//                        browserSettings = browserSettings,
-//                        request = pendingPermissionRequest,
-//                        onPermissionResult = { allow ->
-//                            if (allow) {
-//                                // User clicked "Allow" on our panel. Now trigger the system dialog.
-//                                permissionLauncher.launch(
-//                                    arrayOf(
-//                                        android.Manifest.permission.ACCESS_FINE_LOCATION,
-//                                        android.Manifest.permission.ACCESS_COARSE_LOCATION
-//                                    )
-//                                )
-//                            } else {
-//                                // User clicked "Deny" on our panel. Tell the WebView and hide.
-//                                pendingPermissionRequest?.second?.invoke(
-//                                    pendingPermissionRequest!!.first,
-//                                    false,
-//                                    false
-//                                )
-//                                pendingPermissionRequest = null
-//                            }
-//                        }
-//                    )
+
 
                     PermissionPanel(
                         browserSettings = browserSettings,
@@ -1330,32 +1309,42 @@ fun OptionsPanel(
                 }
             }
 
-//            LazyRow(
-//                modifier = Modifier.fillMaxWidth(),
-//                // Add consistent spacing between each button
-//                horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
-//            ) {
-//                // The `items` block is like a forEach loop for LazyRow/LazyColumn
-//                items(options) { option ->
-//                    // --- 3. Create an IconButton for each option ---
-//                    IconButton(
-//                        onClick = option.onClick,
-//                        // Make each button take up roughly 1/4th of the screen width
-//                        // minus the padding, so four are visible at a time.
-//                        modifier = Modifier.width(IntrinsicSize.Min), // Example sizing
-//                        colors = IconButtonDefaults.iconButtonColors(
-//                            containerColor = MaterialTheme.colorScheme.primaryContainer
-//                        )
-//                    ) {
-//                        Icon(
-//                            painter = painterResource(id = option.iconRes),
-//                            contentDescription = option.contentDescription,
-//                            tint = MaterialTheme.colorScheme.onPrimaryContainer
-//                        )
-//                    }
-//                }
-//
-//            }
+        }
+    }
+}
+
+/**
+ * A semi-transparent overlay with a circular progress indicator that appears
+ * on top of other content.
+ *
+ * @param isLoading Controls the visibility of the overlay.
+ * @param modifier The modifier to be applied to the overlay.
+ */
+@Composable
+fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier) {
+    // Animate the appearance and disappearance of the overlay.
+    AnimatedVisibility(
+        visible = isLoading,
+        modifier = modifier,
+        enter = fadeIn(animationSpec = tween(300)),
+        exit = fadeOut(animationSpec = tween(300))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                // Use a theme-aware scrim color for a professional look.
+                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
+                // CRITICAL: This consumes all touch events, preventing the user
+                // from interacting with the WebView while it's loading.
+                .pointerInput(Unit) {},
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(64.dp),
+                // Use a contrasting color that works well on the dark scrim.
+                color = MaterialTheme.colorScheme.primary,
+                strokeWidth = 6.dp
+            )
         }
     }
 }
