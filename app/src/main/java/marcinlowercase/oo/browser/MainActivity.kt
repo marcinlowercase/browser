@@ -11,7 +11,6 @@ import android.util.Patterns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.inputmethod.InputMethodManager
 import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
@@ -80,14 +79,6 @@ import androidx.core.view.WindowInsetsControllerCompat
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.foundation.gestures.drag
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -116,6 +107,8 @@ data class BrowserSettings(
 data class PermissionRequest(
     val title: String,
     val rationale: String,
+    val iconResAllow: Int,
+    val iconResDeny: Int,
     val permissionsToRequest: List<String>,
     val onResult: (Map<String, Boolean>) -> Unit
 )
@@ -199,8 +192,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     var isImmersiveMode by remember { mutableStateOf(false) }
-
-    val setIsImmersiveMode = { value: Boolean -> isImmersiveMode = value }
 
 
 
@@ -309,8 +300,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // We only need the CustomViewCallback as state now.
     var originalOrientation by remember { mutableIntStateOf(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) }
 
-    var keyboardEffectTrigger by remember { mutableStateOf(false) }
-
     val activity = context as? Activity // Get the activity reference
 
     // Define your User Agent strings
@@ -319,22 +308,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val desktopUserAgent =
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
-    //  function to configure the WebView ---
-    fun updateWebViewSettings(webView: WebView, isDesktop: Boolean) {
-        webView.settings.apply {
-            userAgentString = if (isDesktop) desktopUserAgent else mobileUserAgent
-
-            // THIS IS THE KEY: We toggle the viewport settings based on the mode.
-            useWideViewPort = isDesktop
-            loadWithOverviewMode = isDesktop
-
-            // These settings are always good to have
-            layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
-            setSupportZoom(true)
-            builtInZoomControls = true
-            displayZoomControls = false
-        }
-    }
 
     var pendingPermissionRequest by remember {
         mutableStateOf<PermissionRequest?>(null)
@@ -352,9 +325,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     )
 
-    var cursorPositionPx by remember { mutableStateOf(Offset(300f, 300f)) }
-    var webViewSizePx by remember { mutableStateOf(Offset(0f, 0f)) }
-    var isTrackpadInScrollMode by remember { mutableStateOf(false) }
 
 
     val webView = remember {
@@ -378,6 +348,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     pendingPermissionRequest = PermissionRequest(
                         title = "Location Access Required",
                         rationale = "This website wants to use your device's location.",
+                        iconResAllow = R.drawable.ic_location_on,
+                        iconResDeny = R.drawable.ic_location_off,
                         permissionsToRequest = listOf(
                             android.Manifest.permission.ACCESS_FINE_LOCATION,
                             android.Manifest.permission.ACCESS_COARSE_LOCATION
@@ -592,7 +564,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     // This function will be our single, safe way to update settings.
     val updateBrowserSettings = { newSettings: BrowserSettings ->
-        browserSettings = newSettings;
+        browserSettings = newSettings
         Log.e("updateBrowserSettings", browserSettings.toString())
     }
 
@@ -677,7 +649,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     LaunchedEffect(animatedPadding) {
         // We now have a hook that runs on every animation frame.
         // We can command our WebView to update its layout.
-        webView?.requestLayout()
+        webView.requestLayout()
     }
 
     LaunchedEffect(url) {
@@ -700,7 +672,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             }
             // Priority 3: Navigate back in the WebView.
             else -> {
-                webView?.goBack()
+                webView.goBack()
             }
         }
     }
@@ -741,9 +713,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             )
                             .clip(RoundedCornerShape(animatedCornerRadius))
                             .testTag("WebViewContainer")
-                            .onSizeChanged {
-                                webViewSizePx = Offset(it.width.toFloat(), it.height.toFloat())
-                            }
+
                     ) {
                         AndroidView(
                             factory = {
@@ -871,10 +841,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         toggleUrlBar = { isUrlBarVisible = it },
                         setTextFieldHeightPx = { textFieldHeightPx = it },
                         setIsFocusOnTextField = { isFocusOnTextField = it },
-                        pendingPermissionRequest = pendingPermissionRequest,
-                        triggerKeyboardEffect = {
-                            keyboardEffectTrigger = !keyboardEffectTrigger
-                        },
 
 
                     )
@@ -904,7 +870,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 @Composable
 fun BottomPanel(
     isImmersiveMode: Boolean,
-    pendingPermissionRequest: PermissionRequest?,
     isUrlBarVisible: Boolean,
     isOptionsPanelVisible: Boolean,
     browserSettings: BrowserSettings,
@@ -920,7 +885,6 @@ fun BottomPanel(
     toggleUrlBar: (Boolean) -> Unit = {},
     setTextFieldHeightPx: (Int) -> Unit = {},
     setIsFocusOnTextField: (Boolean) -> Unit = {},
-    triggerKeyboardEffect: () -> Unit = {},
 
 ) {
     AnimatedVisibility(
@@ -1139,7 +1103,7 @@ fun PermissionPanel(
                         )
                     ) {
                         Icon(
-                            painter = painterResource(id = R.drawable.ic_location_off), // You can make this icon generic too
+                            painter = painterResource(id = request.iconResDeny), // You can make this icon generic too
                             contentDescription = "Deny Permission",
                             tint = MaterialTheme.colorScheme.onSecondaryContainer
                         )
@@ -1156,7 +1120,7 @@ fun PermissionPanel(
                         )
                     ) {
                         Icon(
-                            painter = painterResource(id = R.drawable.ic_location_on), // You can make this icon generic too
+                            painter = painterResource(id = request.iconResDeny), // You can make this icon generic too
                             contentDescription = "Allow Permission",
                             tint = MaterialTheme.colorScheme.onPrimary
                         )
@@ -1392,104 +1356,6 @@ fun OptionsPanel(
 //                }
 //
 //            }
-        }
-    }
-}
-
-
-@Composable
-fun Trackpad(
-    browserSettings: BrowserSettings = LocalBrowserSettings.current,
-    modifier: Modifier = Modifier,
-    onDrag: (Offset) -> Unit,
-    onTap: () -> Unit,
-    onScroll: (Offset) -> Unit,
-    onScrollStateChange: (Boolean) -> Unit,
-    isScrollMode: Boolean,
-) {
-    val haptic = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
-
-    val trackpadColor by animateColorAsState(
-        targetValue = if (isScrollMode) MaterialTheme.colorScheme.tertiaryContainer
-        else MaterialTheme.colorScheme.secondaryContainer,
-        label = "TrackpadColorAnimation"
-    )
-    val trackpadContentColor by animateColorAsState(
-        targetValue = if (isScrollMode) MaterialTheme.colorScheme.onTertiaryContainer
-        else MaterialTheme.colorScheme.onSecondaryContainer,
-        label = "TrackpadContentColorAnimation"
-    )
-
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(browserSettings.singleLineHeight.dp * 4)
-            .padding(
-                horizontal = browserSettings.paddingDp.dp,
-                vertical = browserSettings.paddingDp.dp / 2
-            ),
-        shape = RoundedCornerShape(browserSettings.cornerRadiusDp.dp),
-        colors = CardDefaults.cardColors(containerColor = trackpadColor)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        var isLongPress = false
-
-                        val down = awaitFirstDown(requireUnconsumed = false)
-
-                        // Immediately claim this gesture for the trackpad.
-                        down.consume()
-
-                        val longPressJob = scope.launch {
-                            delay(180)
-                            isLongPress = true
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onScrollStateChange(true)
-                        }
-
-                        val firstDrag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
-                            change.consume()
-                            longPressJob.cancel()
-                        }
-
-                        if (isLongPress) {
-                            if (firstDrag != null) {
-                                firstDrag.consume()
-                                onScroll(firstDrag.position - down.position)
-                                drag(firstDrag.id) {
-                                    it.consume()
-                                    onScroll(it.position - it.previousPosition)
-                                }
-                            }
-                        } else {
-                            longPressJob.cancel()
-                            if (firstDrag != null) {
-                                firstDrag.consume()
-                                onDrag(firstDrag.position - down.position)
-                                drag(firstDrag.id) {
-                                    it.consume()
-                                    onDrag(it.position - it.previousPosition)
-                                }
-                            } else {
-                                onTap()
-                            }
-                        }
-
-                        if (isLongPress) {
-                            onScrollStateChange(false)
-                        }
-                    }
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = if (isScrollMode) "Scrolling" else "Trackpad Area",
-                color = trackpadContentColor
-            )
         }
     }
 }
