@@ -113,6 +113,12 @@ data class BrowserSettings(
     val desktopModeWidth: Int,
 )
 
+data class PermissionRequest(
+    val title: String,
+    val rationale: String,
+    val permissionsToRequest: List<String>,
+    val onResult: (Map<String, Boolean>) -> Unit
+)
 
 // This creates the "tunnel" that will provide our settings object.
 // We provide a default value as a fallback.
@@ -241,7 +247,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val cutoutTop = cutoutPaddingValues.calculateTopPadding()
     val cutoutStart = cutoutPaddingValues.calculateLeftPadding(LayoutDirection.Ltr)
     val cutoutEnd = cutoutPaddingValues.calculateRightPadding(LayoutDirection.Ltr)
-    val cutoutBottom = cutoutPaddingValues.calculateBottomPadding()
+        val cutoutBottom = cutoutPaddingValues.calculateBottomPadding()
 
     // 2. Create animated states for each cutout dimension.
     //    They will animate to the cutout value ONLY when isUrlBarVisible is false.
@@ -266,19 +272,30 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         label = "Cutout Bottom Animation"
     )
 
+    var staticSystemBarBottom by remember { mutableStateOf(0.dp) }
+    var staticSystemBarTop by remember { mutableStateOf(0.dp) }
+
     // Get the raw system bar padding values.
-    val systemBarPaddingValues = WindowInsets.systemBars.asPaddingValues()
-    val systemBarTop = systemBarPaddingValues.calculateTopPadding()
-    val systemBarBottom = systemBarPaddingValues.calculateBottomPadding()
+    val currentSystemBarInsets = WindowInsets.systemBars.asPaddingValues()
+    val currentSystemBarTop = currentSystemBarInsets.calculateTopPadding()
+    val currentSystemBarBottom = currentSystemBarInsets.calculateBottomPadding()
+
+    if (staticSystemBarBottom == 0.dp && currentSystemBarBottom > 0.dp) {
+        staticSystemBarBottom = currentSystemBarBottom
+    }
+
+    if (staticSystemBarTop == 0.dp && currentSystemBarTop > 0.dp) {
+        staticSystemBarTop = currentSystemBarTop
+    }
 
     // Create animated states for the system bar insets.
     val animatedSystemBarTop by animateDpAsState(
-        targetValue = if (isUrlBarVisible) systemBarTop else 0.dp,
+        targetValue = if (isUrlBarVisible) staticSystemBarTop else 0.dp,
         animationSpec = if (hasDisplayCutout) tween(browserSettings.animationSpeed) else snap(0), // Always animate smoothly for cutout and snap for full screen
         label = "SystemBar Top Animation"
     )
     val animatedSystemBarBottom by animateDpAsState(
-        targetValue = if (!isImmersiveMode && !isKeyboardVisibleForPadding) systemBarBottom else if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else 0.dp,
+        targetValue = if (!isImmersiveMode && !isKeyboardVisibleForPadding) staticSystemBarBottom else if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else 0.dp,
         animationSpec = if (isImmersiveMode || !isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
             0
         ), // Always animate smoothly
@@ -319,22 +336,19 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    var pendingGeolocationRequest by remember {
-        mutableStateOf<Pair<String, GeolocationPermissions.Callback>?>(null)
+    var pendingPermissionRequest by remember {
+        mutableStateOf<PermissionRequest?>(null)
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
         onResult = { permissions ->
-            val origin = pendingGeolocationRequest?.first
-            val callback = pendingGeolocationRequest?.second
-            if (origin != null && callback != null) {
-                val granted = permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true
-                // Stage 2 completion: Tell the WebView the final result.
-                callback.invoke(origin, granted, false)
-            }
+            // When the system dialog returns a result, trigger the onResult
+            // callback that we stored in our pendingPermissionRequest.
+            pendingPermissionRequest?.onResult?.invoke(permissions)
+
             // Clear the request to hide the panel.
-            pendingGeolocationRequest = null
+            pendingPermissionRequest = null
         }
     )
 
@@ -358,11 +372,24 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     origin: String?,
                     callback: GeolocationPermissions.Callback?
                 ) {
-                    if (origin != null && callback != null) {
-                        // Stage 1: A website is asking. Just save the request.
-                        // This will trigger our PermissionPanel to become visible.
-                        pendingGeolocationRequest = Pair(origin, callback)
-                    }
+                    if (origin == null || callback == null) return
+
+                    // Create a new generic permission request for this specific geolocation prompt.
+                    pendingPermissionRequest = PermissionRequest(
+                        title = "Location Access Required",
+                        rationale = "This website wants to use your device's location.",
+                        permissionsToRequest = listOf(
+                            android.Manifest.permission.ACCESS_FINE_LOCATION,
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION
+                        ),
+                        // This is the key: the onResult callback for this specific request
+                        // knows how to talk back to the WebView's Geolocation callback.
+                        onResult = { permissions ->
+                            val isGranted = permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                                    permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
+                            callback.invoke(origin, isGranted, false)
+                        }
+                    )
                 }
 
                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
@@ -588,9 +615,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         webView.reload()
     }
 
-    LaunchedEffect(isUrlBarVisible, pendingGeolocationRequest) {
+    LaunchedEffect(isUrlBarVisible, pendingPermissionRequest) {
         // Determine if the permission panel should be visible.
-        val isPermissionPanelVisible = pendingGeolocationRequest != null
+        val isPermissionPanelVisible = pendingPermissionRequest != null
 
 
         isImmersiveMode = if (isPermissionPanelVisible) {
@@ -625,6 +652,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             putInt("desktop_mode_width", browserSettings.desktopModeWidth)
 
         }
+    }
+
+    LaunchedEffect(animatedSystemBarBottom) {
+        Log.e("animatedSystemBarBottom", animatedSystemBarBottom.toString())
     }
 
     LaunchedEffect(Unit) {
@@ -765,6 +796,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                 // If our flag is still false, it means onSlopCrossed was
                                                 // never called. Therefore, it must be a tap.
                                                 isUrlBarVisible = false
+                                                Log.e("isImmersiveMode",  isImmersiveMode.toString())
+                                                Log.e("HHH", animatedSystemBarBottom.toString())
                                                 updateBrowserSettings(
                                                     browserSettings.copy(
                                                         isInteractable = true
@@ -778,33 +811,51 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
                     }
 
+//                    PermissionPanel(
+//                        setIsImmersiveMode= setIsImmersiveMode,
+//                        textFieldHeightDp = textFieldHeightDp,
+//                        browserSettings = browserSettings,
+//                        request = pendingPermissionRequest,
+//                        onPermissionResult = { allow ->
+//                            if (allow) {
+//                                // User clicked "Allow" on our panel. Now trigger the system dialog.
+//                                permissionLauncher.launch(
+//                                    arrayOf(
+//                                        android.Manifest.permission.ACCESS_FINE_LOCATION,
+//                                        android.Manifest.permission.ACCESS_COARSE_LOCATION
+//                                    )
+//                                )
+//                            } else {
+//                                // User clicked "Deny" on our panel. Tell the WebView and hide.
+//                                pendingPermissionRequest?.second?.invoke(
+//                                    pendingPermissionRequest!!.first,
+//                                    false,
+//                                    false
+//                                )
+//                                pendingPermissionRequest = null
+//                            }
+//                        }
+//                    )
+
                     PermissionPanel(
-                        setIsImmersiveMode= setIsImmersiveMode,
-                        textFieldHeightDp = textFieldHeightDp,
                         browserSettings = browserSettings,
-                        request = pendingGeolocationRequest,
-                        onPermissionResult = { allow ->
-                            if (allow) {
-                                // User clicked "Allow" on our panel. Now trigger the system dialog.
-                                permissionLauncher.launch(
-                                    arrayOf(
-                                        android.Manifest.permission.ACCESS_FINE_LOCATION,
-                                        android.Manifest.permission.ACCESS_COARSE_LOCATION
-                                    )
-                                )
-                            } else {
-                                // User clicked "Deny" on our panel. Tell the WebView and hide.
-                                pendingGeolocationRequest?.second?.invoke(
-                                    pendingGeolocationRequest!!.first,
-                                    false,
-                                    false
-                                )
-                                pendingGeolocationRequest = null
+                        request = pendingPermissionRequest,
+                        onAllow = {
+                            // When user clicks allow, launch the system dialog with the permissions
+                            // stored in our request object.
+                            pendingPermissionRequest?.let {
+                                permissionLauncher.launch(it.permissionsToRequest.toTypedArray())
                             }
+                        },
+                        onDeny = {
+                            // When user clicks deny, immediately invoke the stored onResult callback
+                            // with an empty map (signifying denial) and clear the request.
+                            pendingPermissionRequest?.onResult?.invoke(emptyMap())
+                            pendingPermissionRequest = null
                         }
                     )
-
                     BottomPanel(
+                        isImmersiveMode = isImmersiveMode,
                         isUrlBarVisible = isUrlBarVisible,
                         isOptionsPanelVisible = isOptionsPanelVisible,
                         browserSettings = browserSettings,
@@ -820,7 +871,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         toggleUrlBar = { isUrlBarVisible = it },
                         setTextFieldHeightPx = { textFieldHeightPx = it },
                         setIsFocusOnTextField = { isFocusOnTextField = it },
-                        pendingGeolocationRequest = pendingGeolocationRequest,
+                        pendingPermissionRequest = pendingPermissionRequest,
                         triggerKeyboardEffect = {
                             keyboardEffectTrigger = !keyboardEffectTrigger
                         },
@@ -852,7 +903,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
-    pendingGeolocationRequest: Pair<String, GeolocationPermissions.Callback>?,
+    isImmersiveMode: Boolean,
+    pendingPermissionRequest: PermissionRequest?,
     isUrlBarVisible: Boolean,
     isOptionsPanelVisible: Boolean,
     browserSettings: BrowserSettings,
@@ -1023,6 +1075,7 @@ fun BottomPanel(
 
             // SETTING OPTIONS
             OptionsPanel(
+                isImmersiveMode = isImmersiveMode,
                 isOptionsPanelVisible = isOptionsPanelVisible,
                 toggleOptionsPanel = toggleOptionsPanel,
                 updateBrowserSettings = updateBrowserSettings,
@@ -1032,76 +1085,79 @@ fun BottomPanel(
     }
 }
 
+// --- REPLACE THE ENTIRE OLD PermissionPanel WITH THIS ---
+
 @Composable
 fun PermissionPanel(
-    textFieldHeightDp: Dp,
-    setIsImmersiveMode: (Boolean) -> Unit,
     browserSettings: BrowserSettings,
     // The pending request, which also controls visibility. Null means hidden.
-    request: Pair<String, GeolocationPermissions.Callback>?,
-    // Event for when the user makes a choice on OUR panel.
-    onPermissionResult: (allow: Boolean) -> Unit
+    request: PermissionRequest?,
+    // Event for when the user clicks "Allow" on our panel.
+    onAllow: () -> Unit,
+    // Event for when the user clicks "Deny" on our panel.
+    onDeny: () -> Unit
 ) {
     val isVisible = request != null
-    val origin = request?.first ?: "" // The website URL
-
 
     AnimatedVisibility(
         visible = isVisible,
-        enter = expandVertically(),
-        exit = shrinkVertically()
+        enter = expandVertically(animationSpec = tween(browserSettings.animationSpeed)),
+        exit = shrinkVertically(animationSpec = tween(browserSettings.animationSpeed))
     ) {
+        // We need a non-null request to proceed, which is safe inside this
+        // AnimatedVisibility block.
+        if (request == null) return@AnimatedVisibility
+
         Card(
-            modifier = Modifier
-                .fillMaxWidth(),
-//                .padding(
-//                    horizontal = browserSettings.paddingDp.dp,
-//                    vertical = browserSettings.paddingDp.dp / 2
-//                )
+            modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
                 containerColor = Color.Transparent
             ),
         ) {
-            // Apply padding to the Column to give the content some breathing room
-            Column(modifier = Modifier.padding(browserSettings.paddingDp.dp)) {
-                // --- THIS IS THE MODIFIED ROW ---
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = browserSettings.paddingDp.dp)
+                    .padding(bottom = browserSettings.paddingDp.dp / 2),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+
+
+                // Action buttons
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    // This automatically adds space BETWEEN the buttons
                     horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
                 ) {
                     // --- Deny Button ---
                     IconButton(
-                        onClick = { onPermissionResult(false) },
-                        // This makes the button take up one share of the available space
+                        onClick = onDeny,
                         modifier = Modifier
                             .weight(1f)
-                            .height(browserSettings.singleLineHeight.dp), // Use a fixed height
+                            .height(browserSettings.singleLineHeight.dp),
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer // A less prominent color
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer
                         )
                     ) {
                         Icon(
-                            painter = painterResource(id = R.drawable.ic_location_off),
-                            contentDescription = "Deny Location Permission",
+                            painter = painterResource(id = R.drawable.ic_location_off), // You can make this icon generic too
+                            contentDescription = "Deny Permission",
                             tint = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                     }
 
                     // --- Allow Button ---
                     IconButton(
-                        onClick = { onPermissionResult(true) },
-                        // This also takes up one share, creating a 50/50 split
+                        onClick = onAllow,
                         modifier = Modifier
                             .weight(1f)
-                            .height(browserSettings.singleLineHeight.dp), // Use a fixed height
+                            .height(browserSettings.singleLineHeight.dp),
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary // The main action color
+                            containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {
                         Icon(
-                            painter = painterResource(id = R.drawable.ic_location_on),
-                            contentDescription = "Allow Location Permission",
+                            painter = painterResource(id = R.drawable.ic_location_on), // You can make this icon generic too
+                            contentDescription = "Allow Permission",
                             tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
@@ -1110,6 +1166,84 @@ fun PermissionPanel(
         }
     }
 }
+//@Composable
+//fun PermissionPanel(
+//    textFieldHeightDp: Dp,
+//    setIsImmersiveMode: (Boolean) -> Unit,
+//    browserSettings: BrowserSettings,
+//    // The pending request, which also controls visibility. Null means hidden.
+//    request: Pair<String, GeolocationPermissions.Callback>?,
+//    // Event for when the user makes a choice on OUR panel.
+//    onPermissionResult: (allow: Boolean) -> Unit
+//) {
+//    val isVisible = request != null
+//    val origin = request?.first ?: "" // The website URL
+//
+//
+//    AnimatedVisibility(
+//        visible = isVisible,
+//        enter = expandVertically(),
+//        exit = shrinkVertically()
+//    ) {
+//        Card(
+//            modifier = Modifier
+//                .fillMaxWidth(),
+////                .padding(
+////                    horizontal = browserSettings.paddingDp.dp,
+////                    vertical = browserSettings.paddingDp.dp / 2
+////                )
+//            colors = CardDefaults.cardColors(
+//                containerColor = Color.Transparent
+//            ),
+//        ) {
+//            // Apply padding to the Column to give the content some breathing room
+//            Column(modifier = Modifier.padding(browserSettings.paddingDp.dp)) {
+//                // --- THIS IS THE MODIFIED ROW ---
+//                Row(
+//                    modifier = Modifier.fillMaxWidth(),
+//                    // This automatically adds space BETWEEN the buttons
+//                    horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
+//                ) {
+//                    // --- Deny Button ---
+//                    IconButton(
+//                        onClick = { onPermissionResult(false) },
+//                        // This makes the button take up one share of the available space
+//                        modifier = Modifier
+//                            .weight(1f)
+//                            .height(browserSettings.singleLineHeight.dp), // Use a fixed height
+//                        colors = IconButtonDefaults.iconButtonColors(
+//                            containerColor = MaterialTheme.colorScheme.secondaryContainer // A less prominent color
+//                        )
+//                    ) {
+//                        Icon(
+//                            painter = painterResource(id = R.drawable.ic_location_off),
+//                            contentDescription = "Deny Location Permission",
+//                            tint = MaterialTheme.colorScheme.onSecondaryContainer
+//                        )
+//                    }
+//
+//                    // --- Allow Button ---
+//                    IconButton(
+//                        onClick = { onPermissionResult(true) },
+//                        // This also takes up one share, creating a 50/50 split
+//                        modifier = Modifier
+//                            .weight(1f)
+//                            .height(browserSettings.singleLineHeight.dp), // Use a fixed height
+//                        colors = IconButtonDefaults.iconButtonColors(
+//                            containerColor = MaterialTheme.colorScheme.primary // The main action color
+//                        )
+//                    ) {
+//                        Icon(
+//                            painter = painterResource(id = R.drawable.ic_location_on),
+//                            contentDescription = "Allow Location Permission",
+//                            tint = MaterialTheme.colorScheme.onPrimary
+//                        )
+//                    }
+//                }
+//            }
+//        }
+//    }
+//}
 
 
 data class OptionItem(
@@ -1120,6 +1254,7 @@ data class OptionItem(
 
 @Composable
 fun OptionsPanel(
+    isImmersiveMode: Boolean,
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
     updateBrowserSettings: (BrowserSettings) -> Int,
@@ -1137,22 +1272,9 @@ fun OptionsPanel(
                 updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
             },
 
-//            OptionItem(
-//                if (!browserSettings.isKeyboardMode) R.drawable.ic_keyboard else R.drawable.ic_keyboard_hide,
-//                "Show Keyboard"
-//            ) {
-//                updateBrowserSettings(browserSettings.copy(isKeyboardMode = !browserSettings.isKeyboardMode))
-//            },
-//
-//            OptionItem(
-//                if (browserSettings.isTrackpadMode) R.drawable.ic_touch else R.drawable.ic_mouse_cursor, // Use your new icon
-//                "Trackpad Mode"
-//            ) {
-//                updateBrowserSettings(browserSettings.copy(isTrackpadMode = !browserSettings.isTrackpadMode))
-//            },
-
             OptionItem(R.drawable.ic_bug, "logBrowserSettings") {
                 Log.e("BROWSER SETTINGS", browserSettings.toString())
+                Log.e("isImmersiveMode", isImmersiveMode.toString())
             },
             OptionItem(R.drawable.ic_fullscreen, "Button 4") { /* ... */ },
             OptionItem(R.drawable.ic_fullscreen, "Button 5") { /* ... */ },
