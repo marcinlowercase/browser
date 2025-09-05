@@ -1,6 +1,10 @@
 package marcinlowercase.oo.browser
 
-
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import android.Manifest
 import android.os.Build
 import android.app.Activity
@@ -17,6 +21,7 @@ import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -110,7 +115,7 @@ data class BrowserSettings(
     val desktopModeWidth: Int,
 )
 
-data class PermissionRequest(
+data class CustomPermissionRequest(
     val title: String,
     val rationale: String,
     val iconResAllow: Int,
@@ -316,20 +321,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     var pendingPermissionRequest by remember {
-        mutableStateOf<PermissionRequest?>(null)
+        mutableStateOf<CustomPermissionRequest?>(null)
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions(),
-        onResult = { permissions ->
-            // When the system dialog returns a result, trigger the onResult
-            // callback that we stored in our pendingPermissionRequest.
-            pendingPermissionRequest?.onResult?.invoke(permissions)
-
-            // Clear the request to hide the panel.
-            pendingPermissionRequest = null
-        }
-    )
 
 
 
@@ -351,51 +345,119 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     if (origin == null || callback == null) return
 
                     // Create a new generic permission request for this specific geolocation prompt.
-                    pendingPermissionRequest = PermissionRequest(
+                    pendingPermissionRequest = CustomPermissionRequest(
                         title = "Location Access Required",
                         rationale = "This website wants to use your device's location.",
                         iconResAllow = R.drawable.ic_location_on,
                         iconResDeny = R.drawable.ic_location_off,
                         permissionsToRequest = listOf(
-                            android.Manifest.permission.ACCESS_FINE_LOCATION,
-                            android.Manifest.permission.ACCESS_COARSE_LOCATION
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
                         ),
                         // This is the key: the onResult callback for this specific request
                         // knows how to talk back to the WebView's Geolocation callback.
                         onResult = { permissions ->
-                            val isGranted = permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                                    permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
+                            val isGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
                             callback.invoke(origin, isGranted, false)
                         }
                     )
                 }
 
 
-                override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
-                    // We explicitly use "android.webkit.PermissionRequest" in the signature.
 
-                    // Check if the website is asking for the microphone.
-                    if (request.resources.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
-                        // This is a microphone request. Let's create our custom UI prompt for it.
-                        pendingPermissionRequest = PermissionRequest(
-                            title = "Microphone Access",
-                            rationale = "'${request.origin}' would like to use your microphone.",
-                            iconResAllow = R.drawable.ic_mic_on,
-                            iconResDeny = R.drawable.ic_mic_off,
-                            permissionsToRequest = listOf(Manifest.permission.RECORD_AUDIO),
-                            onResult = { permissionsResult ->
-                                val wasGranted = permissionsResult[Manifest.permission.RECORD_AUDIO] == true
-                                if (wasGranted) {
-                                    request.grant(arrayOf(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                override fun onPermissionRequest(request: PermissionRequest) {
+                    Log.d("WebViewPermission", "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}")
+
+                    val requestedAndroidPermissions = mutableListOf<String>()
+                    var title = "Permission Required"
+                    var rationale = "'${request.origin}' wants to use your device features."
+                    var allowIcon = R.drawable.ic_bug
+                    var denyIcon = R.drawable.ic_bug
+
+                    // Map WebView resources to Android permissions
+                    if (request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
+                        requestedAndroidPermissions.add(Manifest.permission.CAMERA)
+                        title = "Camera Access"
+                        rationale = "Allow camera access for video recording"
+                        allowIcon = R.drawable.ic_camera_on
+                        denyIcon = R.drawable.ic_camera_off
+                    }
+                    if (request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
+                        requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
+                        if (requestedAndroidPermissions.contains(Manifest.permission.CAMERA)) {
+                            title = "Camera and Microphone Access"
+                            rationale = "Allow camera and microphone access for video calls"
+//                            allowIcon = R.drawable.ic_mic_on // Use a combined icon if available
+//                            denyIcon = R.drawable.ic_mic_off
+                        } else {
+                            title = "Microphone Access"
+                            rationale = "Allow microphone access for audio recording"
+                            allowIcon = R.drawable.ic_mic_on
+                            denyIcon = R.drawable.ic_mic_off
+                        }
+                    }
+
+                    // Add other permission mappings if needed
+                    if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
+                        // Handle protected media if needed
+                        Log.d("WebViewPermission", "Protected media ID requested - typically not mapped to runtime permissions")
+                    }
+
+                    if (requestedAndroidPermissions.isEmpty()) {
+                        Log.d("WebViewPermission", "No mappable permissions; denying request.")
+                        request.deny()
+                        return
+                    }
+
+                    // Check if we already have these permissions
+                    val context = this@apply.context
+                    val hasAllPermissions = requestedAndroidPermissions.all { permission ->
+                        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+                    }
+
+                    if (hasAllPermissions) {
+                        // If we already have permissions, grant them immediately
+                        Log.d("WebViewPermission", "Permissions already granted, granting to WebView")
+                        request.grant(request.resources)
+                        return
+                    }
+
+                    // Create the custom request
+                    pendingPermissionRequest = CustomPermissionRequest(
+                        title = title,
+                        rationale = rationale,
+                        iconResAllow = allowIcon,
+                        iconResDeny = denyIcon,
+                        permissionsToRequest = requestedAndroidPermissions,
+                        onResult = { permissionsResult ->
+                            activity?.runOnUiThread {
+                                // Check which permissions were actually granted
+                                val grantedPermissions = permissionsResult.filter { it.value }.keys
+
+                                // Build a list of WebView resources to grant based on granted Android permissions
+                                val resourcesToGrant = mutableListOf<String>()
+
+                                if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
+                                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
+                                    resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                                }
+
+                                if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
+                                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
+                                    resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                                }
+
+                                if (resourcesToGrant.isNotEmpty()) {
+                                    Log.d("WebViewPermission", "Granting resources: ${resourcesToGrant.joinToString()}")
+                                    request.grant(resourcesToGrant.toTypedArray())
                                 } else {
+                                    Log.d("WebViewPermission", "No permissions granted; denying all resources.")
                                     request.deny()
                                 }
                             }
-                        )
-                    } else {
-                        // If it's for any other permission that we don't handle, deny it.
-                        request.deny()
-                    }
+                        }
+                    )
                 }
 
                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
@@ -475,6 +537,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
             // The WebViewClient handles content loading events.
             webViewClient = object : WebViewClient() {
+
+
+
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     isLoading = true
@@ -574,6 +639,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                 mediaPlaybackRequiresUserGesture = false
 
+
                 // CRITICAL: Zoom must be supported for overview mode to work reliably.
                 setSupportZoom(true)
                 builtInZoomControls = true
@@ -591,6 +657,38 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             // Add your JS interface
             addJavascriptInterface(WebAppInterface(), "Android")
 
+        }
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+        onResult = { permissions ->
+            // When the system dialog returns a result, trigger the onResult
+            // callback that we stored in our pendingPermissionRequest.
+            pendingPermissionRequest?.onResult?.invoke(permissions)
+
+            // Clear the request to hide the panel.
+            pendingPermissionRequest = null
+        }
+    )
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    Log.d("WebViewLifecycle", "PAUSING WebView")
+                    webView.onPause() // Pauses JavaScript timers, etc.
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    Log.d("WebViewLifecycle", "RESUMING WebView")
+                    webView.onResume() // Resumes the WebView
+                }
+                else -> {} // No need to handle other events
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -825,6 +923,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         onAllow = {
                             // When user clicks allow, launch the system dialog with the permissions
                             // stored in our request object.
+
                             pendingPermissionRequest?.let {
                                 permissionLauncher.launch(it.permissionsToRequest.toTypedArray())
                             }
@@ -1067,7 +1166,7 @@ fun BottomPanel(
 fun PermissionPanel(
     browserSettings: BrowserSettings,
     // The pending request, which also controls visibility. Null means hidden.
-    request: PermissionRequest?,
+    request: CustomPermissionRequest?,
     // Event for when the user clicks "Allow" on our panel.
     onAllow: () -> Unit,
     // Event for when the user clicks "Deny" on our panel.
