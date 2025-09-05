@@ -2,11 +2,7 @@ package marcinlowercase.oo.browser
 
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import android.Manifest
-import android.os.Build
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
@@ -169,8 +165,6 @@ fun rememberHasDisplayCutout(): State<Boolean> {
 fun BrowserScreen(modifier: Modifier = Modifier) {
 
     /// VARIABLES
-
-
     val context = LocalContext.current
     val sharedPrefs =
         remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
@@ -204,9 +198,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     var isImmersiveMode by remember { mutableStateOf(false) }
 
-
-
-
 //    var webView by remember { mutableStateOf<WebView?>(null) }
     var canGoBack by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
@@ -221,8 +212,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     // Convert the pixel height to Dp
     val textFieldHeightDp = with(density) { textFieldHeightPx.toDp() }
-
-
+    
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
 
 
@@ -370,42 +360,42 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     Log.d("WebViewPermission", "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}")
 
                     val requestedAndroidPermissions = mutableListOf<String>()
-                    var title = "Permission Required"
-                    var rationale = "'${request.origin}' wants to use your device features."
-                    var allowIcon = R.drawable.ic_bug
-                    var denyIcon = R.drawable.ic_bug
+                    var title = "Permission Required" // Default title
+                    var rationale = "'${request.origin}' wants to use your device features." // Default rationale
+                    var allowIcon = R.drawable.ic_bug // Default allow icon
+                    var denyIcon = R.drawable.ic_bug   // Default deny icon
 
-                    // Map WebView resources to Android permissions
-                    if (request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
+                    val requestsCamera = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                    val requestsMicrophone = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+
+                     if (requestsCamera) {
                         requestedAndroidPermissions.add(Manifest.permission.CAMERA)
                         title = "Camera Access"
-                        rationale = "Allow camera access for video recording"
+                        rationale = "Allow camera access for video recording."
                         allowIcon = R.drawable.ic_camera_on
                         denyIcon = R.drawable.ic_camera_off
-                    }
-                    if (request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
+                    } else if (requestsMicrophone) {
                         requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
-                        if (requestedAndroidPermissions.contains(Manifest.permission.CAMERA)) {
-                            title = "Camera and Microphone Access"
-                            rationale = "Allow camera and microphone access for video calls"
-//                            allowIcon = R.drawable.ic_mic_on // Use a combined icon if available
-//                            denyIcon = R.drawable.ic_mic_off
-                        } else {
-                            title = "Microphone Access"
-                            rationale = "Allow microphone access for audio recording"
-                            allowIcon = R.drawable.ic_mic_on
-                            denyIcon = R.drawable.ic_mic_off
-                        }
+                        title = "Microphone Access"
+                        rationale = "Allow microphone access for audio recording."
+                        allowIcon = R.drawable.ic_mic_on
+                        denyIcon = R.drawable.ic_mic_off
                     }
 
                     // Add other permission mappings if needed
                     if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
                         // Handle protected media if needed
                         Log.d("WebViewPermission", "Protected media ID requested - typically not mapped to runtime permissions")
+                        // If no other Android permissions were added, you might want to deny or handle appropriately.
+                        if (requestedAndroidPermissions.isEmpty()) {
+                             Log.d("WebViewPermission", "Protected media ID requested with no other mappable Android permissions; denying request.")
+                             request.deny()
+                             return
+                        }
                     }
 
                     if (requestedAndroidPermissions.isEmpty()) {
-                        Log.d("WebViewPermission", "No mappable permissions; denying request.")
+                        Log.d("WebViewPermission", "No mappable Android permissions for the requested WebView resources; denying request.")
                         request.deny()
                         return
                     }
@@ -562,13 +552,13 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                     // Your JS script for getting the background color
                     val jsScript =
-                        """(function() { ... })();""".trimIndent() // Keep your full script here
+                        """"(function() { ... })();"""".trimIndent() // Keep your full script here
                     view?.evaluateJavascript(jsScript, null)
 
                     if (browserSettings.isDesktopMode) {
                         // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
                         view?.evaluateJavascript(
-                            """
+                            """"
             (function() {
                 // The function we want to run to enforce our viewport.
                 function enforceDesktopViewport() {
@@ -606,7 +596,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     });
                 }
             })();
-            """.trimIndent(), null
+            """".trimIndent(), null
                         )
                     }
 
@@ -671,26 +661,26 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     )
 
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE -> {
-                    Log.d("WebViewLifecycle", "PAUSING WebView")
-                    webView.onPause() // Pauses JavaScript timers, etc.
-                }
-                Lifecycle.Event.ON_RESUME -> {
-                    Log.d("WebViewLifecycle", "RESUMING WebView")
-                    webView.onResume() // Resumes the WebView
-                }
-                else -> {} // No need to handle other events
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
+//    val lifecycleOwner = LocalLifecycleOwner.current
+//    DisposableEffect(lifecycleOwner) {
+//        val observer = LifecycleEventObserver { _, event ->
+//            when (event) {
+//                Lifecycle.Event.ON_PAUSE -> {
+//                    Log.d("WebViewLifecycle", "PAUSING WebView")
+//                    webView.onPause() // Pauses JavaScript timers, etc.
+//                }
+//                Lifecycle.Event.ON_RESUME -> {
+//                    Log.d("WebViewLifecycle", "RESUMING WebView")
+//                    webView.onResume() // Resumes the WebView
+//                }
+//                else -> {} // No need to handle other events
+//            }
+//        }
+//        lifecycleOwner.lifecycle.addObserver(observer)
+//        onDispose {
+//            lifecycleOwner.lifecycle.removeObserver(observer)
+//        }
+//    }
 
 
     // FUNCTIONS
