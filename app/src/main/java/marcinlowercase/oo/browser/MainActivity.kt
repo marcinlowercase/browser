@@ -1,5 +1,8 @@
 package marcinlowercase.oo.browser
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
 import android.Manifest
@@ -18,6 +21,9 @@ import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -32,7 +38,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.EaseIn
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -40,13 +49,16 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,16 +69,24 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -77,15 +97,20 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.edit
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import kotlin.coroutines.coroutineContext
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -111,6 +136,13 @@ data class BrowserSettings(
     val desktopModeWidth: Int,
 )
 
+enum class GestureNavAction {
+    NONE, // The overlay is hidden
+    BACK,
+    REFRESH,
+    FORWARD
+}
+
 data class CustomPermissionRequest(
     val title: String,
     val rationale: String,
@@ -134,6 +166,7 @@ val LocalBrowserSettings = compositionLocalOf {
         desktopModeWidth = 820,
     )
 }
+
 
 @Composable
 fun rememberHasDisplayCutout(): State<Boolean> {
@@ -181,7 +214,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
                 desktopModeWidth = sharedPrefs.getInt("desktop_mode_width", 820),
 
-            )
+                )
         )
     }
 
@@ -200,6 +233,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 //    var webView by remember { mutableStateOf<WebView?>(null) }
     var canGoBack by remember { mutableStateOf(false) }
+    var canGoForward by remember { mutableStateOf(false) } // Add this if you don't have it
     var isLoading by remember { mutableStateOf(false) }
     var isFocusOnTextField by remember { mutableStateOf(false) }
 
@@ -209,15 +243,24 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     var textFieldHeightPx by remember { mutableIntStateOf(0) }
     // Density is needed to convert Px to Dp
     val density = LocalDensity.current
+    val hapticFeedback = LocalHapticFeedback.current // <-- ADD THIS LINE
+
 
     // Convert the pixel height to Dp
     val textFieldHeightDp = with(density) { textFieldHeightPx.toDp() }
-    
+
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
 
 
     var isOptionsPanelVisible by rememberSaveable { mutableStateOf(false) }
 
+    val offsetY = remember { Animatable(0f) }
+    var activeGestureAction by remember { mutableStateOf(GestureNavAction.NONE) }
+    var overlayHeightPx by remember { mutableFloatStateOf(0f) }
+
+    var backButtonRect by remember { mutableStateOf(Rect.Zero) }
+    var refreshButtonRect by remember { mutableStateOf(Rect.Zero) }
+    var forwardButtonRect by remember { mutableStateOf(Rect.Zero) }
 
     val hasDisplayCutout by rememberHasDisplayCutout()
 
@@ -239,7 +282,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val cutoutTop = cutoutPaddingValues.calculateTopPadding()
     val cutoutStart = cutoutPaddingValues.calculateLeftPadding(LayoutDirection.Ltr)
     val cutoutEnd = cutoutPaddingValues.calculateRightPadding(LayoutDirection.Ltr)
-        val cutoutBottom = cutoutPaddingValues.calculateBottomPadding()
+    val cutoutBottom = cutoutPaddingValues.calculateBottomPadding()
 
     // 2. Create animated states for each cutout dimension.
     //    They will animate to the cutout value ONLY when isUrlBarVisible is false.
@@ -315,7 +358,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
-
+    var colorScheme = ColorScheme(
+        backgroundColor = if (isSystemInDarkTheme()) Color.Black else Color.White,
+        foregroundColor = if (isSystemInDarkTheme()) Color.White else Color.Black
+    )
 
     val webView = remember {
         WebView(context).apply {
@@ -347,28 +393,34 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         // This is the key: the onResult callback for this specific request
                         // knows how to talk back to the WebView's Geolocation callback.
                         onResult = { permissions ->
-                            val isGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+                            val isGranted =
+                                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                                        permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
                             callback.invoke(origin, isGranted, false)
                         }
                     )
                 }
 
 
-
                 override fun onPermissionRequest(request: PermissionRequest) {
-                    Log.d("WebViewPermission", "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}")
+                    Log.d(
+                        "WebViewPermission",
+                        "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}"
+                    )
 
                     val requestedAndroidPermissions = mutableListOf<String>()
                     var title = "Permission Required" // Default title
-                    var rationale = "'${request.origin}' wants to use your device features." // Default rationale
+                    var rationale =
+                        "'${request.origin}' wants to use your device features." // Default rationale
                     var allowIcon = R.drawable.ic_bug // Default allow icon
                     var denyIcon = R.drawable.ic_bug   // Default deny icon
 
-                    val requestsCamera = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                    val requestsMicrophone = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                    val requestsCamera =
+                        request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                    val requestsMicrophone =
+                        request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
 
-                     if (requestsCamera) {
+                    if (requestsCamera) {
                         requestedAndroidPermissions.add(Manifest.permission.CAMERA)
                         title = "Camera Access"
                         rationale = "Allow camera access for video recording."
@@ -385,17 +437,26 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     // Add other permission mappings if needed
                     if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
                         // Handle protected media if needed
-                        Log.d("WebViewPermission", "Protected media ID requested - typically not mapped to runtime permissions")
+                        Log.d(
+                            "WebViewPermission",
+                            "Protected media ID requested - typically not mapped to runtime permissions"
+                        )
                         // If no other Android permissions were added, you might want to deny or handle appropriately.
                         if (requestedAndroidPermissions.isEmpty()) {
-                             Log.d("WebViewPermission", "Protected media ID requested with no other mappable Android permissions; denying request.")
-                             request.deny()
-                             return
+                            Log.d(
+                                "WebViewPermission",
+                                "Protected media ID requested with no other mappable Android permissions; denying request."
+                            )
+                            request.deny()
+                            return
                         }
                     }
 
                     if (requestedAndroidPermissions.isEmpty()) {
-                        Log.d("WebViewPermission", "No mappable Android permissions for the requested WebView resources; denying request.")
+                        Log.d(
+                            "WebViewPermission",
+                            "No mappable Android permissions for the requested WebView resources; denying request."
+                        )
                         request.deny()
                         return
                     }
@@ -403,12 +464,18 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     // Check if we already have these permissions
                     val context = this@apply.context
                     val hasAllPermissions = requestedAndroidPermissions.all { permission ->
-                        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            permission
+                        ) == PackageManager.PERMISSION_GRANTED
                     }
 
                     if (hasAllPermissions) {
                         // If we already have permissions, grant them immediately
-                        Log.d("WebViewPermission", "Permissions already granted, granting to WebView")
+                        Log.d(
+                            "WebViewPermission",
+                            "Permissions already granted, granting to WebView"
+                        )
                         request.grant(request.resources)
                         return
                     }
@@ -429,20 +496,28 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                 val resourcesToGrant = mutableListOf<String>()
 
                                 if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
-                                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
+                                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                                ) {
                                     resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
                                 }
 
                                 if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
-                                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
+                                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                                ) {
                                     resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
                                 }
 
                                 if (resourcesToGrant.isNotEmpty()) {
-                                    Log.d("WebViewPermission", "Granting resources: ${resourcesToGrant.joinToString()}")
+                                    Log.d(
+                                        "WebViewPermission",
+                                        "Granting resources: ${resourcesToGrant.joinToString()}"
+                                    )
                                     request.grant(resourcesToGrant.toTypedArray())
                                 } else {
-                                    Log.d("WebViewPermission", "No permissions granted; denying all resources.")
+                                    Log.d(
+                                        "WebViewPermission",
+                                        "No permissions granted; denying all resources."
+                                    )
                                     request.deny()
                                 }
                             }
@@ -529,7 +604,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             webViewClient = object : WebViewClient() {
 
 
-
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     isLoading = true
@@ -542,6 +616,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     super.onPageFinished(view, currentUrl)
                     isLoading = false
                     canGoBack = view?.canGoBack() ?: false
+                    canGoForward = view?.canGoForward() ?: false
                     currentUrl?.let {
                         url = it
                         if (!isFocusOnTextField) textFieldValue =
@@ -601,7 +676,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     }
 
 
-
                 }
 
                 override fun shouldInterceptRequest(
@@ -649,6 +723,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
         }
     }
+
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
         onResult = { permissions ->
@@ -695,6 +771,15 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // LAUNCH EFFECTS
     //
 
+    LaunchedEffect(overlayHeightPx) {
+        // We only want to act the first time the height is measured (it changes from 0f to a positive value).
+        // The `offsetY.value == 0f` check is an extra safeguard to ensure we only do this once on startup.
+        if (overlayHeightPx > 0f && offsetY.value == 0f) {
+            // Instantly "snap" the overlay to its hidden position without any animation.
+            // The hidden position is its full height negated, moving it off-screen upwards.
+            offsetY.snapTo(-overlayHeightPx * 2)
+        }
+    }
 
     LaunchedEffect(browserSettings.isDesktopMode) {
         if (browserSettings.isDesktopMode) {
@@ -837,77 +922,187 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             .testTag("WebViewContainer")
 
                     ) {
-                        AndroidView(
-                            factory = {
-                                FrameLayout(it).apply {
-                                    // If the WebView still has a parent from a previous composition, remove it.
-                                    (webView.parent as? ViewGroup)?.removeView(webView)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
 
-                                    // Add our singleton WebView to it.
-                                    addView(
-                                        webView,
-                                        FrameLayout.LayoutParams(
-                                            FrameLayout.LayoutParams.MATCH_PARENT,
-                                            FrameLayout.LayoutParams.MATCH_PARENT
-                                        ).apply {
-                                            gravity = Gravity.CENTER
-                                        }
-                                    )
-                                }
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        ) {
+                            AndroidView(
+                                factory = {
+                                    FrameLayout(it).apply {
+                                        // If the WebView still has a parent from a previous composition, remove it.
+                                        (webView.parent as? ViewGroup)?.removeView(webView)
+
+                                        // Add our singleton WebView to it.
+                                        addView(
+                                            webView,
+                                            FrameLayout.LayoutParams(
+                                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                                FrameLayout.LayoutParams.MATCH_PARENT
+                                            ).apply {
+                                                gravity = Gravity.CENTER
+                                            }
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
 
                         if (!browserSettings.isInteractable) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .pointerInput(Unit) {
-                                        awaitEachGesture {
-                                            // 1. At the start of each new gesture, reset our flag.
-                                            var isDrag = false
+                                        val coroutineScope = CoroutineScope(coroutineContext)
+                                        val verticalDragThreshold =
+                                            with(density) { overlayHeightPx  * 2 }
+                                        val horizontalDragThreshold = with(density) { 40.dp.toPx() }
 
-                                            // 2. Wait for the initial press.
+                                        awaitEachGesture {
                                             val down = awaitFirstDown(requireUnconsumed = false)
 
-                                            // 3. Use awaitTouchSlopOrCancellation. We are most interested
-                                            //    in its onSlopCrossed lambda.
-                                            val dragOrTap =
-                                                awaitTouchSlopOrCancellation(down.id) { _, _ ->
-                                                    // THIS IS THE KEY: This lambda is called the *moment* a
-                                                    // drag is detected. We set our flag here. This happens
-                                                    // before the WebView can fully "steal" the gesture,
-                                                    // making our flag a reliable source of truth.
-                                                    isDrag = true
-                                                    // We don't need to do anything with the change object itself.
+                                            var isTap = true
+                                            val drag =
+                                                awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                                                    isTap = false
+                                                    change.consume()
                                                 }
 
-                                            // 4. AFTER the gesture is over, we check OUR flag, not the
-                                            //    unreliable return value of dragOrTap.
-                                            if (!isDrag) {
-                                                // If our flag is still false, it means onSlopCrossed was
-                                                // never called. Therefore, it must be a tap.
+                                            if (isTap) {
                                                 isUrlBarVisible = false
-                                                Log.e("isImmersiveMode",  isImmersiveMode.toString())
-                                                Log.e("HHH", animatedSystemBarBottom.toString())
                                                 updateBrowserSettings(
                                                     browserSettings.copy(
                                                         isInteractable = true
                                                     )
                                                 )
+                                            } else if (drag != null) {
+                                                var horizontalDragAccumulator = 0f
+                                                // --- HAPTIC FEEDBACK STATE ---
+                                                var previousAction = GestureNavAction.NONE
+                                                var commitHapticPlayed = false
+                                                // ---
+
+                                                drag(drag.id) { change ->
+                                                    change.consume()
+                                                    val verticalDragDistance =
+                                                        change.position.y - down.position.y
+                                                    val dragAmount =
+                                                        change.position.y - change.previousPosition.y
+                                                    val newOffset =
+                                                        (offsetY.value + dragAmount).coerceIn(
+                                                            -overlayHeightPx * 2,
+                                                            0f
+                                                        )
+                                                    coroutineScope.launch { offsetY.snapTo(newOffset) }
+
+                                                    if (verticalDragDistance > verticalDragThreshold) {
+                                                        // --- HAPTIC 1: Play a "pop" when the gesture first commits ---
+                                                        if (!commitHapticPlayed) {
+                                                            hapticFeedback.performHapticFeedback(
+                                                                HapticFeedbackType.LongPress
+                                                            )
+                                                            commitHapticPlayed = true
+                                                        }
+                                                        // ---
+
+                                                        horizontalDragAccumulator += change.position.x - change.previousPosition.x
+
+                                                        val newAction = when {
+                                                            horizontalDragAccumulator < -horizontalDragThreshold -> GestureNavAction.BACK
+                                                            horizontalDragAccumulator > horizontalDragThreshold -> GestureNavAction.FORWARD
+                                                            else -> GestureNavAction.REFRESH
+                                                        }
+
+                                                        // --- HAPTIC 2: Play a "tick" when the selected action changes ---
+                                                        if (newAction != previousAction) {
+                                                            hapticFeedback.performHapticFeedback(
+                                                                HapticFeedbackType.LongPress
+                                                            )
+                                                            previousAction = newAction
+                                                        }
+                                                        // ---
+
+                                                        activeGestureAction = newAction
+
+                                                    } else {
+                                                        // If finger moves back up, cancel the action and reset everything
+                                                        activeGestureAction = GestureNavAction.NONE
+                                                        horizontalDragAccumulator = 0f
+                                                        commitHapticPlayed =
+                                                            false // Reset the commit haptic flag
+                                                        previousAction = GestureNavAction.NONE
+                                                    }
+                                                }
+
+                                                // The drag has ended, execute the final action
+                                                when (activeGestureAction) {
+                                                    GestureNavAction.BACK -> if (canGoBack) webView.goBack()
+                                                    GestureNavAction.REFRESH -> webView.reload()
+                                                    GestureNavAction.FORWARD -> if (canGoForward) webView.goForward()
+                                                    GestureNavAction.NONE -> { /* Do nothing */
+                                                    }
+                                                }
+
+                                                // Animate the overlay back to its hidden position.
+                                                coroutineScope.launch {
+                                                    offsetY.animateTo(
+                                                        targetValue = -overlayHeightPx * 2,
+                                                        animationSpec = tween(durationMillis = 200)
+                                                    )
+                                                }
                                             }
+                                            // Always reset the highlighted action for the next gesture.
+                                            activeGestureAction = GestureNavAction.NONE
                                         }
                                     }
+
+
+//                                    .pointerInput(Unit) {
+//                                        awaitEachGesture {
+//                                            // 1. At the start of each new gesture, reset our flag.
+//                                            var isDrag = false
+//
+//                                            // 2. Wait for the initial press.
+//                                            val down = awaitFirstDown(requireUnconsumed = false)
+//
+//                                            // 3. Use awaitTouchSlopOrCancellation. We are most interested
+//                                            //    in its onSlopCrossed lambda.
+//                                            val dragOrTap =
+//                                                awaitTouchSlopOrCancellation(down.id) { _, _ ->
+//                                                    // THIS IS THE KEY: This lambda is called the *moment* a
+//                                                    // drag is detected. We set our flag here. This happens
+//                                                    // before the WebView can fully "steal" the gesture,
+//                                                    // making our flag a reliable source of truth.
+//                                                    isDrag = true
+//                                                    // We don't need to do anything with the change object itself.
+//                                                }
+//
+//                                            // 4. AFTER the gesture is over, we check OUR flag, not the
+//                                            //    unreliable return value of dragOrTap.
+//                                            if (!isDrag) {
+//                                                // If our flag is still false, it means onSlopCrossed was
+//                                                // never called. Therefore, it must be a tap.
+//                                                isUrlBarVisible = false
+//                                                updateBrowserSettings(
+//                                                    browserSettings.copy(
+//                                                        isInteractable = true
+//                                                    )
+//                                                )
+//                                            }
+//                                        }
+//                                    }
                             )
 
                         }
 
-                        LoadingOverlay(isLoading = isLoading)
+                        LoadingOverlay(isLoading = isLoading, colorScheme = colorScheme)
                     }
 
 
 
                     PermissionPanel(
+                        colorScheme = colorScheme,
                         browserSettings = browserSettings,
                         request = pendingPermissionRequest,
                         onAllow = {
@@ -926,6 +1121,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
                     )
                     BottomPanel(
+                        colorScheme = colorScheme,
                         isImmersiveMode = isImmersiveMode,
                         isUrlBarVisible = isUrlBarVisible,
                         isOptionsPanelVisible = isOptionsPanelVisible,
@@ -944,7 +1140,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         setIsFocusOnTextField = { isFocusOnTextField = it },
 
 
-                    )
+                        )
 
 
                 }
@@ -963,6 +1159,24 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize()
             )
         }
+
+        GestureNavigationOverlay(
+            colorScheme = colorScheme,
+            staticSystemBarTop = staticSystemBarTop,
+            offsetY = offsetY,
+            activeAction = activeGestureAction,
+            canGoBack = canGoBack,
+            canGoForward = canGoForward,
+            onHeightMeasured = { measuredHeight ->
+                // Only set the initial height once to avoid recomposition loops
+                if (overlayHeightPx == 0f && measuredHeight > 0) {
+                    overlayHeightPx = measuredHeight
+                }
+            },
+            onBackButtonBoundsChanged = { backButtonRect = it },
+            onRefreshButtonBoundsChanged = { refreshButtonRect = it },
+            onForwardButtonBoundsChanged = { forwardButtonRect = it }
+        )
     }
 
 
@@ -970,6 +1184,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    colorScheme: ColorScheme,
     isImmersiveMode: Boolean,
     isUrlBarVisible: Boolean,
     isOptionsPanelVisible: Boolean,
@@ -987,14 +1202,13 @@ fun BottomPanel(
     setTextFieldHeightPx: (Int) -> Unit = {},
     setIsFocusOnTextField: (Boolean) -> Unit = {},
 
-) {
+    ) {
     AnimatedVisibility(
         visible = isUrlBarVisible,
         enter = expandVertically(tween(browserSettings.animationSpeed)),
         exit = shrinkVertically(tween(browserSettings.animationSpeed))
     ) {
         Column {
-
 
 
             // URL BAR
@@ -1109,9 +1323,9 @@ fun BottomPanel(
                         },
                     shape = RoundedCornerShape(browserSettings.cornerRadiusDp.dp),
                     colors = TextFieldDefaults.colors(
-                        focusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when focused
-                        unfocusedContainerColor = if (isSystemInDarkTheme()) Color.Black else Color.White, // Background when unfocused
-                        disabledContainerColor = if (isSystemInDarkTheme()) Color.White else Color.Black, // Background when disabled
+                        focusedContainerColor = colorScheme.backgroundColor, // Background when focused
+                        unfocusedContainerColor = colorScheme.backgroundColor, // Background when unfocused
+                        disabledContainerColor = colorScheme.foregroundColor, // Background when disabled
                         errorContainerColor = Color.Red // Background when in error state
                     )
                 )
@@ -1121,7 +1335,7 @@ fun BottomPanel(
                         .padding(start = browserSettings.paddingDp.dp)
                         .then(if (textFieldHeightDp > 0.dp) Modifier.size(textFieldHeightDp) else Modifier),
                     colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
+                        containerColor = colorScheme.foregroundColor
                     )
 
                 ) {
@@ -1131,15 +1345,15 @@ fun BottomPanel(
                         ),
                         contentDescription = "Toggle Interactable",
 //                        tint = MaterialTheme.colorScheme.onPrimary
-                        tint = MaterialTheme.colorScheme.onPrimary
+                        tint = colorScheme.backgroundColor
                     )
                 }
             }
 
 
-
             // SETTING OPTIONS
             OptionsPanel(
+                colorScheme = colorScheme,
                 isImmersiveMode = isImmersiveMode,
                 isOptionsPanelVisible = isOptionsPanelVisible,
                 toggleOptionsPanel = toggleOptionsPanel,
@@ -1154,6 +1368,7 @@ fun BottomPanel(
 
 @Composable
 fun PermissionPanel(
+    colorScheme: ColorScheme,
     browserSettings: BrowserSettings,
     // The pending request, which also controls visibility. Null means hidden.
     request: CustomPermissionRequest?,
@@ -1200,13 +1415,13 @@ fun PermissionPanel(
                             .weight(1f)
                             .height(browserSettings.singleLineHeight.dp),
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer
+                            containerColor = colorScheme.foregroundColor.copy(alpha = 0.1f)
                         )
                     ) {
                         Icon(
                             painter = painterResource(id = request.iconResDeny), // You can make this icon generic too
                             contentDescription = "Deny Permission",
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer
+                            tint = colorScheme.foregroundColor
                         )
                     }
 
@@ -1217,13 +1432,13 @@ fun PermissionPanel(
                             .weight(1f)
                             .height(browserSettings.singleLineHeight.dp),
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
+                            containerColor = colorScheme.foregroundColor
                         )
                     ) {
                         Icon(
                             painter = painterResource(id = request.iconResAllow), // You can make this icon generic too
                             contentDescription = "Allow Permission",
-                            tint = MaterialTheme.colorScheme.onPrimary
+                            tint = colorScheme.backgroundColor
                         )
                     }
                 }
@@ -1239,8 +1454,14 @@ data class OptionItem(
     val onClick: () -> Unit,
 )
 
+data class ColorScheme(
+    val backgroundColor: Color,
+    val foregroundColor: Color
+)
+
 @Composable
 fun OptionsPanel(
+    colorScheme: ColorScheme,
     isImmersiveMode: Boolean,
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
@@ -1334,14 +1555,14 @@ fun OptionsPanel(
                                 .weight(1f)
                                 .height(browserSettings.singleLineHeight.dp),
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.onPrimary
+                                containerColor = colorScheme.foregroundColor.copy(alpha = 0.05f)
                             ),
 
                             ) {
                             Icon(
                                 painter = painterResource(id = option.iconRes),
                                 contentDescription = option.contentDescription,
-                                tint = MaterialTheme.colorScheme.primary
+                                tint = colorScheme.foregroundColor
                             )
                         }
                     }
@@ -1365,7 +1586,7 @@ fun OptionsPanel(
  * @param modifier The modifier to be applied to the overlay.
  */
 @Composable
-fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier) {
+fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier, colorScheme :ColorScheme) {
     // Animate the appearance and disappearance of the overlay.
     AnimatedVisibility(
         visible = isLoading,
@@ -1377,7 +1598,7 @@ fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier) {
             modifier = Modifier
                 .fillMaxSize()
                 // Use a theme-aware scrim color for a professional look.
-                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
+                .background(colorScheme.backgroundColor.copy(alpha = 0.7f))
                 // CRITICAL: This consumes all touch events, preventing the user
                 // from interacting with the WebView while it's loading.
                 .pointerInput(Unit) {},
@@ -1386,13 +1607,161 @@ fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier) {
             CircularProgressIndicator(
                 modifier = Modifier.size(64.dp),
                 // Use a contrasting color that works well on the dark scrim.
-                color = MaterialTheme.colorScheme.primary,
+                color = colorScheme.foregroundColor,
                 strokeWidth = 6.dp
             )
         }
     }
 }
 
+
+@Composable
+fun GestureNavigationOverlay(
+    colorScheme: ColorScheme,
+    staticSystemBarTop: Dp,
+    offsetY: Animatable<Float, *>,
+    activeAction: GestureNavAction,
+    canGoBack: Boolean,
+    canGoForward: Boolean,
+    onHeightMeasured: (Float) -> Unit,
+    onBackButtonBoundsChanged: (Rect) -> Unit,
+    onRefreshButtonBoundsChanged: (Rect) -> Unit,
+    onForwardButtonBoundsChanged: (Rect) -> Unit
+) {
+    val browserSettings = LocalBrowserSettings.current
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned {
+                onHeightMeasured(it.size.height.toFloat())
+            }
+            .offset { IntOffset(0, offsetY.value.roundToInt()) }
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = staticSystemBarTop + browserSettings.paddingDp.dp)
+                .padding(horizontal = browserSettings.paddingDp.dp)
+                .height(browserSettings.singleLineHeight.dp * 1.5f)
+        ) {
+            val backgroundColor by animateColorAsState(
+                targetValue = if (activeAction != GestureNavAction.NONE)  colorScheme.foregroundColor.copy(alpha = 0.9f) else colorScheme.foregroundColor.copy(alpha = 0.5f),
+                label = "BackgroundColor"
+            )
+            val containerBorderRadius by animateDpAsState(
+                targetValue = if (activeAction != GestureNavAction.NONE) browserSettings.singleLineHeight.dp * 1.5f else browserSettings.cornerRadiusDp.dp,
+                animationSpec = tween(
+                    durationMillis = 50, // Set custom duration in milliseconds
+                    easing = EaseIn // Optional: customize easing
+                ),
+                label = "ContainerBorderRadius"
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(containerBorderRadius))
+                    .background(backgroundColor)
+                    .blur(10.dp)
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(vertical = browserSettings.paddingDp.dp, horizontal = browserSettings.singleLineHeight.dp * 1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // --- DYNAMIC WEIGHT ANIMATION ---
+                // Animate the weight of each button based on the active action.
+                val backWeight by animateFloatAsState(
+                    targetValue = if (activeAction == GestureNavAction.BACK) 2f else 1f,
+                    label = "BackWeight"
+                )
+                val refreshWeight by animateFloatAsState(
+                    targetValue = if (activeAction == GestureNavAction.REFRESH) 2f else 1f,
+                    label = "RefreshWeight"
+                )
+                val forwardWeight by animateFloatAsState(
+                    targetValue = if (activeAction == GestureNavAction.FORWARD) 2f else 1f,
+                    label = "ForwardWeight"
+                )
+                // ---
+
+                // --- Back Button ---
+                val backColor by animateColorAsState(
+                    targetValue = if (activeAction == GestureNavAction.BACK && canGoBack) colorScheme.backgroundColor else Color.Transparent,
+                    label = "BackColor"
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(backWeight) // Use the animated weight
+                        .fillMaxHeight()
+                        .onGloballyPositioned { onBackButtonBoundsChanged(it.boundsInRoot()) }
+                        .clip(RoundedCornerShape(browserSettings.cornerRadiusDp.dp))
+                        .background(backColor)
+                ) {
+                    if (canGoBack) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_arrow_back),
+                            contentDescription = "Go Back",
+                            tint = if (activeAction == GestureNavAction.BACK) colorScheme.foregroundColor else colorScheme.backgroundColor,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
+
+                // --- Refresh Button ---
+                val refreshColor by animateColorAsState(
+                    targetValue = if (activeAction == GestureNavAction.REFRESH) colorScheme.backgroundColor else Color.Transparent,
+                    label = "RefreshColor"
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(refreshWeight) // Use the animated weight
+                        .fillMaxHeight()
+                        .onGloballyPositioned { onRefreshButtonBoundsChanged(it.boundsInRoot()) }
+                        .clip(RoundedCornerShape(browserSettings.cornerRadiusDp.dp))
+                        .background(refreshColor)
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_refresh),
+                        contentDescription = "Refresh",
+                        tint = if (activeAction == GestureNavAction.REFRESH) colorScheme.foregroundColor else colorScheme.backgroundColor,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
+
+                // --- Forward Button ---
+                val forwardColor by animateColorAsState(
+                    targetValue = if (activeAction == GestureNavAction.FORWARD && canGoForward) colorScheme.backgroundColor else Color.Transparent,
+                    label = "ForwardColor"
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(forwardWeight) // Use the animated weight
+                        .fillMaxHeight()
+                        .onGloballyPositioned { onForwardButtonBoundsChanged(it.boundsInRoot()) }
+                        .clip(RoundedCornerShape(browserSettings.cornerRadiusDp.dp))
+                        .background(forwardColor)
+                ) {
+                    if (canGoForward) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_arrow_forward),
+                            contentDescription = "Go Forward",
+                            tint = if (activeAction == GestureNavAction.FORWARD) colorScheme.foregroundColor else colorScheme.backgroundColor,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 @Composable
 @Preview(showBackground = true)
 fun BrowserScreenPreview() {
@@ -1417,3 +1786,4 @@ class WebAppInterface() {
         }
     }
 }
+
