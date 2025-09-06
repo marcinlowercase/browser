@@ -1652,7 +1652,7 @@ fun GestureNavigationOverlay(
             val containerBorderRadius by animateDpAsState(
                 targetValue = if (activeAction != GestureNavAction.NONE) browserSettings.singleLineHeight.dp * 1.5f else browserSettings.cornerRadiusDp.dp,
                 animationSpec = tween(
-                    durationMillis = 50, // Set custom duration in milliseconds
+                    durationMillis = 100, // Set custom duration in milliseconds
                     easing = EaseIn // Optional: customize easing
                 ),
                 label = "ContainerBorderRadius"
