@@ -352,6 +352,19 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     var activeGestureAction by remember { mutableStateOf(GestureNavAction.NONE) }
     var overlayHeightPx by remember { mutableFloatStateOf(0f) }
 
+
+    // Example: When overlay is visible -> 150 + 0 = 150 padding.
+    val webViewPushDownOffset by remember {
+        derivedStateOf {
+            // We use coerceAtLeast(0f) to prevent any negative padding values
+            // during animation overscrolls.
+            with(density) {
+                (overlayHeightPx + offsetY.value).coerceAtLeast(0f).toDp()
+            }
+        }
+    }
+
+
     var backButtonRect by remember { mutableStateOf(Rect.Zero) }
     var refreshButtonRect by remember { mutableStateOf(Rect.Zero) }
     var forwardButtonRect by remember { mutableStateOf(Rect.Zero) }
@@ -1144,6 +1157,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         .windowInsetsPadding(WindowInsets.ime)
 
                 ) {
+
 
                     Box(
                         modifier = Modifier
