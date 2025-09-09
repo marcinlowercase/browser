@@ -720,75 +720,62 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 override fun onPageFinished(view: WebView?, currentUrlString: String?) {
                     super.onPageFinished(view, currentUrlString)
                     isLoading = false
-                    if (currentUrlString != null) {
-                        textFieldValue = TextFieldValue(currentUrlString, TextRange(currentUrlString.length))
-                    }
+//                    if (currentUrlString != null) {
+//                        textFieldValue = TextFieldValue(currentUrlString, TextRange(currentUrlString.length))
+//                    }
 
 
-                    if (currentUrlString != null) {
-                        currentTab?.let { tab ->
-                            // This condition is the gatekeeper. It is ONLY true for navigations
-                            // initiated by the WebView itself (i.e., clicking a link).
-                            // It is FALSE for our own back/forward calls, because we update
-                            // `currentTab` BEFORE calling `loadUrl`.
+//                    if (currentUrlString != null) {
+//                        currentTab?.let { tab ->
+//                            // This condition is the gatekeeper. It is ONLY true for navigations
+//                            // initiated by the WebView itself (i.e., clicking a link).
+//                            // It is FALSE for our own back/forward calls, because we update
+//                            // `currentTab` BEFORE calling `loadUrl`.
+//
+////                            Log.e("BBB", "TAB BEFORE UPDATE $tab")
+////                            Log.e("BBB", "tab.currentUrl " + tab.currentUrl.toString())
+////                            Log.e("BBB", "currentUrlString $currentUrlString")
+////                            Log.e("BBB", "currentIndex " + tab.currentUrlIndex)
+////                            Log.e("BBB", "History SIze " + tab.history.size)
+//
+//
+//
+//
+//
+//                            /// The below alwasy wrong???719
+//                            if (tab.currentUrl != currentUrlString) {
+//
+//                                // A link was clicked. This is a NEW navigation entry.
+//                                // We must truncate the forward history.
+//                                val newHistoryEndIndex = tab.currentUrlIndex + 1
+//                                val newHistory = if (newHistoryEndIndex < tab.history.size) {
+//                                    tab.history.subList(0, newHistoryEndIndex)
+//                                } else {
+//                                    tab.history
+//                                }.toMutableList()
+//
+//                                newHistory.add(currentUrlString)
+//
+//                                val updatedTab = tab.copy(
+//                                    history = newHistory,
+//                                    currentUrlIndex = newHistory.lastIndex
+//                                )
+//
+//                                // Replace the object to trigger recomposition and update canGoBack/Forward
+//                                tabs[activeTabIndex.value] = updatedTab
+//                                Log.e("BBB", "TAB After UPDATE " + tabs[activeTabIndex.value])
+//
+//                                saveTrigger++
+//                            }
+//                            Log.e("BBB", " ")
+//
+//                        }
+//                    }
 
-//                            Log.e("BBB", "TAB BEFORE UPDATE $tab")
-//                            Log.e("BBB", "tab.currentUrl " + tab.currentUrl.toString())
-//                            Log.e("BBB", "currentUrlString $currentUrlString")
-//                            Log.e("BBB", "currentIndex " + tab.currentUrlIndex)
-//                            Log.e("BBB", "History SIze " + tab.history.size)
-
-                            // --- 1. LOGGING THE WEBVIEW'S INTERNAL STATE ---
-                            val webViewHistory = view?.copyBackForwardList()
-                            if (webViewHistory != null) {
-                                Log.d("WebViewHistory", "--- WebView Internal History Snapshot ---")
-                                Log.d("WebViewHistory", "Current Index: ${webViewHistory.currentIndex}")
-                                Log.d("WebViewHistory", "History Size: ${webViewHistory.size}")
-                                for (i in 0 until webViewHistory.size) {
-                                    val item = webViewHistory.getItemAtIndex(i)
-                                    val isCurrent = if (i == webViewHistory.currentIndex) "<- CURRENT" else ""
-                                    Log.d("WebViewHistory", "[$i] ${item.url} ${isCurrent}")
-                                }
-                                Log.d("WebViewHistory", "------------------------------------")
-                            }
-                            // --- END OF LOGGING ---
-
-
-
-                            /// The below alwasy wrong???719
-                            if (tab.currentUrl != currentUrlString) {
-
-                                // A link was clicked. This is a NEW navigation entry.
-                                // We must truncate the forward history.
-                                val newHistoryEndIndex = tab.currentUrlIndex + 1
-                                val newHistory = if (newHistoryEndIndex < tab.history.size) {
-                                    tab.history.subList(0, newHistoryEndIndex)
-                                } else {
-                                    tab.history
-                                }.toMutableList()
-
-                                newHistory.add(currentUrlString)
-
-                                val updatedTab = tab.copy(
-                                    history = newHistory,
-                                    currentUrlIndex = newHistory.lastIndex
-                                )
-
-                                // Replace the object to trigger recomposition and update canGoBack/Forward
-                                tabs[activeTabIndex.value] = updatedTab
-                                Log.e("BBB", "TAB After UPDATE " + tabs[activeTabIndex.value])
-
-                                saveTrigger++
-                            }
-                            Log.e("BBB", " ")
-
-                        }
-                    }
-
-                    // This should always run to keep the URL bar in sync.
-                    if (!isFocusOnTextField) {
-                        textFieldValue = TextFieldValue(currentUrlString ?: "", TextRange((currentUrlString ?: "").length))
-                    }
+//                    // This should always run to keep the URL bar in sync.
+//                    if (!isFocusOnTextField) {
+//                        textFieldValue = TextFieldValue(currentUrlString ?: "", TextRange((currentUrlString ?: "").length))
+//                    }
                 }
 //                override fun onPageFinished(view: WebView?, currentUrl: String?) {
 //                    super.onPageFinished(view, currentUrl)
@@ -953,6 +940,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     LaunchedEffect(webView) {
         (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
             override fun onUrlChanged(newUrl: String?) {
+                Log.e("onUrlChanged", "onUrlChanged")
                 if (newUrl != null) {
                     if (!isFocusOnTextField) {
                         textFieldValue = TextFieldValue(newUrl ?: "", TextRange((newUrl ?: "").length))
