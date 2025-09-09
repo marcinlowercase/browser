@@ -1,5 +1,7 @@
 package marcinlowercase.oo.browser
 
+
+import kotlinx.serialization.Serializable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
@@ -49,7 +51,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
@@ -69,17 +70,12 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -106,6 +102,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -159,13 +157,79 @@ val LocalBrowserSettings = compositionLocalOf {
         paddingDp = 8f,
         cornerRadiusDp = 24f,
         isInteractable = true,
-        defaultUrl = "https://www.google.com",
+        defaultUrl = "https://www.google.com/",
         animationSpeed = 300,
         singleLineHeight = 64,
         isDesktopMode = false,
         desktopModeWidth = 820,
     )
 }
+
+// The enum for the state of a tab
+@Serializable // Marks this class as serializable
+enum class TabState {
+    ACTIVE,      // The tab currently visible to the user
+    BACKGROUND,  // A tab that is loaded but not visible
+    FROZEN       // A tab that needs to be reloaded when opened
+}
+
+// The data class for a single tab
+@Serializable // Marks this class as serializable
+data class Tab(
+    val id: Long = System.currentTimeMillis(), // Unique ID for keys in Compose
+    var history: MutableList<String> = mutableListOf(),
+    var currentUrlIndex: Int = -1,
+    var state: TabState = TabState.BACKGROUND
+) {
+    // A convenient property to get the current URL
+    val currentUrl: String?
+        get() = history.getOrNull(currentUrlIndex)
+}
+
+class TabManager(context: Context) {
+    private val prefs = context.getSharedPreferences("BrowserTabs", Context.MODE_PRIVATE)
+    private val json = Json { ignoreUnknownKeys = true } // Lenient JSON parser
+
+    private val TABS_KEY = "tabs_list_json"
+
+    fun saveTabs(tabs: List<Tab>) {
+        // Convert the list of tabs into a single JSON string
+        val jsonString = json.encodeToString(tabs)
+        prefs.edit {
+            putString(TABS_KEY, jsonString)
+        }
+        Log.d("TabManager", "Tabs saved.")
+    }
+
+    fun loadTabs(defaultUrl: String): MutableList<Tab> {
+        val jsonString = prefs.getString(TABS_KEY, null)
+
+        return if (jsonString != null) {
+            try {
+                // Try to decode the saved JSON string back into a list of tabs
+                json.decodeFromString<MutableList<Tab>>(jsonString)
+            } catch (e: Exception) {
+                Log.e("TabManager", "Failed to decode tabs, creating default.", e)
+                createDefaultTabs(defaultUrl)
+            }
+        } else {
+            // If no saved data, create a default tab list
+            createDefaultTabs(defaultUrl)
+        }
+    }
+
+    private fun createDefaultTabs(defaultUrl: String): MutableList<Tab> {
+        return mutableListOf(
+            Tab(
+                history = mutableListOf(defaultUrl),
+                currentUrlIndex = 0,
+                state = TabState.ACTIVE
+            )
+        )
+    }
+}
+
+
 
 
 @Composable
@@ -207,8 +271,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 paddingDp = sharedPrefs.getFloat("padding_dp", 8f),
                 cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
                 isInteractable = sharedPrefs.getBoolean("is_interactable", true),
-                defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com")
-                    ?: "https://www.google.com",
+                defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com/")
+                    ?: "https://www.google.com/",
                 animationSpeed = sharedPrefs.getInt("animation_speed", 300),
                 singleLineHeight = sharedPrefs.getInt("single_line_height", 64),
                 isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
@@ -218,22 +282,47 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         )
     }
 
-    var url by rememberSaveable {
-        mutableStateOf(
-            sharedPrefs.getString("last_url", browserSettings.defaultUrl)
-                ?: browserSettings.defaultUrl
-        )
+    val tabManager = remember { TabManager(context) }
+    val tabs = remember {
+        mutableStateListOf<Tab>().apply {
+            addAll(tabManager.loadTabs(browserSettings.defaultUrl))
+        }
+    }
+    val activeTabIndex = remember {
+        mutableIntStateOf(tabs.indexOfFirst { it.state == TabState.ACTIVE }.coerceAtLeast(0))
+    }
+    val currentTab by remember {
+        derivedStateOf { tabs.getOrNull(activeTabIndex.value) }
     }
 
+    var initialLoadDone by rememberSaveable { mutableStateOf(false) }
+
+    var saveTrigger by remember { mutableIntStateOf(0) }
+
+
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(url, TextRange(url.length)))
+        mutableStateOf(TextFieldValue(currentTab?.currentUrl ?: "", TextRange(0)))
     }
+
 
     var isImmersiveMode by remember { mutableStateOf(false) }
 
 //    var webView by remember { mutableStateOf<WebView?>(null) }
-    var canGoBack by remember { mutableStateOf(false) }
-    var canGoForward by remember { mutableStateOf(false) } // Add this if you don't have it
+    val canGoBack by remember {
+        derivedStateOf {
+            (currentTab?.currentUrlIndex ?: 0) > 0
+        }
+    }
+    val canGoForward by remember {
+        derivedStateOf {
+            val tab = currentTab
+            if (tab == null) {
+                false
+            } else {
+                tab.currentUrlIndex < tab.history.lastIndex
+            }
+        }
+    }
     var isLoading by remember { mutableStateOf(false) }
     var isFocusOnTextField by remember { mutableStateOf(false) }
 
@@ -612,77 +701,132 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     }
                 }
 
-                override fun onPageFinished(view: WebView?, currentUrl: String?) {
-                    super.onPageFinished(view, currentUrl)
+                override fun onPageFinished(view: WebView?, currentUrlString: String?) {
+                    super.onPageFinished(view, currentUrlString)
                     isLoading = false
-                    canGoBack = view?.canGoBack() ?: false
-                    canGoForward = view?.canGoForward() ?: false
-                    currentUrl?.let {
-                        url = it
-                        if (!isFocusOnTextField) textFieldValue =
-                            TextFieldValue(it, TextRange(it.length))
-                    }
-                    // Force a scroll to the top to fix coordinate system bugs
-                    view?.scrollTo(0, 0)
 
-                    // Your JS script for getting the background color
-                    val jsScript =
-                        """"(function() { ... })();"""".trimIndent() // Keep your full script here
-                    view?.evaluateJavascript(jsScript, null)
 
-                    if (browserSettings.isDesktopMode) {
-                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
-                        view?.evaluateJavascript(
-                            """"
-            (function() {
-                // The function we want to run to enforce our viewport.
-                function enforceDesktopViewport() {
-                    console.log('Enforcing desktop viewport...');
-                    var meta = document.querySelector('meta[name=viewport]');
-                    if (!meta) {
-                        meta = document.createElement('meta');
-                        meta.setAttribute('name', 'viewport');
-                        document.getElementsByTagName('head')[0].appendChild(meta);
+                    if (currentUrlString != null) {
+                        currentTab?.let { tab ->
+                            // This condition is the gatekeeper. It is ONLY true for navigations
+                            // initiated by the WebView itself (i.e., clicking a link).
+                            // It is FALSE for our own back/forward calls, because we update
+                            // `currentTab` BEFORE calling `loadUrl`.
+                            Log.e("BBB", "TAB BEFORE UPDATE $tab")
+                            Log.e("BBB", "tab.currentUrl " + tab.currentUrl.toString())
+                            Log.e("BBB", "currentUrlString $currentUrlString")
+                            Log.e("BBB", "currentIndex " + tab.currentUrlIndex)
+                            Log.e("BBB", "History SIze " + tab.history.size)
+
+
+
+
+                            /// The below alwasy wrong???719
+                            if (tab.currentUrl != currentUrlString) {
+
+                                // A link was clicked. This is a NEW navigation entry.
+                                // We must truncate the forward history.
+                                val newHistoryEndIndex = tab.currentUrlIndex + 1
+                                val newHistory = if (newHistoryEndIndex < tab.history.size) {
+                                    tab.history.subList(0, newHistoryEndIndex)
+                                } else {
+                                    tab.history
+                                }.toMutableList()
+
+                                newHistory.add(currentUrlString)
+
+                                val updatedTab = tab.copy(
+                                    history = newHistory,
+                                    currentUrlIndex = newHistory.lastIndex
+                                )
+
+                                // Replace the object to trigger recomposition and update canGoBack/Forward
+                                tabs[activeTabIndex.value] = updatedTab
+                                Log.e("BBB", "TAB After UPDATE " + tabs[activeTabIndex.value])
+
+                                saveTrigger++
+                            }
+                            Log.e("BBB", " ")
+
+                        }
                     }
-                    // Crucially, check if the content is already correct.
-                    // This prevents an infinite loop of observer callbacks.
-                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
-                        console.log('Viewport was wrong, correcting to width=${browserSettings.desktopModeWidth}.');
-                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
+
+                    // This should always run to keep the URL bar in sync.
+                    if (!isFocusOnTextField) {
+                        textFieldValue = TextFieldValue(currentUrlString ?: "", TextRange((currentUrlString ?: "").length))
                     }
                 }
-
-                // 1. Enforce it immediately.
-                enforceDesktopViewport();
-
-                // 2. Create an observer to watch for any changes to the <head> element.
-                //    This will detect if the site's own JS tries to change the viewport.
-                var observer = new MutationObserver(function(mutations) {
-                    // When a change is detected, run our enforcement function again.
-                    enforceDesktopViewport();
-                });
-
-                // 3. Start observing. We watch for changes to child elements in the head.
-                var head = document.getElementsByTagName('head')[0];
-                if (head) {
-                    observer.observe(head, {
-                        childList: true, 
-                        subtree: true 
-                    });
-                }
-            })();
-            """".trimIndent(), null
-                        )
-                    }
-
-
-                }
+//                override fun onPageFinished(view: WebView?, currentUrl: String?) {
+//                    super.onPageFinished(view, currentUrl)
+//                    isLoading = false
+////                    canGoBack = view?.canGoBack() ?: false
+////                    canGoForward = view?.canGoForward() ?: false
+////                    currentUrl?.let {
+////                        url = it
+////                        if (!isFocusOnTextField) textFieldValue =
+////                            TextFieldValue(it, TextRange(it.length))
+////                    }
+//                    // Force a scroll to the top to fix coordinate system bugs
+//                    view?.scrollTo(0, 0)
+//
+//                    // Your JS script for getting the background color
+//                    val jsScript =
+//                        """"(function() { ... })();"""".trimIndent() // Keep your full script here
+//                    view?.evaluateJavascript(jsScript, null)
+//
+//                    if (browserSettings.isDesktopMode) {
+//                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
+//                        view?.evaluateJavascript(
+//                            """"
+//            (function() {
+//                // The function we want to run to enforce our viewport.
+//                function enforceDesktopViewport() {
+//                    console.log('Enforcing desktop viewport...');
+//                    var meta = document.querySelector('meta[name=viewport]');
+//                    if (!meta) {
+//                        meta = document.createElement('meta');
+//                        meta.setAttribute('name', 'viewport');
+//                        document.getElementsByTagName('head')[0].appendChild(meta);
+//                    }
+//                    // Crucially, check if the content is already correct.
+//                    // This prevents an infinite loop of observer callbacks.
+//                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
+//                        console.log('Viewport was wrong, correcting to width=${browserSettings.desktopModeWidth}.');
+//                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
+//                    }
+//                }
+//
+//                // 1. Enforce it immediately.
+//                enforceDesktopViewport();
+//
+//                // 2. Create an observer to watch for any changes to the <head> element.
+//                //    This will detect if the site's own JS tries to change the viewport.
+//                var observer = new MutationObserver(function(mutations) {
+//                    // When a change is detected, run our enforcement function again.
+//                    enforceDesktopViewport();
+//                });
+//
+//                // 3. Start observing. We watch for changes to child elements in the head.
+//                var head = document.getElementsByTagName('head')[0];
+//                if (head) {
+//                    observer.observe(head, {
+//                        childList: true,
+//                        subtree: true
+//                    });
+//                }
+//            })();
+//            """".trimIndent(), null
+//                        )
+//                    }
+//
+//
+//                }
 
                 override fun shouldInterceptRequest(
                     view: WebView?,
                     request: WebResourceRequest?
                 ): WebResourceResponse? {
-                    request?.requestHeaders?.put("Origin", url)
+                    request?.requestHeaders?.put("Origin", currentTab?.currentUrl)
                     return super.shouldInterceptRequest(view, request)
                 }
             }
@@ -819,11 +963,40 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    LaunchedEffect(saveTrigger) {
+        // We add a check `if (saveTrigger > 0)` to prevent saving an empty
+        // list on the very first composition.
+        if (saveTrigger > 0) {
+            tabManager.saveTabs(tabs)
+        }
+    }
+
+    // This effect loads the URL when the active tab changes
+    LaunchedEffect(currentTab, initialLoadDone) {
+        // Get the URL that SHOULD be loaded for the current tab.
+        val urlToLoad = currentTab?.currentUrl
+
+        if (urlToLoad != null) {
+            if (!initialLoadDone) {
+                // --- SCENARIO 1: First time app is opened ---
+                // If the initial load hasn't happened yet, load the URL.
+                webView.loadUrl(urlToLoad)
+                // Set the flag to true so this block never runs again.
+                initialLoadDone = true
+            } else {
+                // --- SCENARIO 2: User switches to a different tab ---
+                // If the initial load IS done, this effect is running because
+                // currentTab changed. Load the new tab's URL.
+                if (webView.url != urlToLoad) {
+                    webView.loadUrl(urlToLoad)
+                }
+            }
+        }
+    }
 
     // The LaunchedEffect now saves the entire settings object (or individual fields)
-    LaunchedEffect(url, browserSettings) {
+    LaunchedEffect( browserSettings) {
         sharedPrefs.edit {
-            putString("last_url", url)
             putFloat("padding_dp", browserSettings.paddingDp)
             putFloat("corner_radius_dp", browserSettings.cornerRadiusDp)
             putBoolean("is_interactable", browserSettings.isInteractable)
@@ -860,12 +1033,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         // We can command our WebView to update its layout.
         webView.requestLayout()
     }
-
-    LaunchedEffect(url) {
-        if (webView.url != url) {
-            webView.loadUrl(url)
-        }
-    }
+//
+//    LaunchedEffect(url) {
+//        if (webView.url != url) {
+//            webView.loadUrl(url)
+//        }
+//    }
 
     BackHandler(enabled = !isUrlBarVisible || canGoBack) {
         when {
@@ -880,8 +1053,16 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 updateBrowserSettings(browserSettings.copy(isInteractable = false))
             }
             // Priority 3: Navigate back in the WebView.
+            canGoBack -> {
+                currentTab?.let { tab ->
+                    val updatedTab = tab.copy(currentUrlIndex = tab.currentUrlIndex - 1)
+                    tabs[activeTabIndex.value] = updatedTab
+                    updatedTab.currentUrl?.let { webView.loadUrl(it) }
+                    saveTrigger++
+                }
+            }
+
             else -> {
-                webView.goBack()
             }
         }
     }
@@ -1037,11 +1218,24 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                                                 // The drag has ended, execute the final action
                                                 when (activeGestureAction) {
-                                                    GestureNavAction.BACK -> if (canGoBack) webView.goBack()
-                                                    GestureNavAction.REFRESH -> webView.reload()
-                                                    GestureNavAction.FORWARD -> if (canGoForward) webView.goForward()
-                                                    GestureNavAction.NONE -> { /* Do nothing */
+                                                    GestureNavAction.BACK -> if (canGoBack) {
+                                                        currentTab?.let {
+                                                            val updatedTab = it.copy(currentUrlIndex = it.currentUrlIndex - 1)
+                                                            tabs[activeTabIndex.value] = updatedTab
+                                                            updatedTab.currentUrl?.let { url -> webView.loadUrl(url) }
+                                                            saveTrigger++
+                                                        }
                                                     }
+                                                    GestureNavAction.REFRESH -> webView.reload()
+                                                    GestureNavAction.FORWARD -> if (canGoForward) {
+                                                        currentTab?.let {
+                                                            val updatedTab = it.copy(currentUrlIndex = it.currentUrlIndex + 1)
+                                                            tabs[activeTabIndex.value] = updatedTab
+                                                            updatedTab.currentUrl?.let { url -> webView.loadUrl(url) }
+                                                            saveTrigger++
+                                                        }
+                                                    }
+                                                    GestureNavAction.NONE -> { /* Do nothing */ }
                                                 }
 
                                                 // Animate the overlay back to its hidden position.
@@ -1121,6 +1315,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
                     )
                     BottomPanel(
+
+                        currentTab = currentTab,
                         colorScheme = colorScheme,
                         isImmersiveMode = isImmersiveMode,
                         isUrlBarVisible = isUrlBarVisible,
@@ -1128,14 +1324,29 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         browserSettings = browserSettings,
                         updateBrowserSettings = updateBrowserSettings,
                         textFieldValue = textFieldValue,
-                        url = url,
+//                        url = url,
                         focusManager = focusManager,
                         keyboardController = keyboardController,
                         textFieldHeightDp = textFieldHeightDp,
                         toggleOptionsPanel = { isOptionsPanelVisible = it },
                         changeTextFieldValue = { textFieldValue = it },
-                        changeUrl = { url = it },
-                        toggleUrlBar = { isUrlBarVisible = it },
+                        onNewUrl = { newUrl ->
+                            webView.loadUrl(newUrl)
+//                            currentTab?.let { tab ->
+//                                val newHistoryEndIndex = tab.currentUrlIndex + 1
+//                                val newHistory = if (newHistoryEndIndex < tab.history.size) {
+//                                    tab.history.subList(0, newHistoryEndIndex)
+//                                } else {
+//                                    tab.history
+//                                }.toMutableList()
+//                                newHistory.add(newUrl)
+//
+//                                val updatedTab = tab.copy(history = newHistory, currentUrlIndex = newHistory.lastIndex)
+//                                tabs[activeTabIndex.value] = updatedTab
+//                                webView.loadUrl(newUrl)
+//                                saveTrigger++
+//                            }
+                        },                        toggleUrlBar = { isUrlBarVisible = it },
                         setTextFieldHeightPx = { textFieldHeightPx = it },
                         setIsFocusOnTextField = { isFocusOnTextField = it },
 
@@ -1184,6 +1395,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    currentTab: Tab?,
     colorScheme: ColorScheme,
     isImmersiveMode: Boolean,
     isUrlBarVisible: Boolean,
@@ -1191,13 +1403,13 @@ fun BottomPanel(
     browserSettings: BrowserSettings,
     updateBrowserSettings: (BrowserSettings) -> Int,
     textFieldValue: TextFieldValue,
-    url: String,
+//    url: String,
     focusManager: FocusManager,
     keyboardController: SoftwareKeyboardController?,
     textFieldHeightDp: Dp,
     toggleOptionsPanel: (Boolean) -> Unit = {},
     changeTextFieldValue: (TextFieldValue) -> Unit = {},
-    changeUrl: (String) -> Unit = {},
+    onNewUrl: (String) -> Unit = {},
     toggleUrlBar: (Boolean) -> Unit = {},
     setTextFieldHeightPx: (Int) -> Unit = {},
     setIsFocusOnTextField: (Boolean) -> Unit = {},
@@ -1249,8 +1461,11 @@ fun BottomPanel(
                     keyboardActions = KeyboardActions(
                         onGo = {
                             val input = textFieldValue.text.trim()
+                            val resetUrl = currentTab?.currentUrl ?: ""
+
                             if (input.isBlank()) {
-                                changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
+                                changeTextFieldValue(TextFieldValue(resetUrl, TextRange(resetUrl.length)))
+//                                changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
                                 focusManager.clearFocus()
                                 keyboardController?.hide()
                                 return@KeyboardActions
@@ -1262,23 +1477,19 @@ fun BottomPanel(
                                 false
                             }
 
-                            if (isUrl) {
-                                changeUrl(
-                                    if (input.startsWith("http://") || input.startsWith("https://")) {
-                                        input
-                                    } else {
-                                        "https://$input"
-                                    }
-                                )
-
+                            val finalUrl = if (isUrl) {
+                                if (input.startsWith("http://") || input.startsWith("https://")) {
+                                    input
+                                } else {
+                                    "https://$input"
+                                }
                             } else {
-                                val encodedQuery =
-                                    URLEncoder.encode(
-                                        input,
-                                        StandardCharsets.UTF_8.toString()
-                                    )
-                                changeUrl("https://www.google.com/search?q=$encodedQuery")
+                                val encodedQuery = URLEncoder.encode(input, StandardCharsets.UTF_8.toString())
+                                "https://www.google.com/search?q=$encodedQuery"
                             }
+
+                            onNewUrl(finalUrl)
+
                             focusManager.clearFocus()
                             keyboardController?.hide()
                             if (!browserSettings.isInteractable) {
@@ -1296,26 +1507,29 @@ fun BottomPanel(
                         .fillMaxWidth()
                         //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
                         .onFocusChanged {
+                            val resetUrl = currentTab?.currentUrl ?: ""
                             setIsFocusOnTextField(it.isFocused)
                             if (it.isFocused) {
 
-                                if (textFieldValue.text == url) {
+                                if (textFieldValue.text == resetUrl) {
+
                                     changeTextFieldValue(TextFieldValue("", TextRange(0)))
                                 }
                             } else {
 
                                 if (textFieldValue.text.isBlank()) {
-                                    changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
+                                    changeTextFieldValue(TextFieldValue(resetUrl, TextRange(resetUrl.length)))
                                 }
                             }
                         }
                         .pointerInput(Unit) {
                             detectHorizontalDragGestures { _, dragAmount ->
                                 if (dragAmount > 0) {
+                                    val resetUrl = currentTab?.currentUrl ?: ""
                                     changeTextFieldValue(
                                         TextFieldValue(
-                                            url,
-                                            selection = TextRange(url.length)
+                                            resetUrl,
+                                            selection = TextRange(resetUrl.length)
                                         )
                                     )
                                 }
