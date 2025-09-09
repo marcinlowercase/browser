@@ -231,6 +231,11 @@ class TabManager(context: Context) {
 
 
 
+interface OnUrlChangedListener {
+    fun onUrlChanged(newUrl: String?)
+}
+
+
 
 @Composable
 fun rememberHasDisplayCutout(): State<Boolean> {
@@ -451,9 +456,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         backgroundColor = if (isSystemInDarkTheme()) Color.Black else Color.White,
         foregroundColor = if (isSystemInDarkTheme()) Color.White else Color.Black
     )
-
+    class CustomWebView(context: Context) : WebView(context) {
+        var onUrlChangedListener: OnUrlChangedListener? = null
+    }
     val webView = remember {
-        WebView(context).apply {
+
+        CustomWebView(context).apply {
             // Force WebView to be transparent so Compose can control the background
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
 
@@ -687,6 +695,14 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     }
                     return true
                 }
+
+                override fun onReceivedTitle(view: WebView?, title: String?) {
+                    super.onReceivedTitle(view, title)
+                    // When the title changes (which also happens on pushState),
+                    // get the current URL and notify our listener.
+                    onUrlChangedListener?.onUrlChanged(view?.url)
+                }
+
             }
 
             // The WebViewClient handles content loading events.
@@ -704,6 +720,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 override fun onPageFinished(view: WebView?, currentUrlString: String?) {
                     super.onPageFinished(view, currentUrlString)
                     isLoading = false
+                    if (currentUrlString != null) {
+                        textFieldValue = TextFieldValue(currentUrlString, TextRange(currentUrlString.length))
+                    }
 
 
                     if (currentUrlString != null) {
@@ -712,12 +731,27 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             // initiated by the WebView itself (i.e., clicking a link).
                             // It is FALSE for our own back/forward calls, because we update
                             // `currentTab` BEFORE calling `loadUrl`.
-                            Log.e("BBB", "TAB BEFORE UPDATE $tab")
-                            Log.e("BBB", "tab.currentUrl " + tab.currentUrl.toString())
-                            Log.e("BBB", "currentUrlString $currentUrlString")
-                            Log.e("BBB", "currentIndex " + tab.currentUrlIndex)
-                            Log.e("BBB", "History SIze " + tab.history.size)
 
+//                            Log.e("BBB", "TAB BEFORE UPDATE $tab")
+//                            Log.e("BBB", "tab.currentUrl " + tab.currentUrl.toString())
+//                            Log.e("BBB", "currentUrlString $currentUrlString")
+//                            Log.e("BBB", "currentIndex " + tab.currentUrlIndex)
+//                            Log.e("BBB", "History SIze " + tab.history.size)
+
+                            // --- 1. LOGGING THE WEBVIEW'S INTERNAL STATE ---
+                            val webViewHistory = view?.copyBackForwardList()
+                            if (webViewHistory != null) {
+                                Log.d("WebViewHistory", "--- WebView Internal History Snapshot ---")
+                                Log.d("WebViewHistory", "Current Index: ${webViewHistory.currentIndex}")
+                                Log.d("WebViewHistory", "History Size: ${webViewHistory.size}")
+                                for (i in 0 until webViewHistory.size) {
+                                    val item = webViewHistory.getItemAtIndex(i)
+                                    val isCurrent = if (i == webViewHistory.currentIndex) "<- CURRENT" else ""
+                                    Log.d("WebViewHistory", "[$i] ${item.url} ${isCurrent}")
+                                }
+                                Log.d("WebViewHistory", "------------------------------------")
+                            }
+                            // --- END OF LOGGING ---
 
 
 
@@ -914,6 +948,41 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     // LAUNCH EFFECTS
     //
+
+
+    LaunchedEffect(webView) {
+        (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
+            override fun onUrlChanged(newUrl: String?) {
+                if (newUrl != null) {
+                    if (!isFocusOnTextField) {
+                        textFieldValue = TextFieldValue(newUrl ?: "", TextRange((newUrl ?: "").length))
+                    }
+                    // When the URL changes, we run the EXACT SAME logic as onPageFinished.
+                    // This keeps our state perfectly synchronized.
+                    currentTab?.let { tab ->
+                        if (tab.currentUrl != newUrl) {
+                            val newHistoryEndIndex = tab.currentUrlIndex + 1
+                            val newHistory = if (newHistoryEndIndex < tab.history.size) {
+                                tab.history.subList(0, newHistoryEndIndex)
+                            } else {
+                                tab.history
+                            }.toMutableList()
+
+                            newHistory.add(newUrl)
+
+                            val updatedTab = tab.copy(
+                                history = newHistory,
+                                currentUrlIndex = newHistory.lastIndex
+                            )
+
+                            tabs[activeTabIndex.value] = updatedTab
+                            saveTrigger++
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     LaunchedEffect(overlayHeightPx) {
         // We only want to act the first time the height is measured (it changes from 0f to a positive value).
@@ -1222,6 +1291,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                         currentTab?.let {
                                                             val updatedTab = it.copy(currentUrlIndex = it.currentUrlIndex - 1)
                                                             tabs[activeTabIndex.value] = updatedTab
+//
                                                             updatedTab.currentUrl?.let { url -> webView.loadUrl(url) }
                                                             saveTrigger++
                                                         }
