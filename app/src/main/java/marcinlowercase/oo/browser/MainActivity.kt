@@ -174,16 +174,26 @@ enum class TabState {
 }
 
 // The data class for a single tab
-@Serializable // Marks this class as serializable
+// Serializable version of WebHistoryItem
+@Serializable
+data class SerializableHistoryItem(val url: String, val title: String)
+
+// Serializable version of WebBackForwardList
+@Serializable
+data class SerializableBackForwardList(
+    val items: List<SerializableHistoryItem>,
+    val currentIndex: Int
+)
+
+@Serializable
 data class Tab(
-    val id: Long = System.currentTimeMillis(), // Unique ID for keys in Compose
-    var history: MutableList<String> = mutableListOf(),
-    var currentUrlIndex: Int = -1,
-    var state: TabState = TabState.BACKGROUND
+    val id: Long = System.currentTimeMillis(),
+    var state: TabState = TabState.BACKGROUND,
+    var historyState: SerializableBackForwardList? = null
 ) {
-    // A convenient property to get the current URL
+    // A convenient property to get the current URL from our saved state
     val currentUrl: String?
-        get() = history.getOrNull(currentUrlIndex)
+        get() = historyState?.items?.getOrNull(historyState!!.currentIndex)?.url
 }
 
 class TabManager(context: Context) {
@@ -221,20 +231,24 @@ class TabManager(context: Context) {
     private fun createDefaultTabs(defaultUrl: String): MutableList<Tab> {
         return mutableListOf(
             Tab(
-                history = mutableListOf(defaultUrl),
-                currentUrlIndex = 0,
-                state = TabState.ACTIVE
+                state = TabState.ACTIVE,
+                // Create a default history state for the first launch
+                historyState = SerializableBackForwardList(
+                    items = listOf(SerializableHistoryItem(url = defaultUrl, title = "")),
+                    currentIndex = 0
+                )
             )
         )
     }
 }
 
-
+class CustomWebView(context: Context) : WebView(context) {
+    var onUrlChangedListener: OnUrlChangedListener? = null
+}
 
 interface OnUrlChangedListener {
     fun onUrlChanged(newUrl: String?)
 }
-
 
 
 @Composable
@@ -312,22 +326,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     var isImmersiveMode by remember { mutableStateOf(false) }
 
-//    var webView by remember { mutableStateOf<WebView?>(null) }
-    val canGoBack by remember {
-        derivedStateOf {
-            (currentTab?.currentUrlIndex ?: 0) > 0
-        }
-    }
-    val canGoForward by remember {
-        derivedStateOf {
-            val tab = currentTab
-            if (tab == null) {
-                false
-            } else {
-                tab.currentUrlIndex < tab.history.lastIndex
-            }
-        }
-    }
+    var isTraverseHistory by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var isFocusOnTextField by remember { mutableStateOf(false) }
 
@@ -469,9 +468,46 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         backgroundColor = if (isSystemInDarkTheme()) Color.Black else Color.White,
         foregroundColor = if (isSystemInDarkTheme()) Color.White else Color.Black
     )
-    class CustomWebView(context: Context) : WebView(context) {
-        var onUrlChangedListener: OnUrlChangedListener? = null
+
+
+    val canGoBack by remember {
+        derivedStateOf { (currentTab?.historyState?.currentIndex ?: 0) > 0 }
     }
+    val canGoForward by remember {
+        derivedStateOf {
+            val history = currentTab?.historyState
+            if (history == null) false else history.currentIndex < history.items.lastIndex
+        }
+    }
+
+    // --- 2. The Central Synchronizer Function ---
+    // It's defined here in the main body of the Composable.
+    fun synchronizeState(webView: CustomWebView) {
+
+        val webViewHistory = webView.copyBackForwardList()
+
+
+        currentTab?.let { tab ->
+            val serializableItems = List(webViewHistory.size) { i ->
+                val item = webViewHistory.getItemAtIndex(i)
+                SerializableHistoryItem(url = item.url ?: "", title = item.title ?: "")
+            }
+            val webViewSerializableList = SerializableBackForwardList(
+                items = serializableItems,
+                currentIndex = webViewHistory.currentIndex
+            )
+
+            if (tab.historyState != webViewSerializableList) {
+                val updatedTab = tab.copy(historyState = webViewSerializableList)
+                tabs[activeTabIndex.value] = updatedTab
+                saveTrigger++
+            }
+
+            Log.e("zzz", tabs[activeTabIndex.value].historyState?.items?.size.toString())
+            Log.e("zzz", tabs[activeTabIndex.value].historyState.toString())
+        }
+    }
+
     val webView = remember {
 
         CustomWebView(context).apply {
@@ -725,71 +761,50 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     isLoading = true
-                    if (!isFocusOnTextField) url?.let {
-                        textFieldValue = TextFieldValue(it, TextRange(it.length))
-                    }
+
                 }
 
                 override fun onPageFinished(view: WebView?, currentUrlString: String?) {
                     super.onPageFinished(view, currentUrlString)
                     isLoading = false
-//                    if (currentUrlString != null) {
-//                        textFieldValue = TextFieldValue(currentUrlString, TextRange(currentUrlString.length))
-//                    }
 
+                    if (currentUrlString != null) {
+                        Log.w("zzz", "")
 
-//                    if (currentUrlString != null) {
-//                        currentTab?.let { tab ->
-//                            // This condition is the gatekeeper. It is ONLY true for navigations
-//                            // initiated by the WebView itself (i.e., clicking a link).
-//                            // It is FALSE for our own back/forward calls, because we update
-//                            // `currentTab` BEFORE calling `loadUrl`.
-//
-////                            Log.e("BBB", "TAB BEFORE UPDATE $tab")
-////                            Log.e("BBB", "tab.currentUrl " + tab.currentUrl.toString())
-////                            Log.e("BBB", "currentUrlString $currentUrlString")
-////                            Log.e("BBB", "currentIndex " + tab.currentUrlIndex)
-////                            Log.e("BBB", "History SIze " + tab.history.size)
-//
-//
-//
-//
-//
-//                            /// The below alwasy wrong???719
-//                            if (tab.currentUrl != currentUrlString) {
-//
-//                                // A link was clicked. This is a NEW navigation entry.
-//                                // We must truncate the forward history.
-//                                val newHistoryEndIndex = tab.currentUrlIndex + 1
-//                                val newHistory = if (newHistoryEndIndex < tab.history.size) {
-//                                    tab.history.subList(0, newHistoryEndIndex)
-//                                } else {
-//                                    tab.history
-//                                }.toMutableList()
-//
-//                                newHistory.add(currentUrlString)
-//
-//                                val updatedTab = tab.copy(
-//                                    history = newHistory,
-//                                    currentUrlIndex = newHistory.lastIndex
-//                                )
-//
-//                                // Replace the object to trigger recomposition and update canGoBack/Forward
-//                                tabs[activeTabIndex.value] = updatedTab
-//                                Log.e("BBB", "TAB After UPDATE " + tabs[activeTabIndex.value])
-//
-//                                saveTrigger++
-//                            }
-//                            Log.e("BBB", " ")
+                        Log.w("zzz", "onPageFinished")
+                        Log.w("zzz", "canGoForward: $canGoForward")
+                        Log.w("zzz", "")
+                        val webViewHistory = this@apply.copyBackForwardList()
+                        Log.e("zzz", " ACTUAL WEBVIEW HISTORY ")
+                        for (i in 0 until webViewHistory.size) {
+                            Log.e("zzz", "$i : " + webViewHistory.getItemAtIndex(i).url)
+
+                        }
+                        Log.e("zzz", " ")
+
+                        Log.i("zzz", "Current Items  :  : ${tabs[activeTabIndex.value].historyState?.items}")
+                        Log.i("zzz", "Current Index  :  : ${tabs[activeTabIndex.value].historyState?.currentIndex}")
+                        if (currentUrlString != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex?: -1]?.url) {
+                            Log.d("zzz", "++++++DIFFERENT")
+                            Log.d("zzz", currentUrlString)
+                            Log.d("zzz", tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex?: -1]?.url.toString())
+                            synchronizeState(this@apply)
+                        }
+//                        if (isTraverseHistory) {
+//                            Log.i("zzz", "isTraverseHistory")
+//                            isTraverseHistory = false
+//                        } else {
 //
 //                        }
-//                    }
+                    }
+                    if (!isFocusOnTextField) url?.let {
+                        textFieldValue = TextFieldValue(it, TextRange(it.length))
+                    }
+                    // --- END OF LOGGING CODE ---
 
-//                    // This should always run to keep the URL bar in sync.
-//                    if (!isFocusOnTextField) {
-//                        textFieldValue = TextFieldValue(currentUrlString ?: "", TextRange((currentUrlString ?: "").length))
-//                    }
+
                 }
+
 //                override fun onPageFinished(view: WebView?, currentUrl: String?) {
 //                    super.onPageFinished(view, currentUrl)
 //                    isLoading = false
@@ -949,38 +964,91 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // LAUNCH EFFECTS
     //
 
+    // This effect handles SPA navigation by also calling our synchronizer
+//    LaunchedEffect(webView) {
+//        (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
+//            override fun onUrlChanged(newUrl: String?) {
+//                if (newUrl != null) {
+//                    synchronizeOnUncommandedNavigation(newUrl)
+//                }
+//                if (!isFocusOnTextField) newUrl?.let {
+//                    textFieldValue = TextFieldValue(it, TextRange(it.length))
+//                }
+//            }
+//        }
+//    }
+
+    // This effect now ONLY handles the very first restoration of state.
 
     LaunchedEffect(webView) {
         (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
             override fun onUrlChanged(newUrl: String?) {
-                Log.e("onUrlChanged", "onUrlChanged")
+                Log.w("zzz", "")
+
+                Log.w("zzz", "onUrlChanged")
+                Log.w("zzz", "")
+
                 if (newUrl != null) {
+
                     if (!isFocusOnTextField) {
                         textFieldValue = TextFieldValue(newUrl ?: "", TextRange((newUrl ?: "").length))
                     }
+                    if (newUrl != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex?: 0]?.url) {
+                        synchronizeState(webView)
+                    }
+//                    synchronizeState(webView)
+
+
                     // When the URL changes, we run the EXACT SAME logic as onPageFinished.
                     // This keeps our state perfectly synchronized.
-                    currentTab?.let { tab ->
-                        if (tab.currentUrl != newUrl) {
-                            val newHistoryEndIndex = tab.currentUrlIndex + 1
-                            val newHistory = if (newHistoryEndIndex < tab.history.size) {
-                                tab.history.subList(0, newHistoryEndIndex)
-                            } else {
-                                tab.history
-                            }.toMutableList()
-
-                            newHistory.add(newUrl)
-
-                            val updatedTab = tab.copy(
-                                history = newHistory,
-                                currentUrlIndex = newHistory.lastIndex
-                            )
-
-                            tabs[activeTabIndex.value] = updatedTab
-                            saveTrigger++
-                        }
-                    }
+//                    currentTab?.let { tab ->
+//                        Log.e("onUrlChanged", "Tab Before : " + tab.toString())
+//
+//                        if (tab.currentUrl != newUrl) {
+//                            val newHistoryEndIndex = tab.currentUrlIndex + 1
+//                            val newHistory = if (newHistoryEndIndex < tab.history.size) {
+//                                tab.history.subList(0, newHistoryEndIndex)
+//                            } else {
+//                                tab.history
+//                            }.toMutableList()
+//
+//                            newHistory.add(newUrl)
+//
+//                            val updatedTab = tab.copy(
+//                                history = newHistory,
+//                                currentUrlIndex = newHistory.lastIndex
+//                            )
+//
+//                            tabs[activeTabIndex.value] = updatedTab
+//                            saveTrigger++
+//                            Log.e("onUrlChanged", "Tab after : " +    tabs[activeTabIndex.value].toString())
+//                            Log.e("onUrlChanged", " " )
+//
+//
+//
+//                        }
+//                    }
                 }
+
+                // --- NEW LOGGING CODE for copyBackForwardList() ---
+//                val webViewHistoryList = webView.copyBackForwardList()
+//
+//                if (webViewHistoryList != null) {
+//                    Log.d("WebViewHistory", "===================onUrlChanged====================")
+//                    Log.d("WebViewHistory", "WebView.copyBackForwardList() Snapshot")
+//                    Log.d("WebViewHistory", "New URL: $newUrl")
+//                    Log.d("WebViewHistory", "List Size: ${webViewHistoryList.size}")
+//                    Log.d("WebViewHistory", "Current Index: ${webViewHistoryList.currentIndex}")
+//
+//                    // Loop through and print each item in the WebView's history
+//                    for (i in 0 until webViewHistoryList.size) {
+//                        val item = webViewHistoryList.getItemAtIndex(i)
+//                        val isCurrentMarker = if (i == webViewHistoryList.currentIndex) "<- CURRENT" else ""
+//                        Log.d("WebViewHistory", "  [$i] ${item.url} ${isCurrentMarker}")
+//                    }
+//                    Log.d("WebViewHistory", "=======================================")
+//                }
+//                // --- END OF LOGGING CODE ---
             }
         }
     }
@@ -1042,7 +1110,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     // This effect loads the URL when the active tab changes
-    LaunchedEffect(currentTab, initialLoadDone) {
+    LaunchedEffect(activeTabIndex, initialLoadDone) {
+        Log.e("zzz", "Change Tab")
         // Get the URL that SHOULD be loaded for the current tab.
         val urlToLoad = currentTab?.currentUrl
 
@@ -1053,19 +1122,20 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 webView.loadUrl(urlToLoad)
                 // Set the flag to true so this block never runs again.
                 initialLoadDone = true
-            } else {
-                // --- SCENARIO 2: User switches to a different tab ---
-                // If the initial load IS done, this effect is running because
-                // currentTab changed. Load the new tab's URL.
-                if (webView.url != urlToLoad) {
-                    webView.loadUrl(urlToLoad)
-                }
             }
+//            else {
+//                // --- SCENARIO 2: User switches to a different tab ---
+//                // If the initial load IS done, this effect is running because
+//                // currentTab changed. Load the new tab's URL.
+//                if (webView.url != urlToLoad) {
+//                    webView.loadUrl(urlToLoad)
+//                }
+//            }
         }
     }
 
     // The LaunchedEffect now saves the entire settings object (or individual fields)
-    LaunchedEffect( browserSettings) {
+    LaunchedEffect(browserSettings) {
         sharedPrefs.edit {
             putFloat("padding_dp", browserSettings.paddingDp)
             putFloat("corner_radius_dp", browserSettings.cornerRadiusDp)
@@ -1125,9 +1195,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             // Priority 3: Navigate back in the WebView.
             canGoBack -> {
                 currentTab?.let { tab ->
-                    val updatedTab = tab.copy(currentUrlIndex = tab.currentUrlIndex - 1)
+                    val updatedTab = tab.copy(historyState = tab.historyState?.copy(currentIndex = tab.historyState!!.currentIndex - 1))
                     tabs[activeTabIndex.value] = updatedTab
-                    updatedTab.currentUrl?.let { webView.loadUrl(it) }
+//                    updatedTab.currentUrl?.let { webView.loadUrl(it) }
+                    webView.goBack()
                     saveTrigger++
                 }
             }
@@ -1208,7 +1279,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                     .pointerInput(Unit) {
                                         val coroutineScope = CoroutineScope(coroutineContext)
                                         val verticalDragThreshold =
-                                            with(density) { overlayHeightPx  * 2 }
+                                            with(density) { overlayHeightPx * 2 }
                                         val horizontalDragThreshold = with(density) { 40.dp.toPx() }
 
                                         awaitEachGesture {
@@ -1287,29 +1358,47 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                     }
                                                 }
 
-                                                // The drag has ended, execute the final action
                                                 when (activeGestureAction) {
                                                     GestureNavAction.BACK -> if (canGoBack) {
-                                                        currentTab?.let {
-                                                            val updatedTab = it.copy(currentUrlIndex = it.currentUrlIndex - 1)
+                                                        isTraverseHistory = true
+                                                        currentTab?.let { tab ->
+                                                            val updatedTab = tab.copy(
+                                                                historyState = tab.historyState?.copy(
+                                                                    currentIndex = tab.historyState!!.currentIndex - 1
+                                                                )
+                                                            )
                                                             tabs[activeTabIndex.value] = updatedTab
-//
-                                                            updatedTab.currentUrl?.let { url -> webView.loadUrl(url) }
                                                             saveTrigger++
-                                                        }
-                                                    }
-                                                    GestureNavAction.REFRESH -> webView.reload()
-                                                    GestureNavAction.FORWARD -> if (canGoForward) {
-                                                        currentTab?.let {
-                                                            val updatedTab = it.copy(currentUrlIndex = it.currentUrlIndex + 1)
-                                                            tabs[activeTabIndex.value] = updatedTab
-                                                            updatedTab.currentUrl?.let { url -> webView.loadUrl(url) }
-                                                            saveTrigger++
-                                                        }
-                                                    }
-                                                    GestureNavAction.NONE -> { /* Do nothing */ }
-                                                }
 
+                                                            webView.goBack()
+                                                        }
+                                                    }
+
+                                                    GestureNavAction.REFRESH -> {
+                                                        isTraverseHistory = true
+
+                                                        webView.reload()
+                                                    }
+
+                                                    GestureNavAction.FORWARD -> if (canGoForward) {
+                                                        isTraverseHistory = true
+
+                                                        currentTab?.let { tab ->
+                                                            val updatedTab = tab.copy(
+                                                                historyState = tab.historyState?.copy(
+                                                                    currentIndex = tab.historyState!!.currentIndex + 1
+                                                                )
+                                                            )
+                                                            tabs[activeTabIndex.value] = updatedTab
+
+                                                            webView.goForward()
+                                                            saveTrigger++
+                                                        }
+                                                    }
+
+                                                    GestureNavAction.NONE -> { /* Do nothing */
+                                                    }
+                                                }
                                                 // Animate the overlay back to its hidden position.
                                                 coroutineScope.launch {
                                                     offsetY.animateTo(
@@ -1404,21 +1493,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         changeTextFieldValue = { textFieldValue = it },
                         onNewUrl = { newUrl ->
                             webView.loadUrl(newUrl)
-//                            currentTab?.let { tab ->
-//                                val newHistoryEndIndex = tab.currentUrlIndex + 1
-//                                val newHistory = if (newHistoryEndIndex < tab.history.size) {
-//                                    tab.history.subList(0, newHistoryEndIndex)
-//                                } else {
-//                                    tab.history
-//                                }.toMutableList()
-//                                newHistory.add(newUrl)
-//
-//                                val updatedTab = tab.copy(history = newHistory, currentUrlIndex = newHistory.lastIndex)
-//                                tabs[activeTabIndex.value] = updatedTab
-//                                webView.loadUrl(newUrl)
-//                                saveTrigger++
 //                            }
-                        },                        toggleUrlBar = { isUrlBarVisible = it },
+                        },
+                        toggleUrlBar = { isUrlBarVisible = it },
                         setTextFieldHeightPx = { textFieldHeightPx = it },
                         setIsFocusOnTextField = { isFocusOnTextField = it },
 
@@ -1536,7 +1613,12 @@ fun BottomPanel(
                             val resetUrl = currentTab?.currentUrl ?: ""
 
                             if (input.isBlank()) {
-                                changeTextFieldValue(TextFieldValue(resetUrl, TextRange(resetUrl.length)))
+                                changeTextFieldValue(
+                                    TextFieldValue(
+                                        resetUrl,
+                                        TextRange(resetUrl.length)
+                                    )
+                                )
 //                                changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
                                 focusManager.clearFocus()
                                 keyboardController?.hide()
@@ -1556,7 +1638,8 @@ fun BottomPanel(
                                     "https://$input"
                                 }
                             } else {
-                                val encodedQuery = URLEncoder.encode(input, StandardCharsets.UTF_8.toString())
+                                val encodedQuery =
+                                    URLEncoder.encode(input, StandardCharsets.UTF_8.toString())
                                 "https://www.google.com/search?q=$encodedQuery"
                             }
 
@@ -1590,7 +1673,12 @@ fun BottomPanel(
                             } else {
 
                                 if (textFieldValue.text.isBlank()) {
-                                    changeTextFieldValue(TextFieldValue(resetUrl, TextRange(resetUrl.length)))
+                                    changeTextFieldValue(
+                                        TextFieldValue(
+                                            resetUrl,
+                                            TextRange(resetUrl.length)
+                                        )
+                                    )
                                 }
                             }
                         }
@@ -1872,7 +1960,7 @@ fun OptionsPanel(
  * @param modifier The modifier to be applied to the overlay.
  */
 @Composable
-fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier, colorScheme :ColorScheme) {
+fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier, colorScheme: ColorScheme) {
     // Animate the appearance and disappearance of the overlay.
     AnimatedVisibility(
         visible = isLoading,
@@ -1932,7 +2020,9 @@ fun GestureNavigationOverlay(
                 .height(browserSettings.singleLineHeight.dp * 1.5f)
         ) {
             val backgroundColor by animateColorAsState(
-                targetValue = if (activeAction != GestureNavAction.NONE)  colorScheme.foregroundColor.copy(alpha = 0.9f) else colorScheme.foregroundColor.copy(alpha = 0.5f),
+                targetValue = if (activeAction != GestureNavAction.NONE) colorScheme.foregroundColor.copy(
+                    alpha = 0.9f
+                ) else colorScheme.foregroundColor.copy(alpha = 0.5f),
                 label = "BackgroundColor"
             )
             val containerBorderRadius by animateDpAsState(
@@ -1955,7 +2045,10 @@ fun GestureNavigationOverlay(
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(vertical = browserSettings.paddingDp.dp, horizontal = browserSettings.singleLineHeight.dp * 1f),
+                    .padding(
+                        vertical = browserSettings.paddingDp.dp,
+                        horizontal = browserSettings.singleLineHeight.dp * 1f
+                    ),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // --- DYNAMIC WEIGHT ANIMATION ---
@@ -2048,6 +2141,7 @@ fun GestureNavigationOverlay(
         }
     }
 }
+
 @Composable
 @Preview(showBackground = true)
 fun BrowserScreenPreview() {
