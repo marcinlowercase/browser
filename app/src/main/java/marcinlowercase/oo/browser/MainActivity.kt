@@ -66,6 +66,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
+//import androidx.compose.material3.value
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -107,12 +108,57 @@ import kotlinx.serialization.json.Json
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import kotlin.collections.get
 import kotlin.coroutines.coroutineContext
+import kotlin.text.get
+
+
+private lateinit var webView: CustomWebView
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+
+        webView = CustomWebView(this).apply {
+            // Force WebView to be transparent so Compose can control the background
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+
+//            updateWebViewSettings(this, browserSettings.isDesktopMode)
+
+            // Apply all your production-grade settings
+            // --- This initial setup block should contain ALL static settings ---
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                allowFileAccess = true
+                allowContentAccess = true
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                javaScriptCanOpenWindowsAutomatically = true
+                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+
+                mediaPlaybackRequiresUserGesture = false
+
+
+                // CRITICAL: Zoom must be supported for overview mode to work reliably.
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false // Hide the on-screen +/- buttons
+            }
+
+            // Enable remote debugging for debug builds
+            if (0 != (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE)) {
+                WebView.setWebContentsDebuggingEnabled(true)
+            }
+
+            // Ensure hardware acceleration
+            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+
+            // Add your JS interface
+            addJavascriptInterface(WebAppInterface(), "Android")
+
+        }
         setContent {
             BrowserTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -120,6 +166,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
     }
 }
 
@@ -508,302 +555,772 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    val webView = remember {
+//    val webView = remember {
+//
+//        CustomWebView(context).apply {
+//            // Force WebView to be transparent so Compose can control the background
+//            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+//
+//            // The WebChromeClient handles UI-related browser events.
+//            webChromeClient = object : WebChromeClient() {
+//
+//                private var fullscreenView: View? = null
+//
+//
+//                override fun onGeolocationPermissionsShowPrompt(
+//                    origin: String?,
+//                    callback: GeolocationPermissions.Callback?
+//                ) {
+//                    if (origin == null || callback == null) return
+//
+//                    // Create a new generic permission request for this specific geolocation prompt.
+//                    pendingPermissionRequest = CustomPermissionRequest(
+//                        title = "Location Access Required",
+//                        rationale = "This website wants to use your device's location.",
+//                        iconResAllow = R.drawable.ic_location_on,
+//                        iconResDeny = R.drawable.ic_location_off,
+//                        permissionsToRequest = listOf(
+//                            Manifest.permission.ACCESS_FINE_LOCATION,
+//                            Manifest.permission.ACCESS_COARSE_LOCATION
+//                        ),
+//                        // This is the key: the onResult callback for this specific request
+//                        // knows how to talk back to the WebView's Geolocation callback.
+//                        onResult = { permissions ->
+//                            val isGranted =
+//                                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+//                                        permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+//                            callback.invoke(origin, isGranted, false)
+//                        }
+//                    )
+//                }
+//
+//
+//                override fun onPermissionRequest(request: PermissionRequest) {
+//                    Log.d(
+//                        "WebViewPermission",
+//                        "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}"
+//                    )
+//
+//                    val requestedAndroidPermissions = mutableListOf<String>()
+//                    var title = "Permission Required" // Default title
+//                    var rationale =
+//                        "'${request.origin}' wants to use your device features." // Default rationale
+//                    var allowIcon = R.drawable.ic_bug // Default allow icon
+//                    var denyIcon = R.drawable.ic_bug   // Default deny icon
+//
+//                    val requestsCamera =
+//                        request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+//                    val requestsMicrophone =
+//                        request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+//
+//                    if (requestsCamera) {
+//                        requestedAndroidPermissions.add(Manifest.permission.CAMERA)
+//                        title = "Camera Access"
+//                        rationale = "Allow camera access for video recording."
+//                        allowIcon = R.drawable.ic_camera_on
+//                        denyIcon = R.drawable.ic_camera_off
+//                    } else if (requestsMicrophone) {
+//                        requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
+//                        title = "Microphone Access"
+//                        rationale = "Allow microphone access for audio recording."
+//                        allowIcon = R.drawable.ic_mic_on
+//                        denyIcon = R.drawable.ic_mic_off
+//                    }
+//
+//                    // Add other permission mappings if needed
+//                    if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
+//                        // Handle protected media if needed
+//                        Log.d(
+//                            "WebViewPermission",
+//                            "Protected media ID requested - typically not mapped to runtime permissions"
+//                        )
+//                        // If no other Android permissions were added, you might want to deny or handle appropriately.
+//                        if (requestedAndroidPermissions.isEmpty()) {
+//                            Log.d(
+//                                "WebViewPermission",
+//                                "Protected media ID requested with no other mappable Android permissions; denying request."
+//                            )
+//                            request.deny()
+//                            return
+//                        }
+//                    }
+//
+//                    if (requestedAndroidPermissions.isEmpty()) {
+//                        Log.d(
+//                            "WebViewPermission",
+//                            "No mappable Android permissions for the requested WebView resources; denying request."
+//                        )
+//                        request.deny()
+//                        return
+//                    }
+//
+//                    // Check if we already have these permissions
+//                    val context = this@apply.context
+//                    val hasAllPermissions = requestedAndroidPermissions.all { permission ->
+//                        ContextCompat.checkSelfPermission(
+//                            context,
+//                            permission
+//                        ) == PackageManager.PERMISSION_GRANTED
+//                    }
+//
+//                    if (hasAllPermissions) {
+//                        // If we already have permissions, grant them immediately
+//                        Log.d(
+//                            "WebViewPermission",
+//                            "Permissions already granted, granting to WebView"
+//                        )
+//                        request.grant(request.resources)
+//                        return
+//                    }
+//
+//                    // Create the custom request
+//                    pendingPermissionRequest = CustomPermissionRequest(
+//                        title = title,
+//                        rationale = rationale,
+//                        iconResAllow = allowIcon,
+//                        iconResDeny = denyIcon,
+//                        permissionsToRequest = requestedAndroidPermissions,
+//                        onResult = { permissionsResult ->
+//                            activity?.runOnUiThread {
+//                                // Check which permissions were actually granted
+//                                val grantedPermissions = permissionsResult.filter { it.value }.keys
+//
+//                                // Build a list of WebView resources to grant based on granted Android permissions
+//                                val resourcesToGrant = mutableListOf<String>()
+//
+//                                if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
+//                                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+//                                ) {
+//                                    resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+//                                }
+//
+//                                if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
+//                                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+//                                ) {
+//                                    resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+//                                }
+//
+//                                if (resourcesToGrant.isNotEmpty()) {
+//                                    Log.d(
+//                                        "WebViewPermission",
+//                                        "Granting resources: ${resourcesToGrant.joinToString()}"
+//                                    )
+//                                    request.grant(resourcesToGrant.toTypedArray())
+//                                } else {
+//                                    Log.d(
+//                                        "WebViewPermission",
+//                                        "No permissions granted; denying all resources."
+//                                    )
+//                                    request.deny()
+//                                }
+//                            }
+//                        }
+//                    )
+//                }
+//
+//                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+//                    if (fullscreenView != null) {
+//                        callback?.onCustomViewHidden()
+//                        return
+//                    }
+//
+//
+//                    originalOrientation = activity?.requestedOrientation
+//                        ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+//                    customViewCallback = callback
+//                    fullscreenView = view
+//
+//                    // B. Get the root view of the Activity and add our fullscreen view to it.
+//                    val decorView = activity?.window?.decorView as? ViewGroup
+//                    decorView?.addView(
+//                        fullscreenView,
+//                        ViewGroup.LayoutParams(
+//                            ViewGroup.LayoutParams.MATCH_PARENT,
+//                            ViewGroup.LayoutParams.MATCH_PARENT
+//                        )
+//                    )
+//
+//                    // C. Now, control the window
+//                    val insetsController = activity?.let {
+//                        WindowCompat.getInsetsController(
+//                            it.window,
+//                            it.window.decorView
+//                        )
+//                    }
+//                    insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+//                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+//
+//                    // Tell the WebView to resume, as it might have paused.
+//                    this@apply.onResume()
+//                }
+//
+//                override fun onHideCustomView() {
+//                    val decorView = activity?.window?.decorView as? ViewGroup
+//                    decorView?.removeView(fullscreenView)
+//                    fullscreenView = null
+//
+//                    val insetsController = activity?.let {
+//                        WindowCompat.getInsetsController(
+//                            it.window,
+//                            it.window.decorView
+//                        )
+//                    }
+//                    insetsController?.show(WindowInsetsCompat.Type.systemBars())
+//                    activity?.requestedOrientation = originalOrientation
+//
+//                    customViewCallback?.onCustomViewHidden()
+//                    customViewCallback = null
+//
+//                    this@apply.onResume()
+//                }
+//
+//                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+//                    super.onProgressChanged(view, newProgress)
+//                    // Inject our JavaScript helper as the page is loading.
+//                    val js =
+//                        "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
+//                    view?.evaluateJavascript(js, null)
+//                }
+//
+//                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+//                    consoleMessage?.let {
+//                        Log.d(
+//                            "WebViewConsole",
+//                            "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}"
+//                        )
+//                    }
+//                    return true
+//                }
+//
+//                override fun onReceivedTitle(view: WebView?, title: String?) {
+//                    super.onReceivedTitle(view, title)
+//                    // When the title changes (which also happens on pushState),
+//                    // get the current URL and notify our listener.
+//                    onUrlChangedListener?.onUrlChanged(view?.url)
+//                }
+//
+//            }
+//
+//            // The WebViewClient handles content loading events.
+//            webViewClient = object : WebViewClient() {
+//
+//
+//                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+//                    super.onPageStarted(view, url, favicon)
+//                    isLoading = true
+//
+//                }
+//
+//                override fun onPageFinished(view: WebView?, currentUrlString: String?) {
+//                    super.onPageFinished(view, currentUrlString)
+//                    isLoading = false
+//
+//                    if (currentUrlString != null) {
+//                        Log.w("zzz", "")
+//
+//                        Log.w("zzz", "onPageFinished")
+//                        Log.w("zzz", "canGoForward: $canGoForward")
+//                        Log.w("zzz", "")
+//                        val webViewHistory = this@apply.copyBackForwardList()
+//                        Log.e("zzz", " ACTUAL WEBVIEW HISTORY ")
+//                        for (i in 0 until webViewHistory.size) {
+//                            Log.e("zzz", "$i : " + webViewHistory.getItemAtIndex(i).url)
+//
+//                        }
+//                        Log.e("zzz", " ")
+//
+//                        Log.i(
+//                            "zzz",
+//                            "Current Items  :  : ${tabs[activeTabIndex.value].historyState?.items}"
+//                        )
+//                        Log.i(
+//                            "zzz",
+//                            "Current Index  :  : ${tabs[activeTabIndex.value].historyState?.currentIndex}"
+//                        )
+//                        if (currentUrlString != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
+//                                ?: -1]?.url
+//                        ) {
+//                            Log.d("zzz", "++++++DIFFERENT")
+//                            Log.d("zzz", currentUrlString)
+//                            Log.d(
+//                                "zzz",
+//                                tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
+//                                    ?: -1]?.url.toString()
+//                            )
+//                            synchronizeState(this@apply)
+//                        }
+////                        if (isTraverseHistory) {
+////                            Log.i("zzz", "isTraverseHistory")
+////                            isTraverseHistory = false
+////                        } else {
+////
+////                        }
+//                    }
+//                    if (!isFocusOnTextField) url?.let {
+//                        textFieldValue = TextFieldValue(it, TextRange(it.length))
+//                    }
+//                    // --- END OF LOGGING CODE ---
+//
+//
+//                }
+//
+////                override fun onPageFinished(view: WebView?, currentUrl: String?) {
+////                    super.onPageFinished(view, currentUrl)
+////                    isLoading = false
+//////                    canGoBack = view?.canGoBack() ?: false
+//////                    canGoForward = view?.canGoForward() ?: false
+//////                    currentUrl?.let {
+//////                        url = it
+//////                        if (!isFocusOnTextField) textFieldValue =
+//////                            TextFieldValue(it, TextRange(it.length))
+//////                    }
+////                    // Force a scroll to the top to fix coordinate system bugs
+////                    view?.scrollTo(0, 0)
+////
+////                    // Your JS script for getting the background color
+////                    val jsScript =
+////                        """"(function() { ... })();"""".trimIndent() // Keep your full script here
+////                    view?.evaluateJavascript(jsScript, null)
+////
+////                    if (browserSettings.isDesktopMode) {
+////                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
+////                        view?.evaluateJavascript(
+////                            """"
+////            (function() {
+////                // The function we want to run to enforce our viewport.
+////                function enforceDesktopViewport() {
+////                    console.log('Enforcing desktop viewport...');
+////                    var meta = document.querySelector('meta[name=viewport]');
+////                    if (!meta) {
+////                        meta = document.createElement('meta');
+////                        meta.setAttribute('name', 'viewport');
+////                        document.getElementsByTagName('head')[0].appendChild(meta);
+////                    }
+////                    // Crucially, check if the content is already correct.
+////                    // This prevents an infinite loop of observer callbacks.
+////                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
+////                        console.log('Viewport was wrong, correcting to width=${browserSettings.desktopModeWidth}.');
+////                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
+////                    }
+////                }
+////
+////                // 1. Enforce it immediately.
+////                enforceDesktopViewport();
+////
+////                // 2. Create an observer to watch for any changes to the <head> element.
+////                //    This will detect if the site's own JS tries to change the viewport.
+////                var observer = new MutationObserver(function(mutations) {
+////                    // When a change is detected, run our enforcement function again.
+////                    enforceDesktopViewport();
+////                });
+////
+////                // 3. Start observing. We watch for changes to child elements in the head.
+////                var head = document.getElementsByTagName('head')[0];
+////                if (head) {
+////                    observer.observe(head, {
+////                        childList: true,
+////                        subtree: true
+////                    });
+////                }
+////            })();
+////            """".trimIndent(), null
+////                        )
+////                    }
+////
+////
+////                }
+//
+//                override fun shouldInterceptRequest(
+//                    view: WebView?,
+//                    request: WebResourceRequest?
+//                ): WebResourceResponse? {
+//                    request?.requestHeaders?.put("Origin", currentTab?.currentUrl)
+//                    return super.shouldInterceptRequest(view, request)
+//                }
+//            }
+//
+//
+////            updateWebViewSettings(this, browserSettings.isDesktopMode)
+//
+//            // Apply all your production-grade settings
+//            // --- This initial setup block should contain ALL static settings ---
+//            settings.apply {
+//                javaScriptEnabled = true
+//                domStorageEnabled = true
+//                allowFileAccess = true
+//                allowContentAccess = true
+//                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+//                javaScriptCanOpenWindowsAutomatically = true
+//                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+//
+//                mediaPlaybackRequiresUserGesture = false
+//
+//
+//                // CRITICAL: Zoom must be supported for overview mode to work reliably.
+//                setSupportZoom(true)
+//                builtInZoomControls = true
+//                displayZoomControls = false // Hide the on-screen +/- buttons
+//            }
+//
+//            // Enable remote debugging for debug builds
+//            if (0 != (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE)) {
+//                WebView.setWebContentsDebuggingEnabled(true)
+//            }
+//
+//            // Ensure hardware acceleration
+//            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+//
+//            // Add your JS interface
+//            addJavascriptInterface(WebAppInterface(), "Android")
+//
+//        }
+//    }
 
-        CustomWebView(context).apply {
-            // Force WebView to be transparent so Compose can control the background
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
 
-            // The WebChromeClient handles UI-related browser events.
-            webChromeClient = object : WebChromeClient() {
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+        onResult = { permissions ->
+            // When the system dialog returns a result, trigger the onResult
+            // callback that we stored in our pendingPermissionRequest.
+            pendingPermissionRequest?.onResult?.invoke(permissions)
 
-                private var fullscreenView: View? = null
+            // Clear the request to hide the panel.
+            pendingPermissionRequest = null
+        }
+    )
 
 
-                override fun onGeolocationPermissionsShowPrompt(
-                    origin: String?,
-                    callback: GeolocationPermissions.Callback?
-                ) {
-                    if (origin == null || callback == null) return
+    // FUNCTIONS
 
-                    // Create a new generic permission request for this specific geolocation prompt.
-                    pendingPermissionRequest = CustomPermissionRequest(
-                        title = "Location Access Required",
-                        rationale = "This website wants to use your device's location.",
-                        iconResAllow = R.drawable.ic_location_on,
-                        iconResDeny = R.drawable.ic_location_off,
-                        permissionsToRequest = listOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION
-                        ),
-                        // This is the key: the onResult callback for this specific request
-                        // knows how to talk back to the WebView's Geolocation callback.
-                        onResult = { permissions ->
-                            val isGranted =
-                                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                                        permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-                            callback.invoke(origin, isGranted, false)
-                        }
-                    )
+
+    // This function will be our single, safe way to update settings.
+    val updateBrowserSettings = { newSettings: BrowserSettings ->
+        browserSettings = newSettings
+        Log.e("updateBrowserSettings", browserSettings.toString())
+    }
+
+    // LAUNCH EFFECTS
+    //
+
+    // This effect handles SPA navigation by also calling our synchronizer
+//    LaunchedEffect(webView) {
+//        (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
+//            override fun onUrlChanged(newUrl: String?) {
+//                if (newUrl != null) {
+//                    synchronizeOnUncommandedNavigation(newUrl)
+//                }
+//                if (!isFocusOnTextField) newUrl?.let {
+//                    textFieldValue = TextFieldValue(it, TextRange(it.length))
+//                }
+//            }
+//        }
+//    }
+
+    // This effect now ONLY handles the very first restoration of state.
+
+    SideEffect {
+        // The WebChromeClient handles UI-related browser events.
+        webView.webChromeClient = object : WebChromeClient() {
+
+            private var fullscreenView: View? = null
+
+
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?
+            ) {
+                if (origin == null || callback == null) return
+
+                // Create a new generic permission request for this specific geolocation prompt.
+                pendingPermissionRequest = CustomPermissionRequest(
+                    title = "Location Access Required",
+                    rationale = "This website wants to use your device's location.",
+                    iconResAllow = R.drawable.ic_location_on,
+                    iconResDeny = R.drawable.ic_location_off,
+                    permissionsToRequest = listOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    ),
+                    // This is the key: the onResult callback for this specific request
+                    // knows how to talk back to the WebView's Geolocation callback.
+                    onResult = { permissions ->
+                        val isGranted =
+                            permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+                        callback.invoke(origin, isGranted, false)
+                    }
+                )
+            }
+
+
+            override fun onPermissionRequest(request: PermissionRequest) {
+                Log.d(
+                    "WebViewPermission",
+                    "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}"
+                )
+
+                val requestedAndroidPermissions = mutableListOf<String>()
+                var title = "Permission Required" // Default title
+                var rationale =
+                    "'${request.origin}' wants to use your device features." // Default rationale
+                var allowIcon = R.drawable.ic_bug // Default allow icon
+                var denyIcon = R.drawable.ic_bug   // Default deny icon
+
+                val requestsCamera =
+                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                val requestsMicrophone =
+                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+
+                if (requestsCamera) {
+                    requestedAndroidPermissions.add(Manifest.permission.CAMERA)
+                    title = "Camera Access"
+                    rationale = "Allow camera access for video recording."
+                    allowIcon = R.drawable.ic_camera_on
+                    denyIcon = R.drawable.ic_camera_off
+                } else if (requestsMicrophone) {
+                    requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
+                    title = "Microphone Access"
+                    rationale = "Allow microphone access for audio recording."
+                    allowIcon = R.drawable.ic_mic_on
+                    denyIcon = R.drawable.ic_mic_off
                 }
 
-
-                override fun onPermissionRequest(request: PermissionRequest) {
+                // Add other permission mappings if needed
+                if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
+                    // Handle protected media if needed
                     Log.d(
                         "WebViewPermission",
-                        "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}"
+                        "Protected media ID requested - typically not mapped to runtime permissions"
                     )
-
-                    val requestedAndroidPermissions = mutableListOf<String>()
-                    var title = "Permission Required" // Default title
-                    var rationale =
-                        "'${request.origin}' wants to use your device features." // Default rationale
-                    var allowIcon = R.drawable.ic_bug // Default allow icon
-                    var denyIcon = R.drawable.ic_bug   // Default deny icon
-
-                    val requestsCamera =
-                        request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                    val requestsMicrophone =
-                        request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-
-                    if (requestsCamera) {
-                        requestedAndroidPermissions.add(Manifest.permission.CAMERA)
-                        title = "Camera Access"
-                        rationale = "Allow camera access for video recording."
-                        allowIcon = R.drawable.ic_camera_on
-                        denyIcon = R.drawable.ic_camera_off
-                    } else if (requestsMicrophone) {
-                        requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
-                        title = "Microphone Access"
-                        rationale = "Allow microphone access for audio recording."
-                        allowIcon = R.drawable.ic_mic_on
-                        denyIcon = R.drawable.ic_mic_off
-                    }
-
-                    // Add other permission mappings if needed
-                    if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
-                        // Handle protected media if needed
-                        Log.d(
-                            "WebViewPermission",
-                            "Protected media ID requested - typically not mapped to runtime permissions"
-                        )
-                        // If no other Android permissions were added, you might want to deny or handle appropriately.
-                        if (requestedAndroidPermissions.isEmpty()) {
-                            Log.d(
-                                "WebViewPermission",
-                                "Protected media ID requested with no other mappable Android permissions; denying request."
-                            )
-                            request.deny()
-                            return
-                        }
-                    }
-
+                    // If no other Android permissions were added, you might want to deny or handle appropriately.
                     if (requestedAndroidPermissions.isEmpty()) {
                         Log.d(
                             "WebViewPermission",
-                            "No mappable Android permissions for the requested WebView resources; denying request."
+                            "Protected media ID requested with no other mappable Android permissions; denying request."
                         )
                         request.deny()
                         return
                     }
+                }
 
-                    // Check if we already have these permissions
-                    val context = this@apply.context
-                    val hasAllPermissions = requestedAndroidPermissions.all { permission ->
-                        ContextCompat.checkSelfPermission(
-                            context,
-                            permission
-                        ) == PackageManager.PERMISSION_GRANTED
-                    }
+                if (requestedAndroidPermissions.isEmpty()) {
+                    Log.d(
+                        "WebViewPermission",
+                        "No mappable Android permissions for the requested WebView resources; denying request."
+                    )
+                    request.deny()
+                    return
+                }
 
-                    if (hasAllPermissions) {
-                        // If we already have permissions, grant them immediately
-                        Log.d(
-                            "WebViewPermission",
-                            "Permissions already granted, granting to WebView"
-                        )
-                        request.grant(request.resources)
-                        return
-                    }
+                // Check if we already have these permissions
+                val context = webView.context
+                val hasAllPermissions = requestedAndroidPermissions.all { permission ->
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        permission
+                    ) == PackageManager.PERMISSION_GRANTED
+                }
 
-                    // Create the custom request
-                    pendingPermissionRequest = CustomPermissionRequest(
-                        title = title,
-                        rationale = rationale,
-                        iconResAllow = allowIcon,
-                        iconResDeny = denyIcon,
-                        permissionsToRequest = requestedAndroidPermissions,
-                        onResult = { permissionsResult ->
-                            activity?.runOnUiThread {
-                                // Check which permissions were actually granted
-                                val grantedPermissions = permissionsResult.filter { it.value }.keys
+                if (hasAllPermissions) {
+                    // If we already have permissions, grant them immediately
+                    Log.d(
+                        "WebViewPermission",
+                        "Permissions already granted, granting to WebView"
+                    )
+                    request.grant(request.resources)
+                    return
+                }
 
-                                // Build a list of WebView resources to grant based on granted Android permissions
-                                val resourcesToGrant = mutableListOf<String>()
+                // Create the custom request
+                pendingPermissionRequest = CustomPermissionRequest(
+                    title = title,
+                    rationale = rationale,
+                    iconResAllow = allowIcon,
+                    iconResDeny = denyIcon,
+                    permissionsToRequest = requestedAndroidPermissions,
+                    onResult = { permissionsResult ->
+                        activity?.runOnUiThread {
+                            // Check which permissions were actually granted
+                            val grantedPermissions = permissionsResult.filter { it.value }.keys
 
-                                if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
-                                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                                ) {
-                                    resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                                }
+                            // Build a list of WebView resources to grant based on granted Android permissions
+                            val resourcesToGrant = mutableListOf<String>()
 
-                                if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
-                                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-                                ) {
-                                    resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-                                }
+                            if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
+                                request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                            ) {
+                                resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                            }
 
-                                if (resourcesToGrant.isNotEmpty()) {
-                                    Log.d(
-                                        "WebViewPermission",
-                                        "Granting resources: ${resourcesToGrant.joinToString()}"
-                                    )
-                                    request.grant(resourcesToGrant.toTypedArray())
-                                } else {
-                                    Log.d(
-                                        "WebViewPermission",
-                                        "No permissions granted; denying all resources."
-                                    )
-                                    request.deny()
-                                }
+                            if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
+                                request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                            ) {
+                                resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                            }
+
+                            if (resourcesToGrant.isNotEmpty()) {
+                                Log.d(
+                                    "WebViewPermission",
+                                    "Granting resources: ${resourcesToGrant.joinToString()}"
+                                )
+                                request.grant(resourcesToGrant.toTypedArray())
+                            } else {
+                                Log.d(
+                                    "WebViewPermission",
+                                    "No permissions granted; denying all resources."
+                                )
+                                request.deny()
                             }
                         }
+                    }
+                )
+            }
+
+            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                if (fullscreenView != null) {
+                    callback?.onCustomViewHidden()
+                    return
+                }
+
+
+                originalOrientation = activity?.requestedOrientation
+                    ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                customViewCallback = callback
+                fullscreenView = view
+
+                // B. Get the root view of the Activity and add our fullscreen view to it.
+                val decorView = activity?.window?.decorView as? ViewGroup
+                decorView?.addView(
+                    fullscreenView,
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+
+                // C. Now, control the window
+                val insetsController = activity?.let {
+                    WindowCompat.getInsetsController(
+                        it.window,
+                        it.window.decorView
                     )
                 }
+                insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
 
-                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                    if (fullscreenView != null) {
-                        callback?.onCustomViewHidden()
-                        return
-                    }
+                // Tell the WebView to resume, as it might have paused.
+                webView.onResume()
+            }
 
+            override fun onHideCustomView() {
+                val decorView = activity?.window?.decorView as? ViewGroup
+                decorView?.removeView(fullscreenView)
+                fullscreenView = null
 
-                    originalOrientation = activity?.requestedOrientation
-                        ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                    customViewCallback = callback
-                    fullscreenView = view
-
-                    // B. Get the root view of the Activity and add our fullscreen view to it.
-                    val decorView = activity?.window?.decorView as? ViewGroup
-                    decorView?.addView(
-                        fullscreenView,
-                        ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
+                val insetsController = activity?.let {
+                    WindowCompat.getInsetsController(
+                        it.window,
+                        it.window.decorView
                     )
-
-                    // C. Now, control the window
-                    val insetsController = activity?.let {
-                        WindowCompat.getInsetsController(
-                            it.window,
-                            it.window.decorView
-                        )
-                    }
-                    insetsController?.hide(WindowInsetsCompat.Type.systemBars())
-                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-
-                    // Tell the WebView to resume, as it might have paused.
-                    this@apply.onResume()
                 }
+                insetsController?.show(WindowInsetsCompat.Type.systemBars())
+                activity?.requestedOrientation = originalOrientation
 
-                override fun onHideCustomView() {
-                    val decorView = activity?.window?.decorView as? ViewGroup
-                    decorView?.removeView(fullscreenView)
-                    fullscreenView = null
+                customViewCallback?.onCustomViewHidden()
+                customViewCallback = null
 
-                    val insetsController = activity?.let {
-                        WindowCompat.getInsetsController(
-                            it.window,
-                            it.window.decorView
-                        )
-                    }
-                    insetsController?.show(WindowInsetsCompat.Type.systemBars())
-                    activity?.requestedOrientation = originalOrientation
+                webView.onResume()
+            }
 
-                    customViewCallback?.onCustomViewHidden()
-                    customViewCallback = null
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                super.onProgressChanged(view, newProgress)
+                // Inject our JavaScript helper as the page is loading.
+                val js =
+                    "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
+                view?.evaluateJavascript(js, null)
+            }
 
-                    this@apply.onResume()
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                consoleMessage?.let {
+                    Log.d(
+                        "WebViewConsole",
+                        "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}"
+                    )
                 }
+                return true
+            }
 
-                override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                    super.onProgressChanged(view, newProgress)
-                    // Inject our JavaScript helper as the page is loading.
-                    val js =
-                        "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
-                    view?.evaluateJavascript(js, null)
-                }
+            override fun onReceivedTitle(view: WebView?, title: String?) {
+                super.onReceivedTitle(view, title)
+                // When the title changes (which also happens on pushState),
+                // get the current URL and notify our listener.
+                webView.onUrlChangedListener?.onUrlChanged(view?.url)
+            }
 
-                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                    consoleMessage?.let {
-                        Log.d(
-                            "WebViewConsole",
-                            "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}"
-                        )
-                    }
-                    return true
-                }
+        }
 
-                override fun onReceivedTitle(view: WebView?, title: String?) {
-                    super.onReceivedTitle(view, title)
-                    // When the title changes (which also happens on pushState),
-                    // get the current URL and notify our listener.
-                    onUrlChangedListener?.onUrlChanged(view?.url)
-                }
+        // The WebViewClient handles content loading events.
+        webView.webViewClient = object : WebViewClient() {
+
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                isLoading = true
 
             }
 
-            // The WebViewClient handles content loading events.
-            webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, currentUrlString: String?) {
+                super.onPageFinished(view, currentUrlString)
+                isLoading = false
 
+                if (currentUrlString != null) {
+                    Log.w("zzz", "")
 
-                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                    super.onPageStarted(view, url, favicon)
-                    isLoading = true
+                    Log.w("zzz", "onPageFinished")
+                    Log.w("zzz", "canGoForward: $canGoForward")
+                    Log.w("zzz", "")
+                    val webViewHistory = webView.copyBackForwardList()
+                    Log.e("zzz", " ACTUAL WEBVIEW HISTORY ")
+                    for (i in 0 until webViewHistory.size) {
+                        Log.e("zzz", "$i : " + webViewHistory.getItemAtIndex(i).url)
 
-                }
+                    }
+                    Log.e("zzz", " ")
 
-                override fun onPageFinished(view: WebView?, currentUrlString: String?) {
-                    super.onPageFinished(view, currentUrlString)
-                    isLoading = false
-
-                    if (currentUrlString != null) {
-                        Log.w("zzz", "")
-
-                        Log.w("zzz", "onPageFinished")
-                        Log.w("zzz", "canGoForward: $canGoForward")
-                        Log.w("zzz", "")
-                        val webViewHistory = this@apply.copyBackForwardList()
-                        Log.e("zzz", " ACTUAL WEBVIEW HISTORY ")
-                        for (i in 0 until webViewHistory.size) {
-                            Log.e("zzz", "$i : " + webViewHistory.getItemAtIndex(i).url)
-
-                        }
-                        Log.e("zzz", " ")
-
-                        Log.i("zzz", "Current Items  :  : ${tabs[activeTabIndex.value].historyState?.items}")
-                        Log.i("zzz", "Current Index  :  : ${tabs[activeTabIndex.value].historyState?.currentIndex}")
-                        if (currentUrlString != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex?: -1]?.url) {
-                            Log.d("zzz", "++++++DIFFERENT")
-                            Log.d("zzz", currentUrlString)
-                            Log.d("zzz", tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex?: -1]?.url.toString())
-                            synchronizeState(this@apply)
-                        }
+                    Log.i(
+                        "zzz",
+                        "Current Items  :  : ${tabs[activeTabIndex.value].historyState?.items}"
+                    )
+                    Log.i(
+                        "zzz",
+                        "Current Index  :  : ${tabs[activeTabIndex.value].historyState?.currentIndex}"
+                    )
+                    if (currentUrlString != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
+                            ?: -1]?.url
+                    ) {
+                        Log.d("zzz", "++++++DIFFERENT")
+                        Log.d("zzz", currentUrlString)
+                        Log.d(
+                            "zzz",
+                            tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
+                                ?: -1]?.url.toString()
+                        )
+                        synchronizeState(webView)
+                    }
 //                        if (isTraverseHistory) {
 //                            Log.i("zzz", "isTraverseHistory")
 //                            isTraverseHistory = false
 //                        } else {
 //
 //                        }
-                    }
-                    if (!isFocusOnTextField) url?.let {
-                        textFieldValue = TextFieldValue(it, TextRange(it.length))
-                    }
-                    // --- END OF LOGGING CODE ---
-
-
                 }
+                if (!isFocusOnTextField) webView.url?.let {
+                    textFieldValue = TextFieldValue(it, TextRange(it.length))
+                }
+                // --- END OF LOGGING CODE ---
+
+
+            }
 
 //                override fun onPageFinished(view: WebView?, currentUrl: String?) {
 //                    super.onPageFinished(view, currentUrl)
@@ -871,114 +1388,16 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 //
 //                }
 
-                override fun shouldInterceptRequest(
-                    view: WebView?,
-                    request: WebResourceRequest?
-                ): WebResourceResponse? {
-                    request?.requestHeaders?.put("Origin", currentTab?.currentUrl)
-                    return super.shouldInterceptRequest(view, request)
-                }
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): WebResourceResponse? {
+                request?.requestHeaders?.put("Origin", currentTab?.currentUrl)
+                return super.shouldInterceptRequest(view, request)
             }
-
-
-//            updateWebViewSettings(this, browserSettings.isDesktopMode)
-
-            // Apply all your production-grade settings
-            // --- This initial setup block should contain ALL static settings ---
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                allowFileAccess = true
-                allowContentAccess = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                javaScriptCanOpenWindowsAutomatically = true
-                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-
-                mediaPlaybackRequiresUserGesture = false
-
-
-                // CRITICAL: Zoom must be supported for overview mode to work reliably.
-                setSupportZoom(true)
-                builtInZoomControls = true
-                displayZoomControls = false // Hide the on-screen +/- buttons
-            }
-
-            // Enable remote debugging for debug builds
-            if (0 != (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE)) {
-                WebView.setWebContentsDebuggingEnabled(true)
-            }
-
-            // Ensure hardware acceleration
-            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
-
-            // Add your JS interface
-            addJavascriptInterface(WebAppInterface(), "Android")
-
         }
     }
 
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions(),
-        onResult = { permissions ->
-            // When the system dialog returns a result, trigger the onResult
-            // callback that we stored in our pendingPermissionRequest.
-            pendingPermissionRequest?.onResult?.invoke(permissions)
-
-            // Clear the request to hide the panel.
-            pendingPermissionRequest = null
-        }
-    )
-
-//    val lifecycleOwner = LocalLifecycleOwner.current
-//    DisposableEffect(lifecycleOwner) {
-//        val observer = LifecycleEventObserver { _, event ->
-//            when (event) {
-//                Lifecycle.Event.ON_PAUSE -> {
-//                    Log.d("WebViewLifecycle", "PAUSING WebView")
-//                    webView.onPause() // Pauses JavaScript timers, etc.
-//                }
-//                Lifecycle.Event.ON_RESUME -> {
-//                    Log.d("WebViewLifecycle", "RESUMING WebView")
-//                    webView.onResume() // Resumes the WebView
-//                }
-//                else -> {} // No need to handle other events
-//            }
-//        }
-//        lifecycleOwner.lifecycle.addObserver(observer)
-//        onDispose {
-//            lifecycleOwner.lifecycle.removeObserver(observer)
-//        }
-//    }
-
-
-    // FUNCTIONS
-
-
-    // This function will be our single, safe way to update settings.
-    val updateBrowserSettings = { newSettings: BrowserSettings ->
-        browserSettings = newSettings
-        Log.e("updateBrowserSettings", browserSettings.toString())
-    }
-
-    // LAUNCH EFFECTS
-    //
-
-    // This effect handles SPA navigation by also calling our synchronizer
-//    LaunchedEffect(webView) {
-//        (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
-//            override fun onUrlChanged(newUrl: String?) {
-//                if (newUrl != null) {
-//                    synchronizeOnUncommandedNavigation(newUrl)
-//                }
-//                if (!isFocusOnTextField) newUrl?.let {
-//                    textFieldValue = TextFieldValue(it, TextRange(it.length))
-//                }
-//            }
-//        }
-//    }
-
-    // This effect now ONLY handles the very first restoration of state.
 
     LaunchedEffect(webView) {
         (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
@@ -991,9 +1410,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 if (newUrl != null) {
 
                     if (!isFocusOnTextField) {
-                        textFieldValue = TextFieldValue(newUrl ?: "", TextRange((newUrl ?: "").length))
+                        textFieldValue =
+                            TextFieldValue(newUrl ?: "", TextRange((newUrl ?: "").length))
                     }
-                    if (newUrl != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex?: 0]?.url) {
+                    if (newUrl != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
+                            ?: 0]?.url
+                    ) {
                         synchronizeState(webView)
                     }
 //                    synchronizeState(webView)
@@ -1109,18 +1531,40 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // This effect loads the URL when the active tab changes
-    LaunchedEffect(activeTabIndex, initialLoadDone) {
-        Log.e("zzz", "Change Tab")
-        // Get the URL that SHOULD be loaded for the current tab.
+    LaunchedEffect(Unit) {
         val urlToLoad = currentTab?.currentUrl
 
         if (urlToLoad != null) {
             if (!initialLoadDone) {
-                // --- SCENARIO 1: First time app is opened ---
-                // If the initial load hasn't happened yet, load the URL.
-                webView.loadUrl(urlToLoad)
-                // Set the flag to true so this block never runs again.
+                currentTab?.historyState?.let { savedHistory ->
+
+                    // --- MANUALLY CONSTRUCT THE BUNDLE ---
+                    val bundle = Bundle()
+                    val urlList = ArrayList(savedHistory.items.map { it.url })
+                    for (i in urlList.indices) {
+                        Log.i("WebViewRestore", urlList[i])
+                    }
+                    Log.i("WebViewRestore", savedHistory.currentIndex.toString())
+                    bundle.putStringArrayList("urls", urlList)
+                    bundle.putInt("index", savedHistory.currentIndex)
+
+                    Log.i("WebViewRestore", bundle.toString())
+                    // ---
+
+                    if (webView.restoreState(bundle) != null) {
+                        Log.d(
+                            "WebViewRestore",
+                            "Successfully restored WebView state from custom Bundle."
+                        )
+                    } else {
+                        // Fallback if restore fails for any reason
+                        Log.e("WebViewRestore", "restoreState failed, loading URL directly.")
+                        webView.loadUrl(currentTab?.currentUrl ?: browserSettings.defaultUrl)
+                    }
+                } ?: run {
+                    // If there's no saved state at all (first launch), load the default URL.
+                    webView.loadUrl(browserSettings.defaultUrl)
+                }
                 initialLoadDone = true
             }
 //            else {
@@ -1131,8 +1575,54 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 //                    webView.loadUrl(urlToLoad)
 //                }
 //            }
+
         }
     }
+
+    // This effect loads the URL when the active tab changes
+//    LaunchedEffect(activeTabIndex, initialLoadDone) {
+//        Log.e("zzz", "Change Tab")
+//        // Get the URL that SHOULD be loaded for the current tab.
+//        val urlToLoad = currentTab?.currentUrl
+//
+//        if (urlToLoad != null) {
+//            if (!initialLoadDone) {
+//                currentTab?.historyState?.let { savedHistory ->
+//
+//                    // --- MANUALLY CONSTRUCT THE BUNDLE ---
+//                    val bundle = Bundle()
+//                    val urlList = ArrayList(savedHistory.items.map { it.url })
+//                    for (i in urlList.indices) {
+//                        Log.i("WebViewRestore", urlList[i])
+//                    }
+//                    Log.i("WebViewRestore", savedHistory.currentIndex.toString())
+//                    bundle.putStringArrayList("urls", urlList)
+//                    bundle.putInt("index", savedHistory.currentIndex)
+//                    // ---
+//
+//                    if (webView.restoreState(bundle) != null) {
+//                        Log.d("WebViewRestore", "Successfully restored WebView state from custom Bundle.")
+//                    } else {
+//                        // Fallback if restore fails for any reason
+//                        Log.e("WebViewRestore", "restoreState failed, loading URL directly.")
+//                        webView.loadUrl(currentTab?.currentUrl ?: browserSettings.defaultUrl)
+//                    }
+//                } ?: run {
+//                    // If there's no saved state at all (first launch), load the default URL.
+//                    webView.loadUrl(browserSettings.defaultUrl)
+//                }
+//                initialLoadDone = true
+//            }
+//        //            else {
+////                // --- SCENARIO 2: User switches to a different tab ---
+////                // If the initial load IS done, this effect is running because
+////                // currentTab changed. Load the new tab's URL.
+////                if (webView.url != urlToLoad) {
+////                    webView.loadUrl(urlToLoad)
+////                }
+////            }
+//        }
+//    }
 
     // The LaunchedEffect now saves the entire settings object (or individual fields)
     LaunchedEffect(browserSettings) {
@@ -1195,7 +1685,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             // Priority 3: Navigate back in the WebView.
             canGoBack -> {
                 currentTab?.let { tab ->
-                    val updatedTab = tab.copy(historyState = tab.historyState?.copy(currentIndex = tab.historyState!!.currentIndex - 1))
+                    val updatedTab =
+                        tab.copy(historyState = tab.historyState?.copy(currentIndex = tab.historyState!!.currentIndex - 1))
                     tabs[activeTabIndex.value] = updatedTab
 //                    updatedTab.currentUrl?.let { webView.loadUrl(it) }
                     webView.goBack()
