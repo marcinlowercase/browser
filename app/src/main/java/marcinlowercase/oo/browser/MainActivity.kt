@@ -106,6 +106,10 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
+import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.GeckoView
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlin.collections.get
@@ -113,52 +117,39 @@ import kotlin.coroutines.coroutineContext
 import kotlin.text.get
 
 
-private lateinit var webView: CustomWebView
+private lateinit var geckoView: GeckoView
+private lateinit var session: GeckoSession
+private lateinit var runtime: GeckoRuntime
+
+var currentIndexValue = 0
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-
-        webView = CustomWebView(this).apply {
-            // Force WebView to be transparent so Compose can control the background
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-
-//            updateWebViewSettings(this, browserSettings.isDesktopMode)
-
-            // Apply all your production-grade settings
-            // --- This initial setup block should contain ALL static settings ---
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                allowFileAccess = true
-                allowContentAccess = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                javaScriptCanOpenWindowsAutomatically = true
-                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-
-                mediaPlaybackRequiresUserGesture = false
-
-
-                // CRITICAL: Zoom must be supported for overview mode to work reliably.
-                setSupportZoom(true)
-                builtInZoomControls = true
-                displayZoomControls = false // Hide the on-screen +/- buttons
-            }
-
-            // Enable remote debugging for debug builds
-            if (0 != (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE)) {
-                WebView.setWebContentsDebuggingEnabled(true)
-            }
-
-            // Ensure hardware acceleration
-            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
-
-            // Add your JS interface
-            addJavascriptInterface(WebAppInterface(), "Android")
-
+        // 1. Initialize GeckoRuntime (MUST happen before GeckoSession is created)
+        // Ensure you have the necessary dependency in your build.gradle:
+        // implementation "org.mozilla.geckoview:geckoview-nightly:..."
+        if (!::runtime.isInitialized) {
+            runtime = GeckoRuntime.create(this)
         }
+
+        // 2. Initialize GeckoView and GeckoSession
+        geckoView = GeckoView(this)
+        session = GeckoSession()
+
+
+        // 3. Open the session with the runtime
+        session.open(runtime)
+        geckoView.setSession(session)
+
+
+
+        session.settings.apply {
+            allowJavascript = true
+        }
+
         setContent {
             BrowserTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -167,6 +158,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::session.isInitialized && session.isOpen) {
+            session.close()
+        }
     }
 }
 
@@ -281,7 +279,7 @@ class TabManager(context: Context) {
                 state = TabState.ACTIVE,
                 // Create a default history state for the first launch
                 historyState = SerializableBackForwardList(
-                    items = listOf(SerializableHistoryItem(url = defaultUrl, title = "")),
+                    items = listOf(SerializableHistoryItem(url = defaultUrl, title = "Default")),
                     currentIndex = 0
                 )
             )
@@ -289,9 +287,6 @@ class TabManager(context: Context) {
     }
 }
 
-class CustomWebView(context: Context) : WebView(context) {
-    var onUrlChangedListener: OnUrlChangedListener? = null
-}
 
 interface OnUrlChangedListener {
     fun onUrlChanged(newUrl: String?)
@@ -329,6 +324,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     /// VARIABLES
     val context = LocalContext.current
+
     val sharedPrefs =
         remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
     var browserSettings by remember {
@@ -347,19 +343,18 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 )
         )
     }
-
     val tabManager = remember { TabManager(context) }
     val tabs = remember {
         mutableStateListOf<Tab>().apply {
             addAll(tabManager.loadTabs(browserSettings.defaultUrl))
         }
     }
+
     val activeTabIndex = remember {
         mutableIntStateOf(tabs.indexOfFirst { it.state == TabState.ACTIVE }.coerceAtLeast(0))
     }
-    val currentTab by remember {
-        derivedStateOf { tabs.getOrNull(activeTabIndex.value) }
-    }
+
+    currentIndexValue = tabs[activeTabIndex.intValue].historyState?.currentIndex ?: 0
 
     var initialLoadDone by rememberSaveable { mutableStateOf(false) }
 
@@ -367,7 +362,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(currentTab?.currentUrl ?: "", TextRange(0)))
+        mutableStateOf(TextFieldValue(tabs[activeTabIndex.value].currentUrl ?: "", TextRange(0)))
     }
 
 
@@ -397,18 +392,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val offsetY = remember { Animatable(0f) }
     var activeGestureAction by remember { mutableStateOf(GestureNavAction.NONE) }
     var overlayHeightPx by remember { mutableFloatStateOf(0f) }
-
-
-    // Example: When overlay is visible -> 150 + 0 = 150 padding.
-    val webViewPushDownOffset by remember {
-        derivedStateOf {
-            // We use coerceAtLeast(0f) to prevent any negative padding values
-            // during animation overscrolls.
-            with(density) {
-                (overlayHeightPx + offsetY.value).coerceAtLeast(0f).toDp()
-            }
-        }
-    }
 
 
     var backButtonRect by remember { mutableStateOf(Rect.Zero) }
@@ -518,463 +501,14 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     val canGoBack by remember {
-        derivedStateOf { (currentTab?.historyState?.currentIndex ?: 0) > 0 }
+        derivedStateOf { (tabs[activeTabIndex.value].historyState?.currentIndex ?: 0) > 0 }
     }
     val canGoForward by remember {
         derivedStateOf {
-            val history = currentTab?.historyState
+            val history = tabs[activeTabIndex.value].historyState
             if (history == null) false else history.currentIndex < history.items.lastIndex
         }
     }
-
-    // --- 2. The Central Synchronizer Function ---
-    // It's defined here in the main body of the Composable.
-    fun synchronizeState(webView: CustomWebView) {
-
-        val webViewHistory = webView.copyBackForwardList()
-
-
-        currentTab?.let { tab ->
-            val serializableItems = List(webViewHistory.size) { i ->
-                val item = webViewHistory.getItemAtIndex(i)
-                SerializableHistoryItem(url = item.url ?: "", title = item.title ?: "")
-            }
-            val webViewSerializableList = SerializableBackForwardList(
-                items = serializableItems,
-                currentIndex = webViewHistory.currentIndex
-            )
-
-            if (tab.historyState != webViewSerializableList) {
-                val updatedTab = tab.copy(historyState = webViewSerializableList)
-                tabs[activeTabIndex.value] = updatedTab
-                saveTrigger++
-            }
-
-            Log.e("zzz", tabs[activeTabIndex.value].historyState?.items?.size.toString())
-            Log.e("zzz", tabs[activeTabIndex.value].historyState.toString())
-        }
-    }
-
-//    val webView = remember {
-//
-//        CustomWebView(context).apply {
-//            // Force WebView to be transparent so Compose can control the background
-//            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-//
-//            // The WebChromeClient handles UI-related browser events.
-//            webChromeClient = object : WebChromeClient() {
-//
-//                private var fullscreenView: View? = null
-//
-//
-//                override fun onGeolocationPermissionsShowPrompt(
-//                    origin: String?,
-//                    callback: GeolocationPermissions.Callback?
-//                ) {
-//                    if (origin == null || callback == null) return
-//
-//                    // Create a new generic permission request for this specific geolocation prompt.
-//                    pendingPermissionRequest = CustomPermissionRequest(
-//                        title = "Location Access Required",
-//                        rationale = "This website wants to use your device's location.",
-//                        iconResAllow = R.drawable.ic_location_on,
-//                        iconResDeny = R.drawable.ic_location_off,
-//                        permissionsToRequest = listOf(
-//                            Manifest.permission.ACCESS_FINE_LOCATION,
-//                            Manifest.permission.ACCESS_COARSE_LOCATION
-//                        ),
-//                        // This is the key: the onResult callback for this specific request
-//                        // knows how to talk back to the WebView's Geolocation callback.
-//                        onResult = { permissions ->
-//                            val isGranted =
-//                                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-//                                        permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-//                            callback.invoke(origin, isGranted, false)
-//                        }
-//                    )
-//                }
-//
-//
-//                override fun onPermissionRequest(request: PermissionRequest) {
-//                    Log.d(
-//                        "WebViewPermission",
-//                        "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}"
-//                    )
-//
-//                    val requestedAndroidPermissions = mutableListOf<String>()
-//                    var title = "Permission Required" // Default title
-//                    var rationale =
-//                        "'${request.origin}' wants to use your device features." // Default rationale
-//                    var allowIcon = R.drawable.ic_bug // Default allow icon
-//                    var denyIcon = R.drawable.ic_bug   // Default deny icon
-//
-//                    val requestsCamera =
-//                        request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-//                    val requestsMicrophone =
-//                        request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-//
-//                    if (requestsCamera) {
-//                        requestedAndroidPermissions.add(Manifest.permission.CAMERA)
-//                        title = "Camera Access"
-//                        rationale = "Allow camera access for video recording."
-//                        allowIcon = R.drawable.ic_camera_on
-//                        denyIcon = R.drawable.ic_camera_off
-//                    } else if (requestsMicrophone) {
-//                        requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
-//                        title = "Microphone Access"
-//                        rationale = "Allow microphone access for audio recording."
-//                        allowIcon = R.drawable.ic_mic_on
-//                        denyIcon = R.drawable.ic_mic_off
-//                    }
-//
-//                    // Add other permission mappings if needed
-//                    if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
-//                        // Handle protected media if needed
-//                        Log.d(
-//                            "WebViewPermission",
-//                            "Protected media ID requested - typically not mapped to runtime permissions"
-//                        )
-//                        // If no other Android permissions were added, you might want to deny or handle appropriately.
-//                        if (requestedAndroidPermissions.isEmpty()) {
-//                            Log.d(
-//                                "WebViewPermission",
-//                                "Protected media ID requested with no other mappable Android permissions; denying request."
-//                            )
-//                            request.deny()
-//                            return
-//                        }
-//                    }
-//
-//                    if (requestedAndroidPermissions.isEmpty()) {
-//                        Log.d(
-//                            "WebViewPermission",
-//                            "No mappable Android permissions for the requested WebView resources; denying request."
-//                        )
-//                        request.deny()
-//                        return
-//                    }
-//
-//                    // Check if we already have these permissions
-//                    val context = this@apply.context
-//                    val hasAllPermissions = requestedAndroidPermissions.all { permission ->
-//                        ContextCompat.checkSelfPermission(
-//                            context,
-//                            permission
-//                        ) == PackageManager.PERMISSION_GRANTED
-//                    }
-//
-//                    if (hasAllPermissions) {
-//                        // If we already have permissions, grant them immediately
-//                        Log.d(
-//                            "WebViewPermission",
-//                            "Permissions already granted, granting to WebView"
-//                        )
-//                        request.grant(request.resources)
-//                        return
-//                    }
-//
-//                    // Create the custom request
-//                    pendingPermissionRequest = CustomPermissionRequest(
-//                        title = title,
-//                        rationale = rationale,
-//                        iconResAllow = allowIcon,
-//                        iconResDeny = denyIcon,
-//                        permissionsToRequest = requestedAndroidPermissions,
-//                        onResult = { permissionsResult ->
-//                            activity?.runOnUiThread {
-//                                // Check which permissions were actually granted
-//                                val grantedPermissions = permissionsResult.filter { it.value }.keys
-//
-//                                // Build a list of WebView resources to grant based on granted Android permissions
-//                                val resourcesToGrant = mutableListOf<String>()
-//
-//                                if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
-//                                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-//                                ) {
-//                                    resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-//                                }
-//
-//                                if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
-//                                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-//                                ) {
-//                                    resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-//                                }
-//
-//                                if (resourcesToGrant.isNotEmpty()) {
-//                                    Log.d(
-//                                        "WebViewPermission",
-//                                        "Granting resources: ${resourcesToGrant.joinToString()}"
-//                                    )
-//                                    request.grant(resourcesToGrant.toTypedArray())
-//                                } else {
-//                                    Log.d(
-//                                        "WebViewPermission",
-//                                        "No permissions granted; denying all resources."
-//                                    )
-//                                    request.deny()
-//                                }
-//                            }
-//                        }
-//                    )
-//                }
-//
-//                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-//                    if (fullscreenView != null) {
-//                        callback?.onCustomViewHidden()
-//                        return
-//                    }
-//
-//
-//                    originalOrientation = activity?.requestedOrientation
-//                        ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-//                    customViewCallback = callback
-//                    fullscreenView = view
-//
-//                    // B. Get the root view of the Activity and add our fullscreen view to it.
-//                    val decorView = activity?.window?.decorView as? ViewGroup
-//                    decorView?.addView(
-//                        fullscreenView,
-//                        ViewGroup.LayoutParams(
-//                            ViewGroup.LayoutParams.MATCH_PARENT,
-//                            ViewGroup.LayoutParams.MATCH_PARENT
-//                        )
-//                    )
-//
-//                    // C. Now, control the window
-//                    val insetsController = activity?.let {
-//                        WindowCompat.getInsetsController(
-//                            it.window,
-//                            it.window.decorView
-//                        )
-//                    }
-//                    insetsController?.hide(WindowInsetsCompat.Type.systemBars())
-//                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-//
-//                    // Tell the WebView to resume, as it might have paused.
-//                    this@apply.onResume()
-//                }
-//
-//                override fun onHideCustomView() {
-//                    val decorView = activity?.window?.decorView as? ViewGroup
-//                    decorView?.removeView(fullscreenView)
-//                    fullscreenView = null
-//
-//                    val insetsController = activity?.let {
-//                        WindowCompat.getInsetsController(
-//                            it.window,
-//                            it.window.decorView
-//                        )
-//                    }
-//                    insetsController?.show(WindowInsetsCompat.Type.systemBars())
-//                    activity?.requestedOrientation = originalOrientation
-//
-//                    customViewCallback?.onCustomViewHidden()
-//                    customViewCallback = null
-//
-//                    this@apply.onResume()
-//                }
-//
-//                override fun onProgressChanged(view: WebView?, newProgress: Int) {
-//                    super.onProgressChanged(view, newProgress)
-//                    // Inject our JavaScript helper as the page is loading.
-//                    val js =
-//                        "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
-//                    view?.evaluateJavascript(js, null)
-//                }
-//
-//                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-//                    consoleMessage?.let {
-//                        Log.d(
-//                            "WebViewConsole",
-//                            "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}"
-//                        )
-//                    }
-//                    return true
-//                }
-//
-//                override fun onReceivedTitle(view: WebView?, title: String?) {
-//                    super.onReceivedTitle(view, title)
-//                    // When the title changes (which also happens on pushState),
-//                    // get the current URL and notify our listener.
-//                    onUrlChangedListener?.onUrlChanged(view?.url)
-//                }
-//
-//            }
-//
-//            // The WebViewClient handles content loading events.
-//            webViewClient = object : WebViewClient() {
-//
-//
-//                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-//                    super.onPageStarted(view, url, favicon)
-//                    isLoading = true
-//
-//                }
-//
-//                override fun onPageFinished(view: WebView?, currentUrlString: String?) {
-//                    super.onPageFinished(view, currentUrlString)
-//                    isLoading = false
-//
-//                    if (currentUrlString != null) {
-//                        Log.w("zzz", "")
-//
-//                        Log.w("zzz", "onPageFinished")
-//                        Log.w("zzz", "canGoForward: $canGoForward")
-//                        Log.w("zzz", "")
-//                        val webViewHistory = this@apply.copyBackForwardList()
-//                        Log.e("zzz", " ACTUAL WEBVIEW HISTORY ")
-//                        for (i in 0 until webViewHistory.size) {
-//                            Log.e("zzz", "$i : " + webViewHistory.getItemAtIndex(i).url)
-//
-//                        }
-//                        Log.e("zzz", " ")
-//
-//                        Log.i(
-//                            "zzz",
-//                            "Current Items  :  : ${tabs[activeTabIndex.value].historyState?.items}"
-//                        )
-//                        Log.i(
-//                            "zzz",
-//                            "Current Index  :  : ${tabs[activeTabIndex.value].historyState?.currentIndex}"
-//                        )
-//                        if (currentUrlString != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
-//                                ?: -1]?.url
-//                        ) {
-//                            Log.d("zzz", "++++++DIFFERENT")
-//                            Log.d("zzz", currentUrlString)
-//                            Log.d(
-//                                "zzz",
-//                                tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
-//                                    ?: -1]?.url.toString()
-//                            )
-//                            synchronizeState(this@apply)
-//                        }
-////                        if (isTraverseHistory) {
-////                            Log.i("zzz", "isTraverseHistory")
-////                            isTraverseHistory = false
-////                        } else {
-////
-////                        }
-//                    }
-//                    if (!isFocusOnTextField) url?.let {
-//                        textFieldValue = TextFieldValue(it, TextRange(it.length))
-//                    }
-//                    // --- END OF LOGGING CODE ---
-//
-//
-//                }
-//
-////                override fun onPageFinished(view: WebView?, currentUrl: String?) {
-////                    super.onPageFinished(view, currentUrl)
-////                    isLoading = false
-//////                    canGoBack = view?.canGoBack() ?: false
-//////                    canGoForward = view?.canGoForward() ?: false
-//////                    currentUrl?.let {
-//////                        url = it
-//////                        if (!isFocusOnTextField) textFieldValue =
-//////                            TextFieldValue(it, TextRange(it.length))
-//////                    }
-////                    // Force a scroll to the top to fix coordinate system bugs
-////                    view?.scrollTo(0, 0)
-////
-////                    // Your JS script for getting the background color
-////                    val jsScript =
-////                        """"(function() { ... })();"""".trimIndent() // Keep your full script here
-////                    view?.evaluateJavascript(jsScript, null)
-////
-////                    if (browserSettings.isDesktopMode) {
-////                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
-////                        view?.evaluateJavascript(
-////                            """"
-////            (function() {
-////                // The function we want to run to enforce our viewport.
-////                function enforceDesktopViewport() {
-////                    console.log('Enforcing desktop viewport...');
-////                    var meta = document.querySelector('meta[name=viewport]');
-////                    if (!meta) {
-////                        meta = document.createElement('meta');
-////                        meta.setAttribute('name', 'viewport');
-////                        document.getElementsByTagName('head')[0].appendChild(meta);
-////                    }
-////                    // Crucially, check if the content is already correct.
-////                    // This prevents an infinite loop of observer callbacks.
-////                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
-////                        console.log('Viewport was wrong, correcting to width=${browserSettings.desktopModeWidth}.');
-////                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
-////                    }
-////                }
-////
-////                // 1. Enforce it immediately.
-////                enforceDesktopViewport();
-////
-////                // 2. Create an observer to watch for any changes to the <head> element.
-////                //    This will detect if the site's own JS tries to change the viewport.
-////                var observer = new MutationObserver(function(mutations) {
-////                    // When a change is detected, run our enforcement function again.
-////                    enforceDesktopViewport();
-////                });
-////
-////                // 3. Start observing. We watch for changes to child elements in the head.
-////                var head = document.getElementsByTagName('head')[0];
-////                if (head) {
-////                    observer.observe(head, {
-////                        childList: true,
-////                        subtree: true
-////                    });
-////                }
-////            })();
-////            """".trimIndent(), null
-////                        )
-////                    }
-////
-////
-////                }
-//
-//                override fun shouldInterceptRequest(
-//                    view: WebView?,
-//                    request: WebResourceRequest?
-//                ): WebResourceResponse? {
-//                    request?.requestHeaders?.put("Origin", currentTab?.currentUrl)
-//                    return super.shouldInterceptRequest(view, request)
-//                }
-//            }
-//
-//
-////            updateWebViewSettings(this, browserSettings.isDesktopMode)
-//
-//            // Apply all your production-grade settings
-//            // --- This initial setup block should contain ALL static settings ---
-//            settings.apply {
-//                javaScriptEnabled = true
-//                domStorageEnabled = true
-//                allowFileAccess = true
-//                allowContentAccess = true
-//                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-//                javaScriptCanOpenWindowsAutomatically = true
-//                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-//
-//                mediaPlaybackRequiresUserGesture = false
-//
-//
-//                // CRITICAL: Zoom must be supported for overview mode to work reliably.
-//                setSupportZoom(true)
-//                builtInZoomControls = true
-//                displayZoomControls = false // Hide the on-screen +/- buttons
-//            }
-//
-//            // Enable remote debugging for debug builds
-//            if (0 != (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE)) {
-//                WebView.setWebContentsDebuggingEnabled(true)
-//            }
-//
-//            // Ensure hardware acceleration
-//            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
-//
-//            // Add your JS interface
-//            addJavascriptInterface(WebAppInterface(), "Android")
-//
-//        }
-//    }
 
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -1002,478 +536,158 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     // LAUNCH EFFECTS
     //
 
-    // This effect handles SPA navigation by also calling our synchronizer
-//    LaunchedEffect(webView) {
-//        (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
-//            override fun onUrlChanged(newUrl: String?) {
-//                if (newUrl != null) {
-//                    synchronizeOnUncommandedNavigation(newUrl)
-//                }
-//                if (!isFocusOnTextField) newUrl?.let {
-//                    textFieldValue = TextFieldValue(it, TextRange(it.length))
-//                }
-//            }
-//        }
-//    }
-
-    // This effect now ONLY handles the very first restoration of state.
-
     SideEffect {
-        // The WebChromeClient handles UI-related browser events.
-        webView.webChromeClient = object : WebChromeClient() {
-
-            private var fullscreenView: View? = null
-
-
-            override fun onGeolocationPermissionsShowPrompt(
-                origin: String?,
-                callback: GeolocationPermissions.Callback?
-            ) {
-                if (origin == null || callback == null) return
-
-                // Create a new generic permission request for this specific geolocation prompt.
-                pendingPermissionRequest = CustomPermissionRequest(
-                    title = "Location Access Required",
-                    rationale = "This website wants to use your device's location.",
-                    iconResAllow = R.drawable.ic_location_on,
-                    iconResDeny = R.drawable.ic_location_off,
-                    permissionsToRequest = listOf(
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.ACCESS_COARSE_LOCATION
-                    ),
-                    // This is the key: the onResult callback for this specific request
-                    // knows how to talk back to the WebView's Geolocation callback.
-                    onResult = { permissions ->
-                        val isGranted =
-                            permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-                        callback.invoke(origin, isGranted, false)
-                    }
-                )
+        // CONTENT DELEGATE (for loading progress)
+        session.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(session: GeckoSession, url: String) {
+                isLoading = true
             }
 
+            override fun onPageStop(session: GeckoSession, success: Boolean) {
+                isLoading = false
+            }
+        }
 
-            override fun onPermissionRequest(request: PermissionRequest) {
-                Log.d(
-                    "WebViewPermission",
-                    "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}"
-                )
+        // NAVIGATION DELEGATE (for history and URL updates)
+        session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            // This is the primary method for history management
+            override fun onLocationChange(
+                session: GeckoSession,
+                url: String?,
+                permissions: List<GeckoSession.PermissionDelegate.ContentPermission>,
+                hasUserGesture: Boolean
+            ) {
+                super.onLocationChange(session, url, permissions, hasUserGesture)
 
-                val requestedAndroidPermissions = mutableListOf<String>()
-                var title = "Permission Required" // Default title
-                var rationale =
-                    "'${request.origin}' wants to use your device features." // Default rationale
-                var allowIcon = R.drawable.ic_bug // Default allow icon
-                var denyIcon = R.drawable.ic_bug   // Default deny icon
-
-                val requestsCamera =
-                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                val requestsMicrophone =
-                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-
-                if (requestsCamera) {
-                    requestedAndroidPermissions.add(Manifest.permission.CAMERA)
-                    title = "Camera Access"
-                    rationale = "Allow camera access for video recording."
-                    allowIcon = R.drawable.ic_camera_on
-                    denyIcon = R.drawable.ic_camera_off
-                } else if (requestsMicrophone) {
-                    requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
-                    title = "Microphone Access"
-                    rationale = "Allow microphone access for audio recording."
-                    allowIcon = R.drawable.ic_mic_on
-                    denyIcon = R.drawable.ic_mic_off
-                }
-
-                // Add other permission mappings if needed
-                if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
-                    // Handle protected media if needed
-                    Log.d(
-                        "WebViewPermission",
-                        "Protected media ID requested - typically not mapped to runtime permissions"
-                    )
-                    // If no other Android permissions were added, you might want to deny or handle appropriately.
-                    if (requestedAndroidPermissions.isEmpty()) {
-                        Log.d(
-                            "WebViewPermission",
-                            "Protected media ID requested with no other mappable Android permissions; denying request."
-                        )
-                        request.deny()
-                        return
+                if (url != null) {
+                    // Update the text field if not focused
+                    if (!isFocusOnTextField) {
+                        textFieldValue = TextFieldValue(url, TextRange(url.length))
                     }
                 }
+            }
+        }
 
-                if (requestedAndroidPermissions.isEmpty()) {
-                    Log.d(
-                        "WebViewPermission",
-                        "No mappable Android permissions for the requested WebView resources; denying request."
-                    )
-                    request.deny()
-                    return
+        // CORRECT DELEGATE FOR HISTORY MANAGEMENT
+        session.historyDelegate = object : GeckoSession.HistoryDelegate {
+            override fun onHistoryStateChange(
+                session: GeckoSession,
+                realtimeHistory: GeckoSession.HistoryDelegate.HistoryList
+            ) {
+//                // 1. LOG THE HISTORY LIST AS REQUESTED
+                Log.d("GeckoHistoryLog", "--- History State Changed ---")
+                Log.e("GeckoHistoryLog", "REALTIMe")
+                Log.d("GeckoHistoryLog", "Total items: ${realtimeHistory.size}")
+                Log.d("GeckoHistoryLog", "Current index: ${realtimeHistory.currentIndex}")
+                realtimeHistory.forEachIndexed { index, item ->
+                    val marker = if (index == realtimeHistory.currentIndex) "<- CURRENT" else ""
+                    Log.d("GeckoHistoryLog", "  [$index]: ${item.uri} ${marker}")
                 }
+                Log.d("GeckoHistoryLog", "-------------------------------")
 
-                // Check if we already have these permissions
-                val context = webView.context
-                val hasAllPermissions = requestedAndroidPermissions.all { permission ->
-                    ContextCompat.checkSelfPermission(
-                        context,
-                        permission
-                    ) == PackageManager.PERMISSION_GRANTED
-                }
+                // 2. SYNCHRONIZE OUR SAVED TAB STATE
+                tabs[activeTabIndex.value].let { tab ->
+                    var databaseHistory = tab.historyState
+                    var updatedIndex = 0
 
-                if (hasAllPermissions) {
-                    // If we already have permissions, grant them immediately
-                    Log.d(
-                        "WebViewPermission",
-                        "Permissions already granted, granting to WebView"
-                    )
-                    request.grant(request.resources)
-                    return
-                }
+                    if (databaseHistory == null) {
+                        databaseHistory =
+                            SerializableBackForwardList(items = emptyList(), currentIndex = 0)
+                    } else {
+                        updatedIndex = databaseHistory.currentIndex
+                    }
 
-                // Create the custom request
-                pendingPermissionRequest = CustomPermissionRequest(
-                    title = title,
-                    rationale = rationale,
-                    iconResAllow = allowIcon,
-                    iconResDeny = denyIcon,
-                    permissionsToRequest = requestedAndroidPermissions,
-                    onResult = { permissionsResult ->
-                        activity?.runOnUiThread {
-                            // Check which permissions were actually granted
-                            val grantedPermissions = permissionsResult.filter { it.value }.keys
 
-                            // Build a list of WebView resources to grant based on granted Android permissions
-                            val resourcesToGrant = mutableListOf<String>()
+                    Log.e("GeckoHistoryLog", "DB")
+                    Log.d("GeckoHistoryLog", "Total items: ${databaseHistory.items.size}")
+                    Log.d("GeckoHistoryLog", "Current index: ${databaseHistory.currentIndex}")
+                    databaseHistory.items.forEachIndexed { index, item ->
+                        val marker = if (index == databaseHistory.currentIndex) "<- CURRENT" else ""
+                        Log.d("GeckoHistoryLog", "  [$index]: ${item.url} ${marker}")
+                    }
+                    Log.d("GeckoHistoryLog", "-------------------------------")
 
-                            if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
-                                request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                            ) {
-                                resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+
+                    var updatedHistory = databaseHistory?.items?.toMutableList()
+
+
+                    val currentUrl = databaseHistory.items[currentIndexValue].url
+                    val realtimeCurrentItem = realtimeHistory[realtimeHistory.currentIndex]
+
+
+                    if (currentUrl == realtimeCurrentItem.uri) {
+                        // Do nothing
+                        return
+                    } else {
+                        val realtimePreviousItem = realtimeHistory[realtimeHistory.currentIndex - 1]
+                        if (currentUrl == realtimePreviousItem.uri) {
+                            Log.w("GeckoHistoryLog", "Add new")
+
+                            if (databaseHistory.currentIndex < databaseHistory.items.size - 1) {
+                                updatedHistory = databaseHistory.items.subList(
+                                    fromIndex = 0,
+                                    toIndex = databaseHistory.currentIndex + 1
+                                ).toMutableList()
+
                             }
-
-                            if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
-                                request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-                            ) {
-                                resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-                            }
-
-                            if (resourcesToGrant.isNotEmpty()) {
-                                Log.d(
-                                    "WebViewPermission",
-                                    "Granting resources: ${resourcesToGrant.joinToString()}"
+                            updatedHistory?.add(
+                                SerializableHistoryItem(
+                                    url = realtimeCurrentItem.uri,
+                                    title = realtimeCurrentItem.title
                                 )
-                                request.grant(resourcesToGrant.toTypedArray())
-                            } else {
-                                Log.d(
-                                    "WebViewPermission",
-                                    "No permissions granted; denying all resources."
+                            )
+                            updatedIndex++
+
+                        } else {
+                            Log.w("GeckoHistoryLog", "Replaced")
+                            updatedHistory?.set(
+                                updatedIndex,
+                                SerializableHistoryItem(
+                                    url = realtimeCurrentItem.uri,
+                                    title = realtimeCurrentItem.title
                                 )
-                                request.deny()
+                            )
+                        }
+                        var updatedHistoryState: SerializableBackForwardList? = null
+                        if (updatedHistory != null) {
+                            updatedHistoryState = SerializableBackForwardList(
+                                items = updatedHistory,
+                                currentIndex = updatedIndex
+                            )
+                        }
+
+                        if (databaseHistory != updatedHistory) {
+                            tabs[activeTabIndex.value] =
+                                tab.copy(historyState = updatedHistoryState)
+                            saveTrigger++
+
+                            val brandNewHistory = tabs[activeTabIndex.value].historyState
+                            if (brandNewHistory == null) {
+                                return
                             }
+                            // 1. LOG THE HISTORY LIST AS REQUESTED
+                            Log.e("GeckoHistoryLog", "NEWWWWW")
+                            Log.d("GeckoHistoryLog", "Total items: ${brandNewHistory.items.size}")
+                            Log.d(
+                                "GeckoHistoryLog",
+                                "Current index: ${brandNewHistory.currentIndex}"
+                            )
+                            brandNewHistory.items.forEachIndexed { index, item ->
+                                val marker =
+                                    if (index == brandNewHistory.currentIndex) "<- CURRENT" else ""
+                                Log.d("GeckoHistoryLog", "  [$index]: ${item.url} ${marker}")
+                            }
+                            Log.d("GeckoHistoryLog", "-------------------------------")
                         }
                     }
-                )
-            }
 
-            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                if (fullscreenView != null) {
-                    callback?.onCustomViewHidden()
-                    return
                 }
-
-
-                originalOrientation = activity?.requestedOrientation
-                    ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                customViewCallback = callback
-                fullscreenView = view
-
-                // B. Get the root view of the Activity and add our fullscreen view to it.
-                val decorView = activity?.window?.decorView as? ViewGroup
-                decorView?.addView(
-                    fullscreenView,
-                    ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                )
-
-                // C. Now, control the window
-                val insetsController = activity?.let {
-                    WindowCompat.getInsetsController(
-                        it.window,
-                        it.window.decorView
-                    )
-                }
-                insetsController?.hide(WindowInsetsCompat.Type.systemBars())
-                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-
-                // Tell the WebView to resume, as it might have paused.
-                webView.onResume()
             }
-
-            override fun onHideCustomView() {
-                val decorView = activity?.window?.decorView as? ViewGroup
-                decorView?.removeView(fullscreenView)
-                fullscreenView = null
-
-                val insetsController = activity?.let {
-                    WindowCompat.getInsetsController(
-                        it.window,
-                        it.window.decorView
-                    )
-                }
-                insetsController?.show(WindowInsetsCompat.Type.systemBars())
-                activity?.requestedOrientation = originalOrientation
-
-                customViewCallback?.onCustomViewHidden()
-                customViewCallback = null
-
-                webView.onResume()
-            }
-
-            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                super.onProgressChanged(view, newProgress)
-                // Inject our JavaScript helper as the page is loading.
-                val js =
-                    "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
-                view?.evaluateJavascript(js, null)
-            }
-
-            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                consoleMessage?.let {
-                    Log.d(
-                        "WebViewConsole",
-                        "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}"
-                    )
-                }
-                return true
-            }
-
-            override fun onReceivedTitle(view: WebView?, title: String?) {
-                super.onReceivedTitle(view, title)
-                // When the title changes (which also happens on pushState),
-                // get the current URL and notify our listener.
-                webView.onUrlChangedListener?.onUrlChanged(view?.url)
-            }
-
         }
 
-        // The WebViewClient handles content loading events.
-        webView.webViewClient = object : WebViewClient() {
-
-
-            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                super.onPageStarted(view, url, favicon)
-                isLoading = true
-
-            }
-
-            override fun onPageFinished(view: WebView?, currentUrlString: String?) {
-                super.onPageFinished(view, currentUrlString)
-                isLoading = false
-
-                if (currentUrlString != null) {
-                    Log.w("zzz", "")
-
-                    Log.w("zzz", "onPageFinished")
-                    Log.w("zzz", "canGoForward: $canGoForward")
-                    Log.w("zzz", "")
-                    val webViewHistory = webView.copyBackForwardList()
-                    Log.e("zzz", " ACTUAL WEBVIEW HISTORY ")
-                    for (i in 0 until webViewHistory.size) {
-                        Log.e("zzz", "$i : " + webViewHistory.getItemAtIndex(i).url)
-
-                    }
-                    Log.e("zzz", " ")
-
-                    Log.i(
-                        "zzz",
-                        "Current Items  :  : ${tabs[activeTabIndex.value].historyState?.items}"
-                    )
-                    Log.i(
-                        "zzz",
-                        "Current Index  :  : ${tabs[activeTabIndex.value].historyState?.currentIndex}"
-                    )
-                    if (currentUrlString != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
-                            ?: -1]?.url
-                    ) {
-                        Log.d("zzz", "++++++DIFFERENT")
-                        Log.d("zzz", currentUrlString)
-                        Log.d(
-                            "zzz",
-                            tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
-                                ?: -1]?.url.toString()
-                        )
-                        synchronizeState(webView)
-                    }
-//                        if (isTraverseHistory) {
-//                            Log.i("zzz", "isTraverseHistory")
-//                            isTraverseHistory = false
-//                        } else {
-//
-//                        }
-                }
-                if (!isFocusOnTextField) webView.url?.let {
-                    textFieldValue = TextFieldValue(it, TextRange(it.length))
-                }
-                // --- END OF LOGGING CODE ---
-
-
-            }
-
-//                override fun onPageFinished(view: WebView?, currentUrl: String?) {
-//                    super.onPageFinished(view, currentUrl)
-//                    isLoading = false
-////                    canGoBack = view?.canGoBack() ?: false
-////                    canGoForward = view?.canGoForward() ?: false
-////                    currentUrl?.let {
-////                        url = it
-////                        if (!isFocusOnTextField) textFieldValue =
-////                            TextFieldValue(it, TextRange(it.length))
-////                    }
-//                    // Force a scroll to the top to fix coordinate system bugs
-//                    view?.scrollTo(0, 0)
-//
-//                    // Your JS script for getting the background color
-//                    val jsScript =
-//                        """"(function() { ... })();"""".trimIndent() // Keep your full script here
-//                    view?.evaluateJavascript(jsScript, null)
-//
-//                    if (browserSettings.isDesktopMode) {
-//                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
-//                        view?.evaluateJavascript(
-//                            """"
-//            (function() {
-//                // The function we want to run to enforce our viewport.
-//                function enforceDesktopViewport() {
-//                    console.log('Enforcing desktop viewport...');
-//                    var meta = document.querySelector('meta[name=viewport]');
-//                    if (!meta) {
-//                        meta = document.createElement('meta');
-//                        meta.setAttribute('name', 'viewport');
-//                        document.getElementsByTagName('head')[0].appendChild(meta);
-//                    }
-//                    // Crucially, check if the content is already correct.
-//                    // This prevents an infinite loop of observer callbacks.
-//                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
-//                        console.log('Viewport was wrong, correcting to width=${browserSettings.desktopModeWidth}.');
-//                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
-//                    }
-//                }
-//
-//                // 1. Enforce it immediately.
-//                enforceDesktopViewport();
-//
-//                // 2. Create an observer to watch for any changes to the <head> element.
-//                //    This will detect if the site's own JS tries to change the viewport.
-//                var observer = new MutationObserver(function(mutations) {
-//                    // When a change is detected, run our enforcement function again.
-//                    enforceDesktopViewport();
-//                });
-//
-//                // 3. Start observing. We watch for changes to child elements in the head.
-//                var head = document.getElementsByTagName('head')[0];
-//                if (head) {
-//                    observer.observe(head, {
-//                        childList: true,
-//                        subtree: true
-//                    });
-//                }
-//            })();
-//            """".trimIndent(), null
-//                        )
-//                    }
-//
-//
-//                }
-
-            override fun shouldInterceptRequest(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): WebResourceResponse? {
-                request?.requestHeaders?.put("Origin", currentTab?.currentUrl)
-                return super.shouldInterceptRequest(view, request)
-            }
-        }
+        // You can add ChromeDelegate and PermissionDelegate here as well if needed
     }
 
-
-    LaunchedEffect(webView) {
-        (webView as? CustomWebView)?.onUrlChangedListener = object : OnUrlChangedListener {
-            override fun onUrlChanged(newUrl: String?) {
-                Log.w("zzz", "")
-
-                Log.w("zzz", "onUrlChanged")
-                Log.w("zzz", "")
-
-                if (newUrl != null) {
-
-                    if (!isFocusOnTextField) {
-                        textFieldValue =
-                            TextFieldValue(newUrl ?: "", TextRange((newUrl ?: "").length))
-                    }
-                    if (newUrl != tabs[activeTabIndex.value].historyState?.items[tabs[activeTabIndex.value].historyState?.currentIndex
-                            ?: 0]?.url
-                    ) {
-                        synchronizeState(webView)
-                    }
-//                    synchronizeState(webView)
-
-
-                    // When the URL changes, we run the EXACT SAME logic as onPageFinished.
-                    // This keeps our state perfectly synchronized.
-//                    currentTab?.let { tab ->
-//                        Log.e("onUrlChanged", "Tab Before : " + tab.toString())
-//
-//                        if (tab.currentUrl != newUrl) {
-//                            val newHistoryEndIndex = tab.currentUrlIndex + 1
-//                            val newHistory = if (newHistoryEndIndex < tab.history.size) {
-//                                tab.history.subList(0, newHistoryEndIndex)
-//                            } else {
-//                                tab.history
-//                            }.toMutableList()
-//
-//                            newHistory.add(newUrl)
-//
-//                            val updatedTab = tab.copy(
-//                                history = newHistory,
-//                                currentUrlIndex = newHistory.lastIndex
-//                            )
-//
-//                            tabs[activeTabIndex.value] = updatedTab
-//                            saveTrigger++
-//                            Log.e("onUrlChanged", "Tab after : " +    tabs[activeTabIndex.value].toString())
-//                            Log.e("onUrlChanged", " " )
-//
-//
-//
-//                        }
-//                    }
-                }
-
-                // --- NEW LOGGING CODE for copyBackForwardList() ---
-//                val webViewHistoryList = webView.copyBackForwardList()
-//
-//                if (webViewHistoryList != null) {
-//                    Log.d("WebViewHistory", "===================onUrlChanged====================")
-//                    Log.d("WebViewHistory", "WebView.copyBackForwardList() Snapshot")
-//                    Log.d("WebViewHistory", "New URL: $newUrl")
-//                    Log.d("WebViewHistory", "List Size: ${webViewHistoryList.size}")
-//                    Log.d("WebViewHistory", "Current Index: ${webViewHistoryList.currentIndex}")
-//
-//                    // Loop through and print each item in the WebView's history
-//                    for (i in 0 until webViewHistoryList.size) {
-//                        val item = webViewHistoryList.getItemAtIndex(i)
-//                        val isCurrentMarker = if (i == webViewHistoryList.currentIndex) "<- CURRENT" else ""
-//                        Log.d("WebViewHistory", "  [$i] ${item.url} ${isCurrentMarker}")
-//                    }
-//                    Log.d("WebViewHistory", "=======================================")
-//                }
-//                // --- END OF LOGGING CODE ---
-            }
-        }
-    }
 
     LaunchedEffect(overlayHeightPx) {
         // We only want to act the first time the height is measured (it changes from 0f to a positive value).
@@ -1485,19 +699,14 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    LaunchedEffect(browserSettings.isDesktopMode) {
-        if (browserSettings.isDesktopMode) {
-            webView.settings.userAgentString = desktopUserAgent
-            webView.settings.useWideViewPort = true
-            webView.settings.loadWithOverviewMode = true
-        } else {
-            webView.settings.userAgentString = mobileUserAgent
-            webView.settings.useWideViewPort = false
-            webView.settings.loadWithOverviewMode = false
-        }
 
-        // This reload is still essential to get the new HTML from the server.
-        webView.reload()
+    LaunchedEffect(browserSettings.isDesktopMode) {
+        session.settings.userAgentMode = if (browserSettings.isDesktopMode) {
+            GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+        } else {
+            GeckoSessionSettings.USER_AGENT_MODE_MOBILE
+        }
+        session.reload()
     }
 
     LaunchedEffect(isUrlBarVisible, pendingPermissionRequest) {
@@ -1532,97 +741,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(Unit) {
-        val urlToLoad = currentTab?.currentUrl
-
-        if (urlToLoad != null) {
-            if (!initialLoadDone) {
-                currentTab?.historyState?.let { savedHistory ->
-
-                    // --- MANUALLY CONSTRUCT THE BUNDLE ---
-                    val bundle = Bundle()
-                    val urlList = ArrayList(savedHistory.items.map { it.url })
-                    for (i in urlList.indices) {
-                        Log.i("WebViewRestore", urlList[i])
-                    }
-                    Log.i("WebViewRestore", savedHistory.currentIndex.toString())
-                    bundle.putStringArrayList("urls", urlList)
-                    bundle.putInt("index", savedHistory.currentIndex)
-
-                    Log.i("WebViewRestore", bundle.toString())
-                    // ---
-
-                    if (webView.restoreState(bundle) != null) {
-                        Log.d(
-                            "WebViewRestore",
-                            "Successfully restored WebView state from custom Bundle."
-                        )
-                    } else {
-                        // Fallback if restore fails for any reason
-                        Log.e("WebViewRestore", "restoreState failed, loading URL directly.")
-                        webView.loadUrl(currentTab?.currentUrl ?: browserSettings.defaultUrl)
-                    }
-                } ?: run {
-                    // If there's no saved state at all (first launch), load the default URL.
-                    webView.loadUrl(browserSettings.defaultUrl)
-                }
-                initialLoadDone = true
-            }
-//            else {
-//                // --- SCENARIO 2: User switches to a different tab ---
-//                // If the initial load IS done, this effect is running because
-//                // currentTab changed. Load the new tab's URL.
-//                if (webView.url != urlToLoad) {
-//                    webView.loadUrl(urlToLoad)
-//                }
-//            }
-
+        val urlToLoad = tabs[activeTabIndex.value].currentUrl ?: browserSettings.defaultUrl
+        if (!initialLoadDone) {
+            session.loadUri(urlToLoad)
+            initialLoadDone = true
         }
     }
-
-    // This effect loads the URL when the active tab changes
-//    LaunchedEffect(activeTabIndex, initialLoadDone) {
-//        Log.e("zzz", "Change Tab")
-//        // Get the URL that SHOULD be loaded for the current tab.
-//        val urlToLoad = currentTab?.currentUrl
-//
-//        if (urlToLoad != null) {
-//            if (!initialLoadDone) {
-//                currentTab?.historyState?.let { savedHistory ->
-//
-//                    // --- MANUALLY CONSTRUCT THE BUNDLE ---
-//                    val bundle = Bundle()
-//                    val urlList = ArrayList(savedHistory.items.map { it.url })
-//                    for (i in urlList.indices) {
-//                        Log.i("WebViewRestore", urlList[i])
-//                    }
-//                    Log.i("WebViewRestore", savedHistory.currentIndex.toString())
-//                    bundle.putStringArrayList("urls", urlList)
-//                    bundle.putInt("index", savedHistory.currentIndex)
-//                    // ---
-//
-//                    if (webView.restoreState(bundle) != null) {
-//                        Log.d("WebViewRestore", "Successfully restored WebView state from custom Bundle.")
-//                    } else {
-//                        // Fallback if restore fails for any reason
-//                        Log.e("WebViewRestore", "restoreState failed, loading URL directly.")
-//                        webView.loadUrl(currentTab?.currentUrl ?: browserSettings.defaultUrl)
-//                    }
-//                } ?: run {
-//                    // If there's no saved state at all (first launch), load the default URL.
-//                    webView.loadUrl(browserSettings.defaultUrl)
-//                }
-//                initialLoadDone = true
-//            }
-//        //            else {
-////                // --- SCENARIO 2: User switches to a different tab ---
-////                // If the initial load IS done, this effect is running because
-////                // currentTab changed. Load the new tab's URL.
-////                if (webView.url != urlToLoad) {
-////                    webView.loadUrl(urlToLoad)
-////                }
-////            }
-//        }
-//    }
 
     // The LaunchedEffect now saves the entire settings object (or individual fields)
     LaunchedEffect(browserSettings) {
@@ -1647,28 +771,13 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
-    // This effect runs whenever the isDesktopMode flag changes.
-    LaunchedEffect(browserSettings.isDesktopMode) {
-        val newAgent = if (browserSettings.isDesktopMode) desktopUserAgent else mobileUserAgent
-        if (webView.settings.userAgentString != newAgent) {
-            webView.settings.userAgentString = newAgent
-            // Reload the page to apply the new User Agent
-            webView.reload()
-        }
-    }
-
-    // This effect will re-launch whenever the animatedPadding value changes (i.e., every frame).
-    LaunchedEffect(animatedPadding) {
-        // We now have a hook that runs on every animation frame.
-        // We can command our WebView to update its layout.
-        webView.requestLayout()
-    }
-//
-//    LaunchedEffect(url) {
-//        if (webView.url != url) {
-//            webView.loadUrl(url)
-//        }
+//    // This effect will re-launch whenever the animatedPadding value changes (i.e., every frame).
+//    LaunchedEffect(animatedPadding) {
+//        // We now have a hook that runs on every animation frame.
+//        // We can command our WebView to update its layout.
+//        webView.requestLayout()
 //    }
+
 
     BackHandler(enabled = !isUrlBarVisible || canGoBack) {
         when {
@@ -1684,13 +793,23 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             }
             // Priority 3: Navigate back in the WebView.
             canGoBack -> {
-                currentTab?.let { tab ->
-                    val updatedTab =
-                        tab.copy(historyState = tab.historyState?.copy(currentIndex = tab.historyState!!.currentIndex - 1))
-                    tabs[activeTabIndex.value] = updatedTab
-//                    updatedTab.currentUrl?.let { webView.loadUrl(it) }
-                    webView.goBack()
-                    saveTrigger++
+                tabs[activeTabIndex.value].historyState?.let { history ->
+                    val newIndex = history.currentIndex - 1
+                    history.items.getOrNull(newIndex)
+                        ?.let { itemToLoad ->
+                            session.loadUri(itemToLoad.url)
+
+                            val updatedTab =
+                                tabs[activeTabIndex.value].copy(
+                                    historyState = history.copy(
+                                        currentIndex = newIndex
+                                    )
+                                )
+                            tabs[activeTabIndex.value] =
+                                updatedTab
+                            saveTrigger++
+
+                        }
                 }
             }
 
@@ -1743,22 +862,28 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         ) {
                             AndroidView(
                                 factory = {
-                                    FrameLayout(it).apply {
-                                        // If the WebView still has a parent from a previous composition, remove it.
-                                        (webView.parent as? ViewGroup)?.removeView(webView)
-
-                                        // Add our singleton WebView to it.
-                                        addView(
-                                            webView,
-                                            FrameLayout.LayoutParams(
-                                                FrameLayout.LayoutParams.MATCH_PARENT,
-                                                FrameLayout.LayoutParams.MATCH_PARENT
-                                            ).apply {
-                                                gravity = Gravity.CENTER
-                                            }
-                                        )
-                                    }
+                                    // The factory should simply return the pre-configured GeckoView instance.
+                                    // The parent removal is still critical to prevent crashes on recomposition.
+                                    (geckoView.parent as? ViewGroup)?.removeView(geckoView)
+                                    geckoView
                                 },
+//                                factory = {
+//                                    FrameLayout(it).apply {
+//                                        // If the WebView still has a parent from a previous composition, remove it.
+//                                        (geckoView.parent as? ViewGroup)?.removeView(geckoView)
+//
+//                                        // Add our singleton WebView to it.
+//                                        addView(
+//                                            geckoView,
+//                                            FrameLayout.LayoutParams(
+//                                                FrameLayout.LayoutParams.MATCH_PARENT,
+//                                                FrameLayout.LayoutParams.MATCH_PARENT
+//                                            ).apply {
+//                                                gravity = Gravity.CENTER
+//                                            }
+//                                        )
+//                                    }
+//                                },
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
@@ -1851,39 +976,49 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                                                 when (activeGestureAction) {
                                                     GestureNavAction.BACK -> if (canGoBack) {
-                                                        isTraverseHistory = true
-                                                        currentTab?.let { tab ->
-                                                            val updatedTab = tab.copy(
-                                                                historyState = tab.historyState?.copy(
-                                                                    currentIndex = tab.historyState!!.currentIndex - 1
-                                                                )
-                                                            )
-                                                            tabs[activeTabIndex.value] = updatedTab
-                                                            saveTrigger++
+                                                        tabs[activeTabIndex.value].historyState?.let { history ->
+                                                            val newIndex = history.currentIndex - 1
+                                                            currentIndexValue = newIndex
+                                                            history.items.getOrNull(newIndex)
+                                                                ?.let { itemToLoad ->
+                                                                    session.loadUri(itemToLoad.url)
 
-                                                            webView.goBack()
+                                                                    val updatedTab =
+                                                                        tabs[activeTabIndex.value].copy(
+                                                                            historyState = history.copy(
+                                                                                currentIndex = newIndex
+                                                                            )
+                                                                        )
+                                                                    tabs[activeTabIndex.value] =
+                                                                        updatedTab
+                                                                    saveTrigger++
+
+                                                                }
                                                         }
                                                     }
 
                                                     GestureNavAction.REFRESH -> {
-                                                        isTraverseHistory = true
-
-                                                        webView.reload()
+                                                        session.reload()
                                                     }
 
                                                     GestureNavAction.FORWARD -> if (canGoForward) {
-                                                        isTraverseHistory = true
+                                                        tabs[activeTabIndex.intValue].historyState?.let { history ->
+                                                            val newIndex = history.currentIndex + 1
+                                                            currentIndexValue = newIndex
+                                                            history.items.getOrNull(newIndex)
+                                                                ?.let { itemToLoad ->
+                                                                    session.loadUri(itemToLoad.url)
+                                                                    val updatedTab =
+                                                                        tabs[activeTabIndex.intValue].copy(
+                                                                            historyState = history.copy(
+                                                                                currentIndex = newIndex
+                                                                            )
+                                                                        )
+                                                                    tabs[activeTabIndex.value] =
+                                                                        updatedTab
+                                                                    saveTrigger++
 
-                                                        currentTab?.let { tab ->
-                                                            val updatedTab = tab.copy(
-                                                                historyState = tab.historyState?.copy(
-                                                                    currentIndex = tab.historyState!!.currentIndex + 1
-                                                                )
-                                                            )
-                                                            tabs[activeTabIndex.value] = updatedTab
-
-                                                            webView.goForward()
-                                                            saveTrigger++
+                                                                }
                                                         }
                                                     }
 
@@ -1967,8 +1102,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
                     )
                     BottomPanel(
+                        tabs = tabs,
+                        activeTabIndex = activeTabIndex,
 
-                        currentTab = currentTab,
                         colorScheme = colorScheme,
                         isImmersiveMode = isImmersiveMode,
                         isUrlBarVisible = isUrlBarVisible,
@@ -1983,7 +1119,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         toggleOptionsPanel = { isOptionsPanelVisible = it },
                         changeTextFieldValue = { textFieldValue = it },
                         onNewUrl = { newUrl ->
-                            webView.loadUrl(newUrl)
+                            session.loadUri(newUrl)
 //                            }
                         },
                         toggleUrlBar = { isUrlBarVisible = it },
@@ -2035,7 +1171,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
-    currentTab: Tab?,
+    activeTabIndex: MutableState<Int>,
+    tabs: List<Tab>,
     colorScheme: ColorScheme,
     isImmersiveMode: Boolean,
     isUrlBarVisible: Boolean,
@@ -2101,7 +1238,7 @@ fun BottomPanel(
                     keyboardActions = KeyboardActions(
                         onGo = {
                             val input = textFieldValue.text.trim()
-                            val resetUrl = currentTab?.currentUrl ?: ""
+                            val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
 
                             if (input.isBlank()) {
                                 changeTextFieldValue(
@@ -2153,7 +1290,7 @@ fun BottomPanel(
                         .fillMaxWidth()
                         //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
                         .onFocusChanged {
-                            val resetUrl = currentTab?.currentUrl ?: ""
+                            val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
                             setIsFocusOnTextField(it.isFocused)
                             if (it.isFocused) {
 
@@ -2176,7 +1313,7 @@ fun BottomPanel(
                         .pointerInput(Unit) {
                             detectHorizontalDragGestures { _, dragAmount ->
                                 if (dragAmount > 0) {
-                                    val resetUrl = currentTab?.currentUrl ?: ""
+                                    val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
                                     changeTextFieldValue(
                                         TextFieldValue(
                                             resetUrl,

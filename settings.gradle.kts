@@ -1,3 +1,12 @@
+import java.io.FileInputStream
+import java.util.Properties
+
+val localProperties = Properties()
+val localPropertiesFile =  File(rootProject.projectDir, "local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(FileInputStream(localPropertiesFile))
+}
+
 pluginManagement {
     repositories {
         google {
@@ -16,6 +25,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven {
+            url =uri("https://maven.mozilla.org/maven2/")
+        }
+
+
     }
 }
 
