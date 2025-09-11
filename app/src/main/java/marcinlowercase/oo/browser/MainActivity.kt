@@ -588,7 +588,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 // 2. SYNCHRONIZE OUR SAVED TAB STATE
                 tabs[activeTabIndex.value].let { tab ->
                     var databaseHistory = tab.historyState
-                    var updatedIndex = 0
+                    var updatedIndex = -99
 
                     if (databaseHistory == null) {
                         databaseHistory =
@@ -637,6 +637,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                 )
                             )
                             updatedIndex++
+                            currentIndexValue = updatedIndex
 
                         } else {
                             Log.w("GeckoHistoryLog", "Replaced")
@@ -688,6 +689,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         // You can add ChromeDelegate and PermissionDelegate here as well if needed
     }
 
+    LaunchedEffect(currentIndexValue) {
+        Log.e("GeckoHistoryLog", "EEEEEEEEEE $currentIndexValue")
+    }
 
     LaunchedEffect(overlayHeightPx) {
         // We only want to act the first time the height is measured (it changes from 0f to a positive value).
@@ -795,6 +799,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             canGoBack -> {
                 tabs[activeTabIndex.value].historyState?.let { history ->
                     val newIndex = history.currentIndex - 1
+                    currentIndexValue = newIndex
                     history.items.getOrNull(newIndex)
                         ?.let { itemToLoad ->
                             session.loadUri(itemToLoad.url)
@@ -978,7 +983,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                     GestureNavAction.BACK -> if (canGoBack) {
                                                         tabs[activeTabIndex.value].historyState?.let { history ->
                                                             val newIndex = history.currentIndex - 1
+                                                            Log.i("GeckoHistoryLog", "NACK")
                                                             currentIndexValue = newIndex
+
+
                                                             history.items.getOrNull(newIndex)
                                                                 ?.let { itemToLoad ->
                                                                     session.loadUri(itemToLoad.url)
@@ -1004,6 +1012,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                     GestureNavAction.FORWARD -> if (canGoForward) {
                                                         tabs[activeTabIndex.intValue].historyState?.let { history ->
                                                             val newIndex = history.currentIndex + 1
+                                                            Log.i("GeckoHistoryLog", "FORWARD")
                                                             currentIndexValue = newIndex
                                                             history.items.getOrNull(newIndex)
                                                                 ?.let { itemToLoad ->
