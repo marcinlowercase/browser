@@ -12,6 +12,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
+import android.content.res.AssetManager
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
@@ -107,9 +108,12 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.WebExtensionController
+import java.io.IOException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlin.collections.get
@@ -132,8 +136,13 @@ class MainActivity : ComponentActivity() {
         // Ensure you have the necessary dependency in your build.gradle:
         // implementation "org.mozilla.geckoview:geckoview-nightly:..."
         if (!::runtime.isInitialized) {
-            runtime = GeckoRuntime.create(this)
+            runtime = GeckoRuntime.create(this, GeckoRuntimeSettings.Builder()
+                .extensionsProcessEnabled(true)
+                .build())
         }
+
+        installUblockOrigin()
+
 
         // 2. Initialize GeckoView and GeckoSession
         geckoView = GeckoView(this)
@@ -150,6 +159,8 @@ class MainActivity : ComponentActivity() {
             allowJavascript = true
         }
 
+
+
         setContent {
             BrowserTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -159,6 +170,40 @@ class MainActivity : ComponentActivity() {
         }
 
     }
+    private fun installUblockOrigin() {
+        // Get the controller from the runtime.
+        val extensionController = runtime.webExtensionController
+
+        // Define the extension's official ID and its path within our assets.
+        val uBlockId = "uBlock0@raymondhill.net"
+        val uBlockAssetPath = "resource://android/assets/extensions/ublock_origin.xpi"
+
+        Log.d("ExtensionManager", "Attempting to install uBlock Origin from: $uBlockAssetPath")
+
+        // Pre-flight check to make sure the file is bundled correctly.
+        try {
+            assets.open("extensions/ublock_origin.xpi").close()
+        } catch (e: IOException) {
+            Log.e("ExtensionManager", "CRITICAL ERROR: uBlock Origin .xpi file not found in assets/extensions/. Installation aborted.", e)
+            return
+        }
+
+        // Install the extension. GeckoView handles cases where it's already installed.
+        val installResult = extensionController.install(uBlockAssetPath, uBlockId)
+
+        // Log the result of the asynchronous installation.
+        installResult.accept(
+            { extension ->
+                Log.i("ExtensionManager", "SUCCESS: uBlock Origin is installed. ID: ${extension?.id}")
+                // Ensure it's enabled (it is by default after install).
+                if (extension != null) extensionController.enable(extension, WebExtensionController.EnableSource.APP)
+            },
+            { error ->
+                Log.e("ExtensionManager", "ERROR: Failed to install uBlock Origin.", error)
+            }
+        )
+    }
+
 
     override fun onDestroy() {
         super.onDestroy()
@@ -358,6 +403,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     var initialLoadDone by rememberSaveable { mutableStateOf(false) }
     var isNavigateInProgress by rememberSaveable { mutableStateOf(false) }
+
 
     var saveTrigger by remember { mutableIntStateOf(0) }
 
@@ -575,6 +621,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 session: GeckoSession,
                 realtimeHistory: GeckoSession.HistoryDelegate.HistoryList
             ) {
+
+
 //                // 1. LOG THE HISTORY LIST AS REQUESTED
                 Log.d("GeckoHistoryLog", "--- History State Changed ---")
                 Log.e("GeckoHistoryLog", "REALTIMe")
@@ -589,6 +637,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 // 2. SYNCHRONIZE OUR SAVED TAB STATE
                 tabs[activeTabIndex.value].let { tab ->
                     var databaseHistory = tab.historyState
+
                     var updatedIndex = -99
 
                     if (databaseHistory == null) {
@@ -596,6 +645,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             SerializableBackForwardList(items = emptyList(), currentIndex = 0)
                     } else {
                         updatedIndex = databaseHistory.currentIndex
+
+                        if (realtimeHistory.isEmpty()) {
+                            Log.w("GeckoHistoryLog", "onHistoryStateChange called with an empty history list. Ignoring.")
+                            marcinlowercase.oo.browser.session.loadUri(databaseHistory.items[databaseHistory.currentIndex].url)
+                            return
+                        }
                     }
 
 
@@ -696,6 +751,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 }
             }
         }
+
 
         // You can add ChromeDelegate and PermissionDelegate here as well if needed
     }
