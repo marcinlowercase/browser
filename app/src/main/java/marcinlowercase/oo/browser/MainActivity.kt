@@ -357,6 +357,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     currentIndexValue = tabs[activeTabIndex.intValue].historyState?.currentIndex ?: 0
 
     var initialLoadDone by rememberSaveable { mutableStateOf(false) }
+    var isNavigateInProgress by rememberSaveable { mutableStateOf(false) }
 
     var saveTrigger by remember { mutableIntStateOf(0) }
 
@@ -501,12 +502,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     val canGoBack by remember {
-        derivedStateOf { (tabs[activeTabIndex.value].historyState?.currentIndex ?: 0) > 0 }
+        derivedStateOf { ((tabs[activeTabIndex.value].historyState?.currentIndex ?: 0) > 0) && !isNavigateInProgress }
     }
     val canGoForward by remember {
         derivedStateOf {
             val history = tabs[activeTabIndex.value].historyState
-            if (history == null) false else history.currentIndex < history.items.lastIndex
+            if (history == null) false else (history.currentIndex < history.items.lastIndex) && !isNavigateInProgress
         }
     }
 
@@ -615,12 +616,22 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     val realtimeCurrentItem = realtimeHistory[realtimeHistory.currentIndex]
 
 
+                    Log.i("GeckoHistoryLog", "BEFORE BIGGEST IF")
+                    Log.i("GeckoHistoryLog", "currentUrl: $currentUrl")
+                    Log.i("GeckoHistoryLog", "realtimeCurrentItem.uri: ${realtimeCurrentItem.uri}")
+                    Log.i("GeckoHistoryLog", "")
                     if (currentUrl == realtimeCurrentItem.uri) {
+                        Log.i("GeckoHistoryLog", "DO NOTHING")
+                        Log.i("GeckoHistoryLog", "")
+                        // Navigation done, ready for the next action
+                        isNavigateInProgress = false
                         // Do nothing
                         return
                     } else {
                         val realtimePreviousItem = realtimeHistory[realtimeHistory.currentIndex - 1]
                         if (currentUrl == realtimePreviousItem.uri) {
+                            Log.i("GeckoHistoryLog", "realtimePreviousItem.uri: ${realtimePreviousItem.uri}")
+                            Log.i("GeckoHistoryLog", "")
                             Log.w("GeckoHistoryLog", "Add new")
 
                             if (databaseHistory.currentIndex < databaseHistory.items.size - 1) {
@@ -989,7 +1000,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                                                             history.items.getOrNull(newIndex)
                                                                 ?.let { itemToLoad ->
+                                                                    isNavigateInProgress = true
                                                                     session.loadUri(itemToLoad.url)
+
 
                                                                     val updatedTab =
                                                                         tabs[activeTabIndex.value].copy(
@@ -997,8 +1010,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                                                 currentIndex = newIndex
                                                                             )
                                                                         )
-                                                                    tabs[activeTabIndex.value] =
-                                                                        updatedTab
+                                                                    tabs[activeTabIndex.value] = updatedTab
                                                                     saveTrigger++
 
                                                                 }
@@ -1006,6 +1018,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                     }
 
                                                     GestureNavAction.REFRESH -> {
+                                                        isNavigateInProgress = true
+
                                                         session.reload()
                                                     }
 
@@ -1016,6 +1030,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                             currentIndexValue = newIndex
                                                             history.items.getOrNull(newIndex)
                                                                 ?.let { itemToLoad ->
+                                                                    isNavigateInProgress = true
                                                                     session.loadUri(itemToLoad.url)
                                                                     val updatedTab =
                                                                         tabs[activeTabIndex.intValue].copy(
