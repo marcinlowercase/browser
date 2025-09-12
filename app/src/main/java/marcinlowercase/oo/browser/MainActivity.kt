@@ -5,35 +5,19 @@ import kotlinx.serialization.Serializable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
-import androidx.core.content.ContextCompat
-import android.content.pm.PackageManager
-import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
-import android.content.pm.ApplicationInfo
-import android.content.res.AssetManager
-import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import android.util.Patterns
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.ConsoleMessage
-import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
-import android.webkit.PermissionRequest
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -95,7 +79,6 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.edit
@@ -116,9 +99,7 @@ import org.mozilla.geckoview.WebExtensionController
 import java.io.IOException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import kotlin.collections.get
 import kotlin.coroutines.coroutineContext
-import kotlin.text.get
 
 
 private lateinit var geckoView: GeckoView
@@ -332,12 +313,6 @@ class TabManager(context: Context) {
     }
 }
 
-
-interface OnUrlChangedListener {
-    fun onUrlChanged(newUrl: String?)
-}
-
-
 @Composable
 fun rememberHasDisplayCutout(): State<Boolean> {
     // These are fine, as LocalConfiguration and LocalDensity are ambient Composable properties
@@ -409,13 +384,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(tabs[activeTabIndex.value].currentUrl ?: "", TextRange(0)))
+        mutableStateOf(TextFieldValue(tabs[activeTabIndex.intValue].currentUrl ?: "", TextRange(0)))
     }
 
 
     var isImmersiveMode by remember { mutableStateOf(false) }
 
-    var isTraverseHistory by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var isFocusOnTextField by remember { mutableStateOf(false) }
 
@@ -529,30 +503,24 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     val activity = context as? Activity // Get the activity reference
 
-    // Define your User Agent strings
-    val mobileUserAgent =
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
-    val desktopUserAgent =
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-
 
     var pendingPermissionRequest by remember {
         mutableStateOf<CustomPermissionRequest?>(null)
     }
 
 
-    var colorScheme = ColorScheme(
+    val colorScheme = ColorScheme(
         backgroundColor = if (isSystemInDarkTheme()) Color.Black else Color.White,
         foregroundColor = if (isSystemInDarkTheme()) Color.White else Color.Black
     )
 
 
     val canGoBack by remember {
-        derivedStateOf { ((tabs[activeTabIndex.value].historyState?.currentIndex ?: 0) > 0) && !isNavigateInProgress }
+        derivedStateOf { ((tabs[activeTabIndex.intValue].historyState?.currentIndex ?: 0) > 0) && !isNavigateInProgress }
     }
     val canGoForward by remember {
         derivedStateOf {
-            val history = tabs[activeTabIndex.value].historyState
+            val history = tabs[activeTabIndex.intValue].historyState
             if (history == null) false else (history.currentIndex < history.items.lastIndex) && !isNavigateInProgress
         }
     }
@@ -635,7 +603,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 Log.d("GeckoHistoryLog", "-------------------------------")
 
                 // 2. SYNCHRONIZE OUR SAVED TAB STATE
-                tabs[activeTabIndex.value].let { tab ->
+                tabs[activeTabIndex.intValue].let { tab ->
                     var databaseHistory = tab.historyState
 
                     var updatedIndex = -99
@@ -664,7 +632,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     Log.d("GeckoHistoryLog", "-------------------------------")
 
 
-                    var updatedHistory = databaseHistory?.items?.toMutableList()
+                    var updatedHistory = databaseHistory.items.toMutableList()
 
 
                     val currentUrl = databaseHistory.items[currentIndexValue].url
@@ -724,11 +692,11 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
 
                         if (databaseHistory != updatedHistory) {
-                            tabs[activeTabIndex.value] =
+                            tabs[activeTabIndex.intValue] =
                                 tab.copy(historyState = updatedHistoryState)
                             saveTrigger++
 
-                            val brandNewHistory = tabs[activeTabIndex.value].historyState
+                            val brandNewHistory = tabs[activeTabIndex.intValue].historyState
                             if (brandNewHistory == null) {
                                 return
                             }
@@ -812,7 +780,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(Unit) {
-        val urlToLoad = tabs[activeTabIndex.value].currentUrl ?: browserSettings.defaultUrl
+        val urlToLoad = tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
         if (!initialLoadDone) {
             session.loadUri(urlToLoad)
             initialLoadDone = true
@@ -864,7 +832,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             }
             // Priority 3: Navigate back in the WebView.
             canGoBack -> {
-                tabs[activeTabIndex.value].historyState?.let { history ->
+                tabs[activeTabIndex.intValue].historyState?.let { history ->
                     val newIndex = history.currentIndex - 1
                     currentIndexValue = newIndex
                     history.items.getOrNull(newIndex)
@@ -872,12 +840,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             session.loadUri(itemToLoad.url)
 
                             val updatedTab =
-                                tabs[activeTabIndex.value].copy(
+                                tabs[activeTabIndex.intValue].copy(
                                     historyState = history.copy(
                                         currentIndex = newIndex
                                     )
                                 )
-                            tabs[activeTabIndex.value] =
+                            tabs[activeTabIndex.intValue] =
                                 updatedTab
                             saveTrigger++
 
@@ -1048,7 +1016,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                                                 when (activeGestureAction) {
                                                     GestureNavAction.BACK -> if (canGoBack) {
-                                                        tabs[activeTabIndex.value].historyState?.let { history ->
+                                                        tabs[activeTabIndex.intValue].historyState?.let { history ->
                                                             val newIndex = history.currentIndex - 1
                                                             Log.i("GeckoHistoryLog", "NACK")
                                                             currentIndexValue = newIndex
@@ -1061,12 +1029,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
                                                                     val updatedTab =
-                                                                        tabs[activeTabIndex.value].copy(
+                                                                        tabs[activeTabIndex.intValue].copy(
                                                                             historyState = history.copy(
                                                                                 currentIndex = newIndex
                                                                             )
                                                                         )
-                                                                    tabs[activeTabIndex.value] = updatedTab
+                                                                    tabs[activeTabIndex.intValue] = updatedTab
                                                                     saveTrigger++
 
                                                                 }
@@ -1094,7 +1062,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                                                 currentIndex = newIndex
                                                                             )
                                                                         )
-                                                                    tabs[activeTabIndex.value] =
+                                                                    tabs[activeTabIndex.intValue] =
                                                                         updatedTab
                                                                     saveTrigger++
 
@@ -1855,23 +1823,6 @@ fun GestureNavigationOverlay(
 fun BrowserScreenPreview() {
     BrowserTheme {
         BrowserScreen()
-    }
-}
-
-
-class WebAppInterface() {
-    @JavascriptInterface
-    fun logBackgroundColor(colorString: String) {
-        // We need a robust way to parse the "rgb(r, g, b)" or "rgba(r, g, b, a)" string.
-        try {
-
-            Log.e("WebViewBackground", "Detected web page background color: $colorString")
-
-
-        } catch (e: Exception) {
-            // If parsing fails for any reason, log it but don't crash.
-            Log.e("WebAppInterface", "Failed to parse color string: $colorString", e)
-        }
     }
 }
 
