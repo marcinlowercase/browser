@@ -1,6 +1,7 @@
 package marcinlowercase.oo.browser
 
 
+import android.Manifest
 import kotlinx.serialization.Serializable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.unit.IntOffset
@@ -18,6 +19,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import android.webkit.WebChromeClient
+import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -90,6 +92,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
@@ -108,6 +111,218 @@ private lateinit var runtime: GeckoRuntime
 
 var currentIndexValue = 0
 
+class CustomPermissionDelegate(
+    // The callback to trigger the UI update in the Composable remains the same
+    private val onShowRequest: (CustomPermissionRequest) -> Unit
+) : GeckoSession.PermissionDelegate {
+
+
+    override fun onContentPermissionRequest(
+        session: GeckoSession,
+        perm: GeckoSession.PermissionDelegate.ContentPermission
+    ): GeckoResult<Int?>? {
+
+
+
+        // We only handle geolocation in this example.
+        if (perm.permission == GeckoSession.PermissionDelegate.PERMISSION_GEOLOCATION) {
+            Log.e("PermissionRelated", "onContentPermissionRequest: $perm")
+            return GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW)
+        }
+        return super.onContentPermissionRequest(session, perm)
+    }
+
+
+    override fun onAndroidPermissionsRequest(
+        session: GeckoSession,
+        permissions: Array<out String>?,
+        callback: GeckoSession.PermissionDelegate.Callback
+    ) {
+        Log.e("PermissionRelated", "onAndroidPermissionsRequest: $permissions")
+        Log.e("PermissionRelated", "onAndroidPermissionsRequest: ${permissions?.joinToString()}")
+
+        var requestTitle = "Default title"
+        var requestRationale = "Default Ratinale"
+        var requestAllowIcon = R.drawable.ic_bug
+        var requestDenyIcon = R.drawable.ic_bug
+
+        if (permissions.isNullOrEmpty()) {
+            callback.reject()
+            return
+        }
+
+
+        if ( permissions.contains("android.permission.ACCESS_FINE_LOCATION") || permissions.contains("android.permission.ACCESS_COARSE_LOCATION")) {
+            // Show the UI that will eventually trigger the system permission launcher
+            requestTitle = "Location Request"
+            requestRationale = "This site wants to use your device's location."
+            requestAllowIcon = R.drawable.ic_location_on
+            requestDenyIcon = R.drawable.ic_location_off
+        }
+
+        if (permissions.contains("android.permission.CAMERA")) {
+            // Show the UI that will eventually trigger the system permission launcher
+            requestTitle = "Camera Request"
+            requestRationale = "This site wants to use your device's camera."
+            requestAllowIcon = R.drawable.ic_camera_on
+            requestDenyIcon = R.drawable.ic_camera_off
+
+        }
+        if (permissions.contains("android.permission.RECORD_AUDIO")) {
+            // Show the UI that will eventually trigger the system permission launcher
+            requestTitle = "Microphone Request"
+            requestRationale = "This site wants to use your device's microphone."
+            requestAllowIcon = R.drawable.ic_mic_on
+            requestDenyIcon = R.drawable.ic_mic_off
+        }
+
+
+        val customRequest = CustomPermissionRequest(
+            title = requestTitle,
+            rationale = requestRationale,
+            iconResAllow = requestAllowIcon, // Make sure you have these drawables
+            iconResDeny = requestDenyIcon,
+            permissionsToRequest = permissions.toList(),
+            onResult = { permissionsMap ->
+                // This is the final step, after the user interacts with the system dialog.
+                if (permissionsMap.any { it.value }) {
+                    // Tell GeckoView the app permission was granted.
+                    callback.grant()
+                } else {
+                    // Tell GeckoView the app permission was denied.
+                    callback.reject()
+                }
+            }
+        )
+        onShowRequest(customRequest)
+
+
+
+    }
+
+    private var pendingMediaCallback: GeckoSession.PermissionDelegate.MediaCallback? = null
+    private var originalVideoSources: Array<out GeckoSession.PermissionDelegate.MediaSource>? = null
+    private var originalAudioSources: Array<out GeckoSession.PermissionDelegate.MediaSource>? = null
+    private var cameraPermissionGranted: Boolean = false
+
+
+    override fun onMediaPermissionRequest(
+        session: GeckoSession,
+        uri: String,
+        video: Array<out GeckoSession.PermissionDelegate.MediaSource>?,
+        audio: Array<out GeckoSession.PermissionDelegate.MediaSource>?,
+        callback: GeckoSession.PermissionDelegate.MediaCallback
+    ) {
+        val isRequestingVideo = !video.isNullOrEmpty()
+        val isRequestingAudio = !audio.isNullOrEmpty()
+        Log.i("PermissionRelated", "isRequestingVideo $isRequestingVideo")
+        Log.i("PermissionRelated", "isRequestingAudio $isRequestingAudio")
+
+        if (!isRequestingVideo && !isRequestingAudio) {
+            callback.reject()
+            return
+        }
+
+        // SCENARIO 1 & 2: Only one permission is requested (simple case)
+        if (isRequestingVideo && !isRequestingAudio) {
+            askForSinglePermission(uri, "camera", Manifest.permission.CAMERA) { granted ->
+                val videoSource = if (granted) video?.first() else null
+                callback.grant(videoSource, null)
+            }
+            return
+        }
+        if (!isRequestingVideo && isRequestingAudio) {
+            askForSinglePermission(uri, "microphone", Manifest.permission.RECORD_AUDIO) { granted ->
+                val audioSource = if (granted) audio?.first() else null
+                callback.grant(null, audioSource)
+            }
+            return
+        }
+
+        // SCENARIO 3: Both are requested (orchestrated case)
+        if (isRequestingVideo && isRequestingAudio) {
+            // Store the state needed for the multi-step flow
+            pendingMediaCallback = callback
+            originalVideoSources = video
+            originalAudioSources = audio
+            cameraPermissionGranted = false // Reset state
+
+            Log.i("PermissionRelated", "onMediaPermissionRequest: BOTH")
+
+            // Start the flow by asking for the camera first
+            askForCameraThenMicrophone(uri)
+        }
+    }
+
+    private fun askForSinglePermission(uri: String, type: String, permission: String, onResult: (Boolean) -> Unit) {
+        var allowIcon = R.drawable.ic_camera_on
+        var denyIcon = R.drawable.ic_camera_off
+        if (type == "microphone") {
+            allowIcon = R.drawable.ic_mic_on
+            denyIcon = R.drawable.ic_mic_off
+        }
+        val customRequest = CustomPermissionRequest(
+            title = "Media Request",
+            rationale = "$uri wants to use your $type.",
+            iconResAllow = allowIcon,
+            iconResDeny = denyIcon,
+            permissionsToRequest = listOf(permission),
+            onResult = { permissionsMap -> onResult(permissionsMap.any { it.value }) }
+        )
+        onShowRequest(customRequest)
+    }
+
+    private fun askForCameraThenMicrophone(uri: String) {
+        val cameraRequest = CustomPermissionRequest(
+            title = "Camera Access",
+            rationale = "$uri wants to use your camera.",
+            iconResAllow = R.drawable.ic_camera_on,
+            iconResDeny = R.drawable.ic_camera_off,
+            permissionsToRequest = listOf(Manifest.permission.CAMERA),
+            onResult = { permissionsMap ->
+                // Step 1 Result: Camera permission granted or denied
+                this.cameraPermissionGranted = permissionsMap.any { it.value }
+
+                // Step 2: Now ask for the microphone
+                askForMicrophone(uri)
+            }
+        )
+        onShowRequest(cameraRequest)
+    }
+
+    private fun askForMicrophone(uri: String) {
+        val microphoneRequest = CustomPermissionRequest(
+            title = "Microphone Access",
+            rationale = "$uri wants to use your microphone.",
+            iconResAllow = R.drawable.ic_mic_on,
+            iconResDeny = R.drawable.ic_mic_off,
+            permissionsToRequest = listOf(Manifest.permission.RECORD_AUDIO),
+            onResult = { permissionsMap ->
+                // Step 2 Result: Microphone permission granted or denied
+                val microphonePermissionGranted = permissionsMap.any { it.value }
+
+                // FINAL STEP: Combine results and call the original callback
+                val videoSource = if (cameraPermissionGranted) originalVideoSources?.first() else null
+                val audioSource = if (microphonePermissionGranted) originalAudioSources?.first() else null
+
+                if (videoSource != null || audioSource != null) {
+                    pendingMediaCallback?.grant(videoSource, audioSource)
+                } else {
+                    pendingMediaCallback?.reject()
+                }
+
+                // Clean up state to prevent memory leaks
+                pendingMediaCallback = null
+                originalVideoSources = null
+                originalAudioSources = null
+            }
+        )
+        onShowRequest(microphoneRequest)
+    }
+
+}
+
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -117,9 +332,11 @@ class MainActivity : ComponentActivity() {
         // Ensure you have the necessary dependency in your build.gradle:
         // implementation "org.mozilla.geckoview:geckoview-nightly:..."
         if (!::runtime.isInitialized) {
-            runtime = GeckoRuntime.create(this, GeckoRuntimeSettings.Builder()
-                .extensionsProcessEnabled(true)
-                .build())
+            runtime = GeckoRuntime.create(
+                this, GeckoRuntimeSettings.Builder()
+                    .extensionsProcessEnabled(true)
+                    .build()
+            )
         }
 
         installUblockOrigin()
@@ -143,6 +360,38 @@ class MainActivity : ComponentActivity() {
 
 
         setContent {
+
+            // Permission Request
+            val permissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestMultiplePermissions(),
+                onResult = { permissions ->
+                    // You can optionally handle the results here, e.g., show a
+                    // message if the user denied the permissions.
+                    permissions.entries.forEach {
+                        Log.d("Permissions", "${it.key} = ${it.value}")
+                    }
+                }
+            )
+
+            // 2. Use a state to track if you've already asked
+            var permissionsRequested by rememberSaveable { mutableStateOf(false) }
+
+            // 3. Trigger the launch on the first composition
+            LaunchedEffect(Unit) {
+                if (!permissionsRequested) {
+                    permissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION,
+                            Manifest.permission.CAMERA,
+                            Manifest.permission.RECORD_AUDIO
+                        )
+                    )
+                    permissionsRequested = true
+                }
+            }
+
+
             BrowserTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     BrowserScreen()
@@ -151,6 +400,7 @@ class MainActivity : ComponentActivity() {
         }
 
     }
+
     private fun installUblockOrigin() {
         // Get the controller from the runtime.
         val extensionController = runtime.webExtensionController
@@ -165,7 +415,11 @@ class MainActivity : ComponentActivity() {
         try {
             assets.open("extensions/ublock_origin.xpi").close()
         } catch (e: IOException) {
-            Log.e("ExtensionManager", "CRITICAL ERROR: uBlock Origin .xpi file not found in assets/extensions/. Installation aborted.", e)
+            Log.e(
+                "ExtensionManager",
+                "CRITICAL ERROR: uBlock Origin .xpi file not found in assets/extensions/. Installation aborted.",
+                e
+            )
             return
         }
 
@@ -175,9 +429,15 @@ class MainActivity : ComponentActivity() {
         // Log the result of the asynchronous installation.
         installResult.accept(
             { extension ->
-                Log.i("ExtensionManager", "SUCCESS: uBlock Origin is installed. ID: ${extension?.id}")
+                Log.i(
+                    "ExtensionManager",
+                    "SUCCESS: uBlock Origin is installed. ID: ${extension?.id}"
+                )
                 // Ensure it's enabled (it is by default after install).
-                if (extension != null) extensionController.enable(extension, WebExtensionController.EnableSource.APP)
+                if (extension != null) extensionController.enable(
+                    extension,
+                    WebExtensionController.EnableSource.APP
+                )
             },
             { error ->
                 Log.e("ExtensionManager", "ERROR: Failed to install uBlock Origin.", error)
@@ -305,13 +565,19 @@ class TabManager(context: Context) {
                 state = TabState.ACTIVE,
                 // Create a default history state for the first launch
                 historyState = SerializableBackForwardList(
-                    items = listOf(SerializableHistoryItem(url = defaultUrl, title = "Default")),
+                    items = listOf(
+                        SerializableHistoryItem(
+                            url = defaultUrl,
+                            title = "Default"
+                        )
+                    ),
                     currentIndex = 0
                 )
             )
         )
     }
 }
+
 
 @Composable
 fun rememberHasDisplayCutout(): State<Boolean> {
@@ -384,7 +650,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(tabs[activeTabIndex.intValue].currentUrl ?: "", TextRange(0)))
+        mutableStateOf(
+            TextFieldValue(
+                tabs[activeTabIndex.intValue].currentUrl ?: "",
+                TextRange(0)
+            )
+        )
     }
 
 
@@ -488,20 +759,25 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     )
     val animatedSystemBarBottom by animateDpAsState(
         targetValue = if (!isImmersiveMode && !isKeyboardVisibleForPadding) staticSystemBarBottom else if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else 0.dp,
-        animationSpec = if (isImmersiveMode || !isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
+        animationSpec = if (isImmersiveMode || !isKeyboardVisibleForPadding) tween(
+            browserSettings.animationSpeed
+        ) else snap(
             0
         ), // Always animate smoothly
         label = "SystemBar Bottom Animation"
     )
 
     var customView by remember { mutableStateOf<View?>(null) }
-    var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
+    var customViewCallback by remember {
+        mutableStateOf<WebChromeClient.CustomViewCallback?>(
+            null
+        )
+    }
 
 
     // We only need the CustomViewCallback as state now.
-    var originalOrientation by remember { mutableIntStateOf(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) }
 
-    val activity = context as? Activity // Get the activity reference
+    context as? Activity // Get the activity reference
 
 
     var pendingPermissionRequest by remember {
@@ -516,7 +792,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     val canGoBack by remember {
-        derivedStateOf { ((tabs[activeTabIndex.intValue].historyState?.currentIndex ?: 0) > 0) && !isNavigateInProgress }
+        derivedStateOf {
+            ((tabs[activeTabIndex.intValue].historyState?.currentIndex
+                ?: 0) > 0) && !isNavigateInProgress
+        }
     }
     val canGoForward by remember {
         derivedStateOf {
@@ -615,7 +894,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         updatedIndex = databaseHistory.currentIndex
 
                         if (realtimeHistory.isEmpty()) {
-                            Log.w("GeckoHistoryLog", "onHistoryStateChange called with an empty history list. Ignoring.")
+                            Log.w(
+                                "GeckoHistoryLog",
+                                "onHistoryStateChange called with an empty history list. Ignoring."
+                            )
                             marcinlowercase.oo.browser.session.loadUri(databaseHistory.items[databaseHistory.currentIndex].url)
                             return
                         }
@@ -626,7 +908,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     Log.d("GeckoHistoryLog", "Total items: ${databaseHistory.items.size}")
                     Log.d("GeckoHistoryLog", "Current index: ${databaseHistory.currentIndex}")
                     databaseHistory.items.forEachIndexed { index, item ->
-                        val marker = if (index == databaseHistory.currentIndex) "<- CURRENT" else ""
+                        val marker =
+                            if (index == databaseHistory.currentIndex) "<- CURRENT" else ""
                         Log.d("GeckoHistoryLog", "  [$index]: ${item.url} ${marker}")
                     }
                     Log.d("GeckoHistoryLog", "-------------------------------")
@@ -641,7 +924,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                     Log.i("GeckoHistoryLog", "BEFORE BIGGEST IF")
                     Log.i("GeckoHistoryLog", "currentUrl: $currentUrl")
-                    Log.i("GeckoHistoryLog", "realtimeCurrentItem.uri: ${realtimeCurrentItem.uri}")
+                    Log.i(
+                        "GeckoHistoryLog",
+                        "realtimeCurrentItem.uri: ${realtimeCurrentItem.uri}"
+                    )
                     Log.i("GeckoHistoryLog", "")
                     if (currentUrl == realtimeCurrentItem.uri) {
                         Log.i("GeckoHistoryLog", "DO NOTHING")
@@ -651,9 +937,17 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         // Do nothing
                         return
                     } else {
-                        val realtimePreviousItem = realtimeHistory[realtimeHistory.currentIndex - 1]
-                        if (currentUrl == realtimePreviousItem.uri) {
-                            Log.i("GeckoHistoryLog", "realtimePreviousItem.uri: ${realtimePreviousItem.uri}")
+                        var realtimePreviousItemUri = " marcinlowercase "
+                        if (realtimeHistory.currentIndex != 0) {
+                            realtimePreviousItemUri =
+                                realtimeHistory[realtimeHistory.currentIndex - 1].uri
+
+                        }
+                        if (currentUrl == realtimePreviousItemUri) {
+                            Log.i(
+                                "GeckoHistoryLog",
+                                "realtimePreviousItem.uri: $realtimePreviousItemUri"
+                            )
                             Log.i("GeckoHistoryLog", "")
                             Log.w("GeckoHistoryLog", "Add new")
 
@@ -684,12 +978,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             )
                         }
                         var updatedHistoryState: SerializableBackForwardList? = null
-                        if (updatedHistory != null) {
-                            updatedHistoryState = SerializableBackForwardList(
-                                items = updatedHistory,
-                                currentIndex = updatedIndex
-                            )
-                        }
+                        updatedHistoryState = SerializableBackForwardList(
+                            items = updatedHistory,
+                            currentIndex = updatedIndex
+                        )
 
                         if (databaseHistory != updatedHistory) {
                             tabs[activeTabIndex.intValue] =
@@ -702,7 +994,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             }
                             // 1. LOG THE HISTORY LIST AS REQUESTED
                             Log.e("GeckoHistoryLog", "NEWWWWW")
-                            Log.d("GeckoHistoryLog", "Total items: ${brandNewHistory.items.size}")
+                            Log.d(
+                                "GeckoHistoryLog",
+                                "Total items: ${brandNewHistory.items.size}"
+                            )
                             Log.d(
                                 "GeckoHistoryLog",
                                 "Current index: ${brandNewHistory.currentIndex}"
@@ -720,6 +1015,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             }
         }
 
+
+        session.permissionDelegate = CustomPermissionDelegate { request ->
+            pendingPermissionRequest = request
+        }
 
         // You can add ChromeDelegate and PermissionDelegate here as well if needed
     }
@@ -936,7 +1235,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                         val coroutineScope = CoroutineScope(coroutineContext)
                                         val verticalDragThreshold =
                                             with(density) { overlayHeightPx * 2 }
-                                        val horizontalDragThreshold = with(density) { 40.dp.toPx() }
+                                        val horizontalDragThreshold =
+                                            with(density) { 40.dp.toPx() }
 
                                         awaitEachGesture {
                                             val down = awaitFirstDown(requireUnconsumed = false)
@@ -973,7 +1273,11 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                             -overlayHeightPx * 2,
                                                             0f
                                                         )
-                                                    coroutineScope.launch { offsetY.snapTo(newOffset) }
+                                                    coroutineScope.launch {
+                                                        offsetY.snapTo(
+                                                            newOffset
+                                                        )
+                                                    }
 
                                                     if (verticalDragDistance > verticalDragThreshold) {
                                                         // --- HAPTIC 1: Play a "pop" when the gesture first commits ---
@@ -1006,7 +1310,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                                                     } else {
                                                         // If finger moves back up, cancel the action and reset everything
-                                                        activeGestureAction = GestureNavAction.NONE
+                                                        activeGestureAction =
+                                                            GestureNavAction.NONE
                                                         horizontalDragAccumulator = 0f
                                                         commitHapticPlayed =
                                                             false // Reset the commit haptic flag
@@ -1017,7 +1322,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                 when (activeGestureAction) {
                                                     GestureNavAction.BACK -> if (canGoBack) {
                                                         tabs[activeTabIndex.intValue].historyState?.let { history ->
-                                                            val newIndex = history.currentIndex - 1
+                                                            val newIndex =
+                                                                history.currentIndex - 1
                                                             Log.i("GeckoHistoryLog", "NACK")
                                                             currentIndexValue = newIndex
 
@@ -1034,7 +1340,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                                                                 currentIndex = newIndex
                                                                             )
                                                                         )
-                                                                    tabs[activeTabIndex.intValue] = updatedTab
+                                                                    tabs[activeTabIndex.intValue] =
+                                                                        updatedTab
                                                                     saveTrigger++
 
                                                                 }
@@ -1049,7 +1356,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                                                     GestureNavAction.FORWARD -> if (canGoForward) {
                                                         tabs[activeTabIndex.intValue].historyState?.let { history ->
-                                                            val newIndex = history.currentIndex + 1
+                                                            val newIndex =
+                                                                history.currentIndex + 1
                                                             Log.i("GeckoHistoryLog", "FORWARD")
                                                             currentIndexValue = newIndex
                                                             history.items.getOrNull(newIndex)
@@ -1636,7 +1944,11 @@ fun OptionsPanel(
  * @param modifier The modifier to be applied to the overlay.
  */
 @Composable
-fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier, colorScheme: ColorScheme) {
+fun LoadingOverlay(
+    isLoading: Boolean,
+    modifier: Modifier = Modifier,
+    colorScheme: ColorScheme
+) {
     // Animate the appearance and disappearance of the overlay.
     AnimatedVisibility(
         visible = isLoading,
