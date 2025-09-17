@@ -21,14 +21,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
-import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -94,7 +89,6 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.edit
@@ -108,9 +102,7 @@ import kotlinx.serialization.json.Json
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import kotlin.collections.get
 import kotlin.coroutines.coroutineContext
-import kotlin.text.get
 
 
 private lateinit var webView: CustomWebView
@@ -160,7 +152,7 @@ class MainActivity : ComponentActivity() {
             setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
 
             // Add your JS interface
-            addJavascriptInterface(WebAppInterface(), "Android")
+//            addJavascriptInterface(WebAppInterface(), "Android")
 
         }
         setContent {
@@ -221,7 +213,7 @@ val LocalBrowserSettings = compositionLocalOf {
 enum class TabState {
     ACTIVE,      // The tab currently visible to the user
     BACKGROUND,  // A tab that is loaded but not visible
-    FROZEN       // A tab that needs to be reloaded when opened
+//    FROZEN       // A tab that needs to be reloaded when opened
 }
 
 // The data class for a single tab
@@ -251,19 +243,19 @@ class TabManager(context: Context) {
     private val prefs = context.getSharedPreferences("BrowserTabs", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true } // Lenient JSON parser
 
-    private val TABS_KEY = "tabs_list_json"
+    private val tabsKey = "tabs_list_json"
 
     fun saveTabs(tabs: List<Tab>) {
         // Convert the list of tabs into a single JSON string
         val jsonString = json.encodeToString(tabs)
         prefs.edit {
-            putString(TABS_KEY, jsonString)
+            putString(tabsKey, jsonString)
         }
         Log.d("TabManager", "Tabs saved.")
     }
 
     fun loadTabs(defaultUrl: String): MutableList<Tab> {
-        val jsonString = prefs.getString(TABS_KEY, null)
+        val jsonString = prefs.getString(tabsKey, null)
 
         return if (jsonString != null) {
             try {
@@ -395,23 +387,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val offsetY = remember { Animatable(0f) }
     var activeGestureAction by remember { mutableStateOf(GestureNavAction.NONE) }
     var overlayHeightPx by remember { mutableFloatStateOf(0f) }
-
-
-    // Example: When overlay is visible -> 150 + 0 = 150 padding.
-    val webViewPushDownOffset by remember {
-        derivedStateOf {
-            // We use coerceAtLeast(0f) to prevent any negative padding values
-            // during animation overscrolls.
-            with(density) {
-                (overlayHeightPx + offsetY.value).coerceAtLeast(0f).toDp()
-            }
-        }
-    }
-
-
-    var backButtonRect by remember { mutableStateOf(Rect.Zero) }
-    var refreshButtonRect by remember { mutableStateOf(Rect.Zero) }
-    var forwardButtonRect by remember { mutableStateOf(Rect.Zero) }
+    
 
     val hasDisplayCutout by rememberHasDisplayCutout()
 
@@ -509,7 +485,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
 
-    var colorScheme = ColorScheme(
+    val colorScheme = ColorScheme(
         backgroundColor = if (isSystemInDarkTheme()) Color.Black else Color.White,
         foregroundColor = if (isSystemInDarkTheme()) Color.White else Color.Black
     )
@@ -913,8 +889,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
                         }
-                        var updatedHistoryState: SerializableBackForwardList? = null
-                        updatedHistoryState = SerializableBackForwardList(
+                        val updatedHistoryState = SerializableBackForwardList(
                             items = updatedHistoryItems,
                             currentIndex = updatedIndex
                         )
@@ -1448,10 +1423,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 if (overlayHeightPx == 0f && measuredHeight > 0) {
                     overlayHeightPx = measuredHeight
                 }
-            },
-            onBackButtonBoundsChanged = { backButtonRect = it },
-            onRefreshButtonBoundsChanged = { refreshButtonRect = it },
-            onForwardButtonBoundsChanged = { forwardButtonRect = it }
+            }
         )
     }
 
@@ -1914,9 +1886,6 @@ fun GestureNavigationOverlay(
     canGoBack: Boolean,
     canGoForward: Boolean,
     onHeightMeasured: (Float) -> Unit,
-    onBackButtonBoundsChanged: (Rect) -> Unit,
-    onRefreshButtonBoundsChanged: (Rect) -> Unit,
-    onForwardButtonBoundsChanged: (Rect) -> Unit
 ) {
     val browserSettings = LocalBrowserSettings.current
 
@@ -1992,7 +1961,6 @@ fun GestureNavigationOverlay(
                     modifier = Modifier
                         .weight(backWeight) // Use the animated weight
                         .fillMaxHeight()
-                        .onGloballyPositioned { onBackButtonBoundsChanged(it.boundsInRoot()) }
                         .clip(RoundedCornerShape(browserSettings.cornerRadiusDp.dp))
                         .background(backColor)
                 ) {
@@ -2017,7 +1985,6 @@ fun GestureNavigationOverlay(
                     modifier = Modifier
                         .weight(refreshWeight) // Use the animated weight
                         .fillMaxHeight()
-                        .onGloballyPositioned { onRefreshButtonBoundsChanged(it.boundsInRoot()) }
                         .clip(RoundedCornerShape(browserSettings.cornerRadiusDp.dp))
                         .background(refreshColor)
                 ) {
@@ -2040,7 +2007,6 @@ fun GestureNavigationOverlay(
                     modifier = Modifier
                         .weight(forwardWeight) // Use the animated weight
                         .fillMaxHeight()
-                        .onGloballyPositioned { onForwardButtonBoundsChanged(it.boundsInRoot()) }
                         .clip(RoundedCornerShape(browserSettings.cornerRadiusDp.dp))
                         .background(forwardColor)
                 ) {
@@ -2067,19 +2033,19 @@ fun BrowserScreenPreview() {
 }
 
 
-class WebAppInterface() {
-    @JavascriptInterface
-    fun logBackgroundColor(colorString: String) {
-        // We need a robust way to parse the "rgb(r, g, b)" or "rgba(r, g, b, a)" string.
-        try {
-
-            Log.e("WebViewBackground", "Detected web page background color: $colorString")
-
-
-        } catch (e: Exception) {
-            // If parsing fails for any reason, log it but don't crash.
-            Log.e("WebAppInterface", "Failed to parse color string: $colorString", e)
-        }
-    }
-}
+//class WebAppInterface() {
+//    @JavascriptInterface
+//    fun logBackgroundColor(colorString: String) {
+//        // We need a robust way to parse the "rgb(r, g, b)" or "rgba(r, g, b, a)" string.
+//        try {
+//
+//            Log.e("WebViewBackground", "Detected web page background color: $colorString")
+//
+//
+//        } catch (e: Exception) {
+//            // If parsing fails for any reason, log it but don't crash.
+//            Log.e("WebAppInterface", "Failed to parse color string: $colorString", e)
+//        }
+//    }
+//}
 
