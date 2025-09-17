@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">browser</string>
+    <string name="oo_website">https://oo3.deno.dev/i</string>
 </resources>

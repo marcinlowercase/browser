@@ -117,6 +117,8 @@ private lateinit var webView: CustomWebView
 var databaseCurrentIndexHolder = -1
 var realtimePreviousIndexHolder = 0
 
+const val defaultUrl = "https://oo3.deno.dev/i"
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -206,7 +208,7 @@ val LocalBrowserSettings = compositionLocalOf {
         paddingDp = 8f,
         cornerRadiusDp = 24f,
         isInteractable = true,
-        defaultUrl = "https://www.google.com/",
+        defaultUrl = defaultUrl,
         animationSpeed = 300,
         singleLineHeight = 64,
         isDesktopMode = false,
@@ -333,8 +335,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 paddingDp = sharedPrefs.getFloat("padding_dp", 8f),
                 cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
                 isInteractable = sharedPrefs.getBoolean("is_interactable", true),
-                defaultUrl = sharedPrefs.getString("default_url", "https://www.google.com/")
-                    ?: "https://www.google.com/",
+                defaultUrl = sharedPrefs.getString("default_url", defaultUrl)
+                    ?: defaultUrl,
                 animationSpeed = sharedPrefs.getInt("animation_speed", 300),
                 singleLineHeight = sharedPrefs.getInt("single_line_height", 64),
                 isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
@@ -354,7 +356,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         mutableIntStateOf(tabs.indexOfFirst { it.state == TabState.ACTIVE }.coerceAtLeast(0))
     }
     val currentTab by remember {
-        derivedStateOf { tabs.getOrNull(activeTabIndex.value) }
+        derivedStateOf { tabs.getOrNull(activeTabIndex.intValue) }
     }
 
     var initialLoadDone by rememberSaveable { mutableStateOf(false) }
@@ -369,7 +371,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     var isImmersiveMode by remember { mutableStateOf(false) }
 
-    var isTraverseHistory by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var isFocusOnTextField by remember { mutableStateOf(false) }
 
@@ -800,6 +801,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                if (pendingPermissionRequest != null) pendingPermissionRequest = null
                 isLoading = true
 
             }
@@ -920,7 +922,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                             tabs[activeTabIndex.intValue] = tab.copy(historyState = updatedHistoryState)
 
-                            
+
                             val newDatabaseHistory = tabs[activeTabIndex.intValue].historyState
                             if (newDatabaseHistory == null) {
                                 return
