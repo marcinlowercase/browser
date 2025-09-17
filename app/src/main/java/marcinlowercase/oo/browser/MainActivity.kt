@@ -8,6 +8,7 @@ import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
@@ -112,6 +113,7 @@ var realtimePreviousIndexHolder = 0
 const val defaultUrl = "https://oo3.deno.dev/i"
 
 class MainActivity : ComponentActivity() {
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
