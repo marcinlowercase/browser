@@ -81,6 +81,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -486,10 +487,12 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         mutableStateOf<CustomPermissionRequest?>(null)
     }
 
+    val isDarkTheme = isSystemInDarkTheme()
+    val view = LocalView.current // Get the underlying view
 
     val colorScheme = ColorScheme(
-        backgroundColor = if (isSystemInDarkTheme()) Color.Black else Color.White,
-        foregroundColor = if (isSystemInDarkTheme()) Color.White else Color.Black
+        backgroundColor = if (isDarkTheme) Color.Black else Color.White,
+        foregroundColor = if (isDarkTheme) Color.White else Color.Black
     )
 
     val canGoBack by remember {
@@ -537,6 +540,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     //
 
     // This effect now ONLY handles the very first restoration of state.
+
 
     SideEffect {
         // The WebChromeClient handles UI-related browser events.
@@ -934,6 +938,16 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             }
         }
 
+    }
+
+    // This effect runs once and whenever isDarkTheme changes.
+    LaunchedEffect(isDarkTheme) {
+        val window = (view.context as Activity).window
+        val insetsController = WindowCompat.getInsetsController(window, view)
+
+        // true for light theme (dark icons), false for dark theme (light icons)
+        insetsController.isAppearanceLightStatusBars = !isDarkTheme
+        insetsController.isAppearanceLightNavigationBars = !isDarkTheme
     }
 
     LaunchedEffect(overlayHeightPx) {
