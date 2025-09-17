@@ -213,7 +213,7 @@ data class CustomPermissionRequest(
 val LocalBrowserSettings = compositionLocalOf {
     BrowserSettings(
         paddingDp = 8f,
-        cornerRadiusDp = 24f,
+        cornerRadiusDp = 60f,
         isInteractable = true,
         defaultUrl = defaultUrl,
         animationSpeed = 300,
@@ -433,7 +433,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         mutableStateOf(
             BrowserSettings(
                 paddingDp = sharedPrefs.getFloat("padding_dp", 8f),
-                cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 24f),
+                cornerRadiusDp = sharedPrefs.getFloat("corner_radius_dp", 60f),
                 isInteractable = sharedPrefs.getBoolean("is_interactable", true),
                 defaultUrl = sharedPrefs.getString("default_url", defaultUrl)
                     ?: defaultUrl,
@@ -955,16 +955,17 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 tabs[activeTabIndex.intValue].let { tab ->
 
                     var databaseHistory = tabs[activeTabIndex.intValue].historyState
-                    var updatedIndex = -99
 
                     if (databaseHistory == null) {
+                        val items = List(1) { SerializableHistoryItem(defaultUrl, "") }
                         databaseHistory = SerializableBackForwardList(
-                            items = emptyList(),
+                            items = items,
                             currentIndex = 0
                         )
-                    } else {
-                        updatedIndex = databaseHistory.currentIndex
                     }
+                    var updatedIndex: Int = databaseHistory.currentIndex
+
+
 
                     val realtimeHistory = view.copyBackForwardList()
                     // LOG
