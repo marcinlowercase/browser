@@ -91,7 +91,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -111,76 +110,18 @@ import java.nio.charset.StandardCharsets
 import kotlin.coroutines.coroutineContext
 import androidx.core.net.toUri
 
+//region Data Class
 
-private lateinit var webView: CustomWebView
-var databaseCurrentIndexHolder = -1
-var realtimePreviousIndexHolder = 0
+data class OptionItem(
+    val iconRes: Int, // The drawable resource ID for the icon
+    val contentDescription: String,
+    val onClick: () -> Unit,
+)
 
-const val defaultUrl = "https://oo3.deno.dev/i"
-
-
-
-class MainActivity : ComponentActivity() {
-    @SuppressLint("SetJavaScriptEnabled")
-    override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
-        super.onCreate(savedInstanceState)
-
-
-        webView = CustomWebView(this).apply {
-            // Force WebView to be transparent so Compose can control the background
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-
-            // Apply all your production-grade settings
-            // --- This initial setup block should contain ALL static settings ---
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                allowFileAccess = true
-                allowContentAccess = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                javaScriptCanOpenWindowsAutomatically = true
-                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    // Use the modern, non-deprecated API on Android 13+
-                    isAlgorithmicDarkeningAllowed = false
-                } else {
-                    // Use the deprecated API for older versions, suppressing the warning
-                    @Suppress("DEPRECATION")
-                    forceDark = WebSettings.FORCE_DARK_OFF
-                }
-
-                mediaPlaybackRequiresUserGesture = false
-
-
-                // CRITICAL: Zoom must be supported for overview mode to work reliably.
-                setSupportZoom(true)
-                builtInZoomControls = true
-                displayZoomControls = false // Hide the on-screen +/- buttons
-            }
-
-            // Enable remote debugging for debug builds
-            if (0 != (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE)) {
-                WebView.setWebContentsDebuggingEnabled(true)
-            }
-
-            // Ensure hardware acceleration
-            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
-
-            // Add your JS interface
-//            addJavascriptInterface(WebAppInterface(), "Android")
-
-        }
-        setContent {
-            BrowserTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    BrowserScreen()
-                }
-            }
-        }
-
-    }
-}
+data class ColorScheme(
+    val backgroundColor: Color,
+    val foregroundColor: Color
+)
 data class BrowserSettings(
     val paddingDp: Float,
     val cornerRadiusDp: Float,
@@ -395,6 +336,81 @@ class CustomWebView(context: Context) : WebView(context) {
 //        return super.startActionMode(callback, type)
 //    }
 }
+//endregion
+
+//region Constants
+private lateinit var webView: CustomWebView
+var databaseCurrentIndexHolder = -1
+var realtimePreviousIndexHolder = 0
+
+const val defaultUrl = "https://oo3.deno.dev/i"
+//endregion
+
+
+//region Composable
+
+
+class MainActivity : ComponentActivity() {
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+
+
+        webView = CustomWebView(this).apply {
+            // Force WebView to be transparent so Compose can control the background
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+
+            // Apply all your production-grade settings
+            // --- This initial setup block should contain ALL static settings ---
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                allowFileAccess = true
+                allowContentAccess = true
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                javaScriptCanOpenWindowsAutomatically = true
+                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    // Use the modern, non-deprecated API on Android 13+
+                    isAlgorithmicDarkeningAllowed = false
+                } else {
+                    // Use the deprecated API for older versions, suppressing the warning
+                    @Suppress("DEPRECATION")
+                    forceDark = WebSettings.FORCE_DARK_OFF
+                }
+
+                mediaPlaybackRequiresUserGesture = false
+
+
+                // CRITICAL: Zoom must be supported for overview mode to work reliably.
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false // Hide the on-screen +/- buttons
+            }
+
+            // Enable remote debugging for debug builds
+            if (0 != (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE)) {
+                WebView.setWebContentsDebuggingEnabled(true)
+            }
+
+            // Ensure hardware acceleration
+            setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+
+            // Add your JS interface
+//            addJavascriptInterface(WebAppInterface(), "Android")
+
+        }
+        setContent {
+            BrowserTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    BrowserScreen()
+                }
+            }
+        }
+
+    }
+}
 
 @Composable
 fun rememberHasDisplayCutout(): State<Boolean> {
@@ -425,7 +441,8 @@ fun rememberHasDisplayCutout(): State<Boolean> {
 @Composable
 fun BrowserScreen(modifier: Modifier = Modifier) {
 
-    /// VARIABLES
+
+    //region Variables
     val context = LocalContext.current
     val sharedPrefs =
         remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
@@ -492,7 +509,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val offsetY = remember { Animatable(0f) }
     var activeGestureAction by remember { mutableStateOf(GestureNavAction.NONE) }
     var overlayHeightPx by remember { mutableFloatStateOf(0f) }
-    
+
 
     val hasDisplayCutout by rememberHasDisplayCutout()
 
@@ -624,23 +641,23 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     )
 
-
+    //endregion
     // FUNCTIONS
 
 
+    //region Functions
     // This function will be our single, safe way to update settings.
     val updateBrowserSettings = { newSettings: BrowserSettings ->
         browserSettings = newSettings
         Log.e("updateBrowserSettings", browserSettings.toString())
     }
 
-    // LAUNCH EFFECTS
-    //
+    //endregion
+
 
     // This effect now ONLY handles the very first restoration of state.
 
     SideEffect {
-
         // The WebChromeClient handles UI-related browser events.
         webView.webChromeClient = object : WebChromeClient() {
 
@@ -1081,6 +1098,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     }
 
+
+    //region LaunchedEffect
+
     // This effect runs once and whenever isDarkTheme changes.
     LaunchedEffect(isDarkTheme) {
         val window = (view.context as Activity).window
@@ -1192,13 +1212,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         // We can command our WebView to update its layout.
         webView.requestLayout()
     }
-//
-//    LaunchedEffect(url) {
-//        if (webView.url != url) {
-//            webView.loadUrl(url)
-//        }
-//    }
 
+    //endregion
     BackHandler(enabled = !isUrlBarVisible || canGoBack) {
         when {
             // Priority 1: Exit fullscreen video if it's active.
@@ -1240,8 +1255,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-
-    //
     //
     //
     // LAYOUT
@@ -1304,6 +1317,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             )
                         }
 
+
+                        // OverlayBox
                         if (!browserSettings.isInteractable) {
                             Box(
                                 modifier = Modifier
@@ -1498,7 +1513,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             )
 
                         }
-
                         LoadingOverlay(isLoading = isLoading, colorScheme = colorScheme)
                     }
 
@@ -1865,16 +1879,7 @@ fun PermissionPanel(
 }
 
 
-data class OptionItem(
-    val iconRes: Int, // The drawable resource ID for the icon
-    val contentDescription: String,
-    val onClick: () -> Unit,
-)
 
-data class ColorScheme(
-    val backgroundColor: Color,
-    val foregroundColor: Color
-)
 
 @Composable
 fun OptionsPanel(
@@ -1995,13 +2000,6 @@ fun OptionsPanel(
     }
 }
 
-/**
- * A semi-transparent overlay with a circular progress indicator that appears
- * on top of other content.
- *
- * @param isLoading Controls the visibility of the overlay.
- * @param modifier The modifier to be applied to the overlay.
- */
 @Composable
 fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier, colorScheme: ColorScheme) {
     // Animate the appearance and disappearance of the overlay.
@@ -2179,11 +2177,6 @@ fun GestureNavigationOverlay(
     }
 }
 
-@Composable
-@Preview(showBackground = true)
-fun BrowserScreenPreview() {
-    BrowserTheme {
-        BrowserScreen()
-    }
-}
 
+
+//endregion
