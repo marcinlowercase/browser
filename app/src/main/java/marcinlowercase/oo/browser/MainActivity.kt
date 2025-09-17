@@ -15,6 +15,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.Patterns
@@ -117,6 +118,8 @@ var realtimePreviousIndexHolder = 0
 
 const val defaultUrl = "https://oo3.deno.dev/i"
 
+
+
 class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -128,8 +131,6 @@ class MainActivity : ComponentActivity() {
             // Force WebView to be transparent so Compose can control the background
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
 
-//            updateWebViewSettings(this, browserSettings.isDesktopMode)
-
             // Apply all your production-grade settings
             // --- This initial setup block should contain ALL static settings ---
             settings.apply {
@@ -140,6 +141,14 @@ class MainActivity : ComponentActivity() {
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 javaScriptCanOpenWindowsAutomatically = true
                 cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    // Use the modern, non-deprecated API on Android 13+
+                    isAlgorithmicDarkeningAllowed = false
+                } else {
+                    // Use the deprecated API for older versions, suppressing the warning
+                    @Suppress("DEPRECATION")
+                    forceDark = WebSettings.FORCE_DARK_OFF
+                }
 
                 mediaPlaybackRequiresUserGesture = false
 
@@ -172,7 +181,6 @@ class MainActivity : ComponentActivity() {
 
     }
 }
-
 data class BrowserSettings(
     val paddingDp: Float,
     val cornerRadiusDp: Float,
@@ -292,8 +300,101 @@ class TabManager(context: Context) {
     }
 }
 
-class CustomWebView(context: Context) : WebView(context)
 
+class CustomWebView(context: Context) : WebView(context) {
+//
+//
+//    override fun startActionMode(
+//        callback: ActionMode.Callback,
+//        type: Int
+//    ): ActionMode? {
+//        // Create a custom callback that does just enough to keep the mode alive
+//        // for text highlighting, but never shows a menu.
+//        val customCallback = object : ActionMode.Callback {
+//            /**
+//             * MUST return true. This tells the system to create the ActionMode,
+//             * which is what enables the text highlighting.
+//             */
+//            override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+//                callback.onCreateActionMode(mode, menu)
+//                return true
+//            }
+//
+//            /**
+//
+//             * This is the key. By returning false, we tell the system "Don't
+//             * prepare or show the menu UI". The mode stays active in the background,
+//             * but the user never sees the floating toolbar.
+//             */
+//            override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+//                // Let the default callback prepare the menu.
+//                callback.onPrepareActionMode(mode, menu)
+//
+//                // --- OUR CUSTOM LOGIC STARTS HERE ---
+//
+//                var translateItem: MenuItem? = null
+//                var itemIndex = -1
+//
+//                // 1. Find the "Translate" item
+//                for (i in 0 until menu.size()) {
+//                    val item = menu[i]
+//                    if (item.title.toString().equals("Translate", ignoreCase = true)) {
+//                        translateItem = item
+//                        itemIndex = i
+//                        break // Stop searching once we've found it
+//                    }
+//                }
+//
+//                // 2. If we found it, move it to the front
+//                if (translateItem != null) {
+//                    // a. Store all of its original properties
+//                    val originalTitle: CharSequence? = translateItem.title
+//                    val originalIcon: Drawable? = translateItem.icon
+//                    val originalIntent: Intent? = translateItem.intent
+//                    val originalGroupId: Int = translateItem.groupId
+//                    val originalItemId: Int = translateItem.itemId
+//
+//                    // b. Remove the item from its original position
+//                    menu.removeItem(originalItemId)
+//
+//                    // c. Re-add the item at the very beginning of the menu
+//                    val newTranslateItem = menu.add(
+//                        originalGroupId,
+//                        originalItemId,
+//                        Menu.FIRST, // This is the key to forcing it to the front
+//                        originalTitle
+//                    )
+//
+//                    // d. Restore its original intent and icon
+//                    newTranslateItem.intent = originalIntent
+//                    newTranslateItem.icon = originalIcon
+//                }
+//
+//                // --- OUR CUSTOM LOGIC ENDS HERE ---
+//
+//                // **CRUCIAL**: Return true to allow the system to draw the
+//                // now-modified menu. Returning false would hide it.
+//                return true
+//            }
+//
+//            // These methods won't be called since there are no menu items,
+//            // but we must implement them.
+//            override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+//                return callback.onActionItemClicked(mode, item)
+//            }
+//
+//            override fun onDestroyActionMode(mode: ActionMode) {
+//                // No action needed here. Our JavaScript handles hiding the
+//                // custom Compose menu when the user clicks away.
+//                callback.onDestroyActionMode(mode)
+//
+//            }
+//        }
+//
+//        // We start the action mode, but we pass OUR custom callback, not the original one.
+//        return super.startActionMode(callback, type)
+//    }
+}
 
 @Composable
 fun rememberHasDisplayCutout(): State<Boolean> {
@@ -509,10 +610,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    LaunchedEffect(canGoBack, canGoForward) {
-        Log.e("doUpdateVisitedHistory", "canGoBack: $canGoBack, canGoForward: $canGoForward")
-    }
-
     databaseCurrentIndexHolder = tabs[activeTabIndex.intValue].historyState?.currentIndex ?: 0
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -542,8 +639,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
     // This effect now ONLY handles the very first restoration of state.
 
-
     SideEffect {
+
         // The WebChromeClient handles UI-related browser events.
         webView.webChromeClient = object : WebChromeClient() {
 
@@ -792,6 +889,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             override fun onPageFinished(view: WebView?, currentUrlString: String?) {
                 super.onPageFinished(view, currentUrlString)
                 isLoading = false
+
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -943,6 +1041,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         if (databaseHistory != updatedHistoryState) {
 
                             tabs[activeTabIndex.intValue] = tab.copy(historyState = updatedHistoryState)
+                            saveTrigger++
 
 
                             val newDatabaseHistory = tabs[activeTabIndex.intValue].historyState
@@ -1401,8 +1500,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                         LoadingOverlay(isLoading = isLoading, colorScheme = colorScheme)
                     }
-
-
 
                     PermissionPanel(
                         colorScheme = colorScheme,
@@ -2088,21 +2185,4 @@ fun BrowserScreenPreview() {
         BrowserScreen()
     }
 }
-
-
-//class WebAppInterface() {
-//    @JavascriptInterface
-//    fun logBackgroundColor(colorString: String) {
-//        // We need a robust way to parse the "rgb(r, g, b)" or "rgba(r, g, b, a)" string.
-//        try {
-//
-//            Log.e("WebViewBackground", "Detected web page background color: $colorString")
-//
-//
-//        } catch (e: Exception) {
-//            // If parsing fails for any reason, log it but don't crash.
-//            Log.e("WebAppInterface", "Failed to parse color string: $colorString", e)
-//        }
-//    }
-//}
 

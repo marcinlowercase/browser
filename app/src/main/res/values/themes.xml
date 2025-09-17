@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Browser" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Browser" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:textColorHighlight">@color/webview_highlight_color</item>
+        <item name="android:colorControlActivated">@color/webview_highlight_color</item>
+        <item name="android:textCursorDrawable">@drawable/text_cursor</item>
+        <item name="android:textColorHighlightInverse">@color/webview_highlight_color</item>
+
+    </style>
 </resources>

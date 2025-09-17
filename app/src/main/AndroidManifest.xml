@@ -15,6 +15,12 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
 
+    <queries>
+        <package android:name="com.google.android.apps.translate" />
+        <package android:name="ai.perplexity.app.android" />
+        <package android:name="com.openai.chatgpt" />
+    </queries>
+
 
     <application
         android:allowBackup="true"
