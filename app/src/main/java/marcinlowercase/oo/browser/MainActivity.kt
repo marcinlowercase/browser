@@ -11,6 +11,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
@@ -25,6 +26,7 @@ import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
 import androidx.compose.ui.layout.onGloballyPositioned
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -102,9 +104,11 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
+import java.net.URISyntaxException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlin.coroutines.coroutineContext
+import androidx.core.net.toUri
 
 
 private lateinit var webView: CustomWebView
@@ -350,9 +354,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val activeTabIndex = remember {
         mutableIntStateOf(tabs.indexOfFirst { it.state == TabState.ACTIVE }.coerceAtLeast(0))
     }
-    val currentTab by remember {
-        derivedStateOf { tabs.getOrNull(activeTabIndex.intValue) }
-    }
 
     var initialLoadDone by rememberSaveable { mutableStateOf(false) }
 
@@ -360,7 +361,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(currentTab?.currentUrl ?: "", TextRange(0)))
+        mutableStateOf(TextFieldValue(tabs[activeTabIndex.intValue].currentUrl ?: "", TextRange(0)))
     }
 
 
@@ -509,7 +510,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(canGoBack, canGoForward) {
-        Log.e("WebViewURL", "canGoBack: $canGoBack, canGoForward: $canGoForward")
+        Log.e("doUpdateVisitedHistory", "canGoBack: $canGoBack, canGoForward: $canGoForward")
     }
 
     databaseCurrentIndexHolder = tabs[activeTabIndex.intValue].historyState?.currentIndex ?: 0
@@ -793,19 +794,59 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 isLoading = false
             }
 
-//            override fun shouldInterceptRequest(
-//                view: WebView?,
-//                request: WebResourceRequest?
-//            ): WebResourceResponse? {
-//                request?.requestHeaders?.put("Origin", currentTab?.currentUrl)
-//                return super.shouldInterceptRequest(view, request)
-//            }
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url ?: return false
+                val urlString = url.toString()
+
+                if (url.scheme == "http" || url.scheme == "https" ) {
+                    return false // Let the WebView handle normal web links
+                }
+
+                if (url.scheme == "intent") {
+                    try {
+                        val intent = Intent.parseUri(urlString, Intent.URI_INTENT_SCHEME)
+                        view?.context?.startActivity(intent)
+                    } catch (e: Exception) {
+                        Log.w("shouldOverrideUrlLoading", "Could not handle intent, trying fallback", e)
+                        val packageName = try {
+                            Intent.parseUri(urlString, Intent.URI_INTENT_SCHEME).`package`
+                        } catch (parseEx: URISyntaxException) {
+                            Log.e("shouldOverrideUrlLoading", "Could not get package name from intent", parseEx)
+                            null
+                        }
+
+                        if (packageName != null) {
+                            try {
+                                val marketIntent = Intent(Intent.ACTION_VIEW, "market://details?id=$packageName".toUri())
+                                view?.context?.startActivity(marketIntent)
+                                view?.goBack()
+                            } catch (marketError: Exception) {
+                                Log.e("shouldOverrideUrlLoading", "Could not open Play Store for package: $packageName", marketError)
+                            }
+                        }
+                    }
+                    return true // We've handled the intent
+                }
+
+                // Handle other simple schemes like market://, mailto:// etc.
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, url)
+                    // DO NOT add FLAG_ACTIVITY_NEW_TASK
+                    view?.context?.startActivity(intent)
+
+                    // Immediately go back to the previous page
+                    view?.goBack()
+                } catch (e: Exception) {
+                    Log.w("WebView", "No app found to handle URL: $urlString", e)
+                }
+                return true
+            }
 
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
-                Log.i("WebViewURL", "<<<<<<<<<<<<<<<<")
-                Log.i("WebViewURL", "<<<<<<<<<<<<<<<<")
-                Log.i("WebViewURL", "URL updated: $url")
-                Log.i("WebViewURL", "isReload: $isReload")
+                Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
+                Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
+                Log.i("doUpdateVisitedHistory", "URL updated: $url")
+                Log.i("doUpdateVisitedHistory", "isReload: $isReload")
                 if (!isFocusOnTextField) webView.url?.let {
                     textFieldValue = TextFieldValue(it, TextRange(it.length))
                 }
@@ -829,23 +870,23 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                     val realtimeHistory = view.copyBackForwardList()
                     // LOG
-                    Log.w("WebViewURL", "Realtime History:")
-                    Log.i("WebViewURL", "Current Index ${realtimeHistory.currentIndex}")
+                    Log.w("doUpdateVisitedHistory", "Realtime History:")
+                    Log.i("doUpdateVisitedHistory", "Current Index ${realtimeHistory.currentIndex}")
                     for (i in 0 until realtimeHistory.size) {
                         val item = realtimeHistory.getItemAtIndex(i)
                         val marker = if (realtimeHistory.currentIndex == i) " << Current" else " "
-                        Log.i("WebViewURL", "$i. URL: ${item.url} $marker")
+                        Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
                     }
 
-                    Log.w("WebViewURL", "Database History:")
-                    Log.i("WebViewURL", "Current Index ${databaseHistory.currentIndex}")
+                    Log.w("doUpdateVisitedHistory", "Database History:")
+                    Log.i("doUpdateVisitedHistory", "Current Index ${databaseHistory.currentIndex}")
 
                     for (i in 0 until databaseHistory.items.size) {
                         val item = databaseHistory.items[i]
                         val marker = if (databaseHistory.currentIndex == i) " << Current" else " "
-                        Log.i("WebViewURL", "$i. URL: ${item.url} $marker")
+                        Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
                     }
-                    Log.i("WebViewURL", "")
+                    Log.i("doUpdateVisitedHistory", "")
 
                     val databaseCurrentItemUrl = databaseHistory.items[databaseHistory.currentIndex].url
                     val realtimeCurrentItemUrl = realtimeHistory.getItemAtIndex(realtimeHistory.currentIndex).url
@@ -853,7 +894,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     var updatedHistoryItems = databaseHistory.items.toMutableList()
 
                     if (databaseCurrentItemUrl == realtimeCurrentItemUrl) {
-                        Log.e("WebViewURL", "Same URl - Do Nothing")
+                        Log.e("doUpdateVisitedHistory", "Same URl - Do Nothing")
                         isNavigateInProgress = false
                         return
                     } else {
@@ -864,7 +905,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
 
                         if (databaseCurrentItemUrl == realtimePreviousItemUrl) {
-                            Log.e("WebViewURL", "Add new url to database")
+                            Log.e("doUpdateVisitedHistory", "Add new url to database")
                             if (databaseHistory.currentIndex < databaseHistory.items.lastIndex) {
                                 updatedHistoryItems = databaseHistory.items.subList(0, databaseHistory.currentIndex + 1).toMutableList()
                             }
@@ -879,14 +920,14 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                         } else {
 
-                            Log.e("WebViewURL", "realTimePreviousItemUrl: $realtimePreviousIndexHolder")
-                            Log.e("WebViewURL", "databaseCurrentItemUrl: ${realtimeHistory.currentIndex}")
+                            Log.e("doUpdateVisitedHistory", "realTimePreviousItemUrl: $realtimePreviousIndexHolder")
+                            Log.e("doUpdateVisitedHistory", "databaseCurrentItemUrl: ${realtimeHistory.currentIndex}")
                             if (realtimePreviousIndexHolder > realtimeHistory.currentIndex) {
-                                Log.e("WebViewURL", "Back by Webview")
+                                Log.e("doUpdateVisitedHistory", "Back by Webview")
 
                                 updatedIndex--
                             } else {
-                                Log.e("WebViewURL", "Update existing url in database")
+                                Log.e("doUpdateVisitedHistory", "Update existing url in database")
                                 updatedHistoryItems[updatedIndex] = SerializableHistoryItem(
                                     url = realtimeCurrentItemUrl,
                                     title = realtimeHistory.currentItem?.title ?: ""
@@ -908,23 +949,23 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                             if (newDatabaseHistory == null) {
                                 return
                             }
-                            Log.w("WebViewURL", "NEW Database History:")
-                            Log.i("WebViewURL", "Current Index ${newDatabaseHistory.currentIndex}")
+                            Log.w("doUpdateVisitedHistory", "NEW Database History:")
+                            Log.i("doUpdateVisitedHistory", "Current Index ${newDatabaseHistory.currentIndex}")
 
                             for (i in 0 until newDatabaseHistory.items.size) {
                                 val item = newDatabaseHistory.items[i]
                                 val marker = if (newDatabaseHistory.currentIndex == i) " << Current" else " "
-                                Log.i("WebViewURL", "$i. URL: ${item.url} $marker")
+                                Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
                             }
-                            Log.i("WebViewURL", "")
+                            Log.i("doUpdateVisitedHistory", "")
 
                         }
                     }
 
 
-                    Log.i("WebViewURL", ">>>>>>>>>>>>>>>")
-                    Log.i("WebViewURL", "")
-                    Log.i("WebViewURL", "")
+                    Log.i("doUpdateVisitedHistory", ">>>>>>>>>>>>>>>")
+                    Log.i("doUpdateVisitedHistory", "")
+                    Log.i("doUpdateVisitedHistory", "")
 
                     realtimePreviousIndexHolder =  realtimeHistory.currentIndex
                 }
@@ -1383,8 +1424,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
                     )
                     BottomPanel(
-
-                        currentTab = currentTab,
+                        activeTabIndex = activeTabIndex,
+                        tabs = tabs,
                         colorScheme = colorScheme,
                         isImmersiveMode = isImmersiveMode,
                         isUrlBarVisible = isUrlBarVisible,
@@ -1448,7 +1489,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
-    currentTab: Tab?,
+    activeTabIndex: MutableState<Int>,
+    tabs: List<Tab>,
     colorScheme: ColorScheme,
     isImmersiveMode: Boolean,
     isUrlBarVisible: Boolean,
@@ -1514,7 +1556,7 @@ fun BottomPanel(
                     keyboardActions = KeyboardActions(
                         onGo = {
                             val input = textFieldValue.text.trim()
-                            val resetUrl = currentTab?.currentUrl ?: ""
+                            val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
 
                             if (input.isBlank()) {
                                 changeTextFieldValue(
@@ -1523,7 +1565,6 @@ fun BottomPanel(
                                         TextRange(resetUrl.length)
                                     )
                                 )
-//                                changeTextFieldValue(TextFieldValue(url, TextRange(url.length)))
                                 focusManager.clearFocus()
                                 keyboardController?.hide()
                                 return@KeyboardActions
@@ -1566,7 +1607,7 @@ fun BottomPanel(
                         .fillMaxWidth()
                         //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
                         .onFocusChanged {
-                            val resetUrl = currentTab?.currentUrl ?: ""
+                            val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
                             setIsFocusOnTextField(it.isFocused)
                             if (it.isFocused) {
 
@@ -1589,7 +1630,7 @@ fun BottomPanel(
                         .pointerInput(Unit) {
                             detectHorizontalDragGestures { _, dragAmount ->
                                 if (dragAmount > 0) {
-                                    val resetUrl = currentTab?.currentUrl ?: ""
+                                    val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
                                     changeTextFieldValue(
                                         TextFieldValue(
                                             resetUrl,
