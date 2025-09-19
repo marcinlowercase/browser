@@ -47,12 +47,16 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -1197,10 +1201,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     //region LaunchedEffect
-     LaunchedEffect(isUrlBarVisible, isPermissionPanelVisible) {
-         isBottomPanelVisible = isUrlBarVisible || isPermissionPanelVisible
-         Log.i("VisibleState", "isBottomPanelVisible: $isBottomPanelVisible")
-     }
+    LaunchedEffect(isUrlBarVisible, isPermissionPanelVisible) {
+        isBottomPanelVisible = isUrlBarVisible || isPermissionPanelVisible
+        Log.i("VisibleState", "isBottomPanelVisible: $isBottomPanelVisible")
+    }
 
 
     LaunchedEffect(pendingPermissionRequest) {
@@ -1212,7 +1216,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             // -- The URL bar has just been hidden. Start the "show and blink" sequence. --
 
             // a. Instantly appear with 0.6 opacity.
-            squareAlpha.snapTo(0.6f)
+            squareAlpha.snapTo(0.7f)
 
             // b. Wait a moment so the user can see it before it blinks.
             delay(400)
@@ -1220,16 +1224,16 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
             // c. Blink twice.
             repeat(2) {
                 // Fade out
-                squareAlpha.animateTo(0.9f, animationSpec = tween(durationMillis = 300))
+                squareAlpha.animateTo(0f, animationSpec = tween(durationMillis = 300))
                 // Fade back in
-                squareAlpha.animateTo(0.6f, animationSpec = tween(durationMillis = 300))
+                squareAlpha.animateTo(0.7f, animationSpec = tween(durationMillis = 300))
             }
 
             // d. After blinking, fade out completely.
-            squareAlpha.animateTo(0.9f, animationSpec = tween(durationMillis = 400))
+            squareAlpha.animateTo(0f, animationSpec = tween(durationMillis = 400))
         } else {
             // -- The URL bar is visible. Ensure the square is fully transparent. --
-            squareAlpha.snapTo(0.9f)
+            squareAlpha.snapTo(0f)
         }
     }
     // This effect runs once and whenever isDarkTheme changes.
@@ -1378,7 +1382,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 modifier = modifier
                     .fillMaxSize()
                     .padding(
-                        bottom = animatedSystemBarBottom
+                        bottom = cutoutBottom
                     )
             ) {
 
@@ -1682,9 +1686,9 @@ fun BottomPanel(
                 visible = isUrlBarVisible,
 //                enter = fadeIn(animationSpec = tween(browserSettings.animationSpeed)),
 //                exit = fadeOut(animationSpec = tween(browserSettings.animationSpeed))
-        enter = expandVertically(tween(browserSettings.animationSpeed)),
-        exit = shrinkVertically(tween(browserSettings.animationSpeed))
-            )  {
+                enter = expandVertically(tween(browserSettings.animationSpeed)) + fadeIn(tween(browserSettings.animationSpeed)),
+                exit = shrinkVertically(tween(browserSettings.animationSpeed)) +  fadeOut(tween(browserSettings.animationSpeed))
+            ) {
                 Row(
                     modifier = Modifier
                         .pointerInput(Unit) {
@@ -1841,7 +1845,6 @@ fun BottomPanel(
                 }
             }
 
-
             // SETTING OPTIONS
             OptionsPanel(
                 colorScheme = colorScheme,
@@ -1891,7 +1894,7 @@ fun PermissionPanel(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = browserSettings.paddingDp.dp),
+                    .padding( browserSettings.paddingDp.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
 
