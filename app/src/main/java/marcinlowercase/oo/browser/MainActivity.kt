@@ -2,8 +2,6 @@ package marcinlowercase.oo.browser
 
 import kotlinx.serialization.Serializable
 import androidx.compose.animation.core.Animatable
-import androidx.compose.ui.unit.IntOffset
-import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
 import android.Manifest
@@ -14,7 +12,6 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
-import android.graphics.Shader
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -26,7 +23,6 @@ import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
-import androidx.compose.ui.layout.onGloballyPositioned
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -42,33 +38,28 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.EaseIn
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.gestures.snapping.SnapPosition
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -77,15 +68,16 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RenderEffect
-import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -101,7 +93,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -116,7 +108,10 @@ import java.net.URISyntaxException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import androidx.core.net.toUri
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.coroutines.coroutineContext
 
 
 //region Global Variables
@@ -131,21 +126,32 @@ const val default_url = "https://oo3.deno.dev/i"
 //region Global Functions
 
 fun cornerRadiusForLayer(layer: Int, deviceCornerRadius: Float = 0f, padding: Float = 0f): Float {
-    var result = 0.0f
+
     if (layer == 0) {
         return deviceCornerRadius
     }
-
-    result = (cornerRadiusForLayer(layer - 1, deviceCornerRadius, padding) - padding)
-
-    Log.i("CornerRadius", "Layer: $layer, Result: $result")
-
-    return result
+    return (cornerRadiusForLayer(layer - 1, deviceCornerRadius, padding) - padding)
 }
 
 //endregion
 
 //region Data Class
+
+// A sealed interface to represent any type of JS Dialog
+sealed interface JsDialogState
+
+// Represents the "OK" button dialog from window.alert()
+data class JsAlert(val message: String) : JsDialogState
+
+// Represents the "OK" / "Cancel" dialog from window.confirm()
+data class JsConfirm(val message: String, val onResult: (Boolean) -> Unit) : JsDialogState
+
+// Represents the text input dialog from window.prompt()
+data class JsPrompt(
+    val message: String,
+    val defaultValue: String,
+    val onResult: (String?) -> Unit
+) : JsDialogState
 
 data class OptionItem(
     val iconRes: Int, // The drawable resource ID for the icon
@@ -274,6 +280,7 @@ class CustomWebView(context: Context) : WebView(context) {
     /**
      * This method is called for every touch event on the WebView.
      */
+    @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent?): Boolean {
         // 2. We only care about the beginning of a touch gesture.
         if (event?.action == MotionEvent.ACTION_DOWN) {
@@ -528,18 +535,20 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
 
-    var textFieldHeightPx by remember { mutableIntStateOf(0) }
     // Density is needed to convert Px to Dp
-    val density = LocalDensity.current
-    val hapticFeedback = LocalHapticFeedback.current // <-- ADD THIS LINE
 
-
-    // Convert the pixel height to Dp
-    val textFieldHeightDp = with(density) { textFieldHeightPx.toDp() }
 
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
     var isPermissionPanelVisible by rememberSaveable { mutableStateOf(false) }
     var isBottomPanelVisible by rememberSaveable { mutableStateOf(true) }
+    var isPromptPanelVisible by rememberSaveable { mutableStateOf(false) }
+
+
+    var isNavPanelVisible by remember { mutableStateOf(false) }
+    var activeNavAction by remember { mutableStateOf(GestureNavAction.REFRESH) }
+
+
+    val hapticFeedback = LocalHapticFeedback.current
 
     var isNavigateInProgress by rememberSaveable { mutableStateOf(false) }
 
@@ -547,7 +556,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     var isOptionsPanelVisible by rememberSaveable { mutableStateOf(false) }
 
     val offsetY = remember { Animatable(0f) }
-    var activeGestureAction by remember { mutableStateOf(GestureNavAction.NONE) }
     var overlayHeightPx by remember { mutableFloatStateOf(0f) }
 
 
@@ -563,82 +571,16 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         targetValue = if (hasDisplayCutout) browserSettings.deviceCornerRadius.dp else 0.dp,
         label = "Corner Radius Animation",
     )
-    val isKeyboardVisibleForPadding =
-        WindowInsets.ime.asPaddingValues().calculateBottomPadding() > 0.dp
 
     // 1. Get the raw cutout padding values.
     val cutoutPaddingValues = WindowInsets.displayCutout.asPaddingValues()
     val cutoutTop = cutoutPaddingValues.calculateTopPadding()
-    val cutoutStart = cutoutPaddingValues.calculateLeftPadding(LayoutDirection.Ltr)
-    val cutoutEnd = cutoutPaddingValues.calculateRightPadding(LayoutDirection.Ltr)
     val cutoutBottom = cutoutPaddingValues.calculateBottomPadding()
-
-    // 2. Create animated states for each cutout dimension.
-    //    They will animate to the cutout value ONLY when isUrlBarVisible is false.
-    val animatedCutoutTop by animateDpAsState(
-        targetValue = if (!isUrlBarVisible) cutoutTop else 0.dp,
-        animationSpec = tween(browserSettings.animationSpeed),
-        label = "Cutout Top Animation"
-    )
-    val animatedCutoutStart by animateDpAsState(
-        targetValue = if (!isUrlBarVisible) cutoutStart else 0.dp,
-        animationSpec = tween(browserSettings.animationSpeed),
-        label = "Cutout Start Animation"
-    )
-    val animatedCutoutEnd by animateDpAsState(
-        targetValue = if (!isUrlBarVisible) cutoutEnd else 0.dp,
-        animationSpec = tween(browserSettings.animationSpeed),
-        label = "Cutout End Animation"
-    )
-    val animatedCutoutBottom by animateDpAsState(
-        targetValue = if (!isUrlBarVisible) cutoutBottom else 0.dp,
-        animationSpec = tween(browserSettings.animationSpeed),
-        label = "Cutout Bottom Animation"
-    )
-
-    var staticSystemBarBottom by remember { mutableStateOf(0.dp) }
-    var staticSystemBarTop by remember { mutableStateOf(0.dp) }
-
-    // Get the raw system bar padding values.
-    val currentSystemBarInsets = WindowInsets.systemBars.asPaddingValues()
-    val currentSystemBarTop = currentSystemBarInsets.calculateTopPadding()
-    val currentSystemBarBottom = currentSystemBarInsets.calculateBottomPadding()
-
-    if (staticSystemBarBottom == 0.dp && currentSystemBarBottom > 0.dp) {
-        staticSystemBarBottom = currentSystemBarBottom
-    }
-
-    if (staticSystemBarTop == 0.dp && currentSystemBarTop > 0.dp) {
-        staticSystemBarTop = currentSystemBarTop
-    }
-
-    val animatedBottomPadding by animateDpAsState(
-        targetValue = if (isKeyboardVisibleForPadding) browserSettings.paddingDp.dp else cutoutBottom,
-        animationSpec = if (!isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
-            0
-        ), // Always animate smoothly
-        label = "SystemBar Bottom Animation"
-    )
-    // Create animated states for the system bar insets.
-    val animatedSystemBarTop by animateDpAsState(
-        targetValue = if (isUrlBarVisible) staticSystemBarTop else 0.dp,
-        animationSpec = if (hasDisplayCutout) tween(browserSettings.animationSpeed) else snap(0), // Always animate smoothly for cutout and snap for full screen
-        label = "SystemBar Top Animation"
-    )
 
 
     var pendingPermissionRequest by remember {
         mutableStateOf<CustomPermissionRequest?>(null)
     }
-
-    val animatedSystemBarBottom by animateDpAsState(
-        targetValue = if (pendingPermissionRequest == null) cutoutBottom else staticSystemBarBottom,
-        animationSpec = if (isImmersiveMode || !isKeyboardVisibleForPadding) tween(browserSettings.animationSpeed) else snap(
-            0
-        ), // Always animate smoothly
-        label = "SystemBar Bottom Animation"
-    )
-
     var customView by remember { mutableStateOf<View?>(null) }
     var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
@@ -692,6 +634,9 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     var squareAlignment by remember { mutableStateOf(Alignment.BottomEnd) }
     val squareAlpha = remember { Animatable(0f) }
 
+    //  hold the currently active dialog
+    var jsDialogState by remember { mutableStateOf<JsDialogState?>(null) }
+    var promptComponentDisplayState by remember { mutableStateOf<JsDialogState?>(null) }
 
     //endregion
     // FUNCTIONS
@@ -703,6 +648,67 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         browserSettings = newSettings
         Log.e("updateBrowserSettings", browserSettings.toString())
     }
+
+    fun navigateWebView() {
+        when (activeNavAction) {
+            GestureNavAction.BACK -> if (canGoBack) {
+                tabs[activeTabIndex.intValue].historyState?.let { history ->
+                    val newIndex =
+                        history.currentIndex - 1
+                    Log.i("Web View Navigation", "Back")
+
+                    history.items.getOrNull(newIndex)
+                        ?.let { itemToLoad ->
+                            isNavigateInProgress = true
+                            webView.loadUrl(itemToLoad.url)
+                            val updatedTab =
+                                tabs[activeTabIndex.intValue].copy(
+                                    historyState = history.copy(
+                                        currentIndex = newIndex
+                                    )
+                                )
+                            tabs[activeTabIndex.intValue] =
+                                updatedTab
+                            saveTrigger++
+
+                        }
+                }
+            }
+
+            GestureNavAction.REFRESH -> {
+                isNavigateInProgress = true
+
+                webView.reload()
+            }
+
+            GestureNavAction.FORWARD -> if (canGoForward) {
+                tabs[activeTabIndex.intValue].historyState?.let { history ->
+                    val newIndex =
+                        history.currentIndex + 1
+                    Log.i("Web View Navigation", "FORWARD")
+                    history.items.getOrNull(newIndex)
+                        ?.let { itemToLoad ->
+                            isNavigateInProgress = true
+                            webView.loadUrl(itemToLoad.url)
+                            val updatedTab =
+                                tabs[activeTabIndex.intValue].copy(
+                                    historyState = history.copy(
+                                        currentIndex = newIndex
+                                    )
+                                )
+                            tabs[activeTabIndex.intValue] =
+                                updatedTab
+                            saveTrigger++
+
+                        }
+                }
+            }
+
+            GestureNavAction.NONE -> { /* Do nothing */
+            }
+        }
+    }
+
 
     //endregion
 
@@ -723,6 +729,49 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
             private var fullscreenView: View? = null
 
+            // Handles window.alert()
+            override fun onJsAlert(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: android.webkit.JsResult?
+            ): Boolean {
+                jsDialogState = JsAlert(message ?: "")
+                // We consume the result here and will handle it in our Compose Dialog
+                result?.confirm()
+                return true // Return true to indicate we've handled it.
+            }
+
+            // Handles window.confirm()
+            override fun onJsConfirm(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: android.webkit.JsResult?
+            ): Boolean {
+                jsDialogState = JsConfirm(message ?: "") { confirmed ->
+                    if (confirmed) result?.confirm() else result?.cancel()
+                }
+                return true
+            }
+
+            // Handles window.prompt()
+            override fun onJsPrompt(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                defaultValue: String?,
+                result: android.webkit.JsPromptResult?
+            ): Boolean {
+                jsDialogState = JsPrompt(message ?: "", defaultValue ?: "") { inputText ->
+                    if (inputText != null) {
+                        result?.confirm(inputText)
+                    } else {
+                        result?.cancel()
+                    }
+                }
+                return true
+            }
 
             override fun onGeolocationPermissionsShowPrompt(
                 origin: String?,
@@ -1201,9 +1250,22 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     //region LaunchedEffect
-    LaunchedEffect(isUrlBarVisible, isPermissionPanelVisible) {
-        isBottomPanelVisible = isUrlBarVisible || isPermissionPanelVisible
-        Log.i("VisibleState", "isBottomPanelVisible: $isBottomPanelVisible")
+
+    LaunchedEffect(jsDialogState) {
+        if (jsDialogState != null) {
+            promptComponentDisplayState = jsDialogState
+        }
+    }
+    LaunchedEffect(isUrlBarVisible) {
+        if (!isUrlBarVisible) isOptionsPanelVisible = false
+    }
+    LaunchedEffect(jsDialogState) {
+        isPromptPanelVisible = jsDialogState != null
+    }
+
+    LaunchedEffect(isUrlBarVisible, isPermissionPanelVisible, isPromptPanelVisible) {
+        isBottomPanelVisible = isUrlBarVisible || isPermissionPanelVisible || isPromptPanelVisible
+//        Log.i("VisibleState", "isBottomPanelVisible: $isBottomPanelVisible")
     }
 
 
@@ -1330,6 +1392,11 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
         webView.requestLayout()
     }
 
+    LaunchedEffect(canGoBack, canGoForward) {
+        Log.i("Web View Navigation", "canGoBack $canGoBack")
+        Log.i("Web View Navigation", "canGoForward $canGoForward")
+    }
+
     //endregion
     BackHandler(enabled = !isBottomPanelVisible || canGoBack) {
         when {
@@ -1343,7 +1410,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 tabs[activeTabIndex.intValue].historyState?.let { history ->
                     val newIndex =
                         history.currentIndex - 1
-                    Log.i("GeckoHistoryLog", "NACK")
+                    Log.i("Web View Navigation", "NACK")
                     databaseCurrentIndexHolder = newIndex
                     history.items.getOrNull(newIndex)
                         ?.let { itemToLoad ->
@@ -1435,19 +1502,33 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 }
             }
 
-
             BottomPanel(
+                navigateWebView = {
+                    navigateWebView()
+                },
+                hapticFeedback = hapticFeedback,
+                setIsNavPanelVisible = { isNavPanelVisible = it },
+                setActiveNavAction = { activeNavAction = it },
+
+                canGoBack = canGoBack,
+                canGoForward = canGoForward,
+                isNavPanelVisible = isNavPanelVisible,
+                activeNavAction = activeNavAction,
+
+                state = if (jsDialogState != null) jsDialogState!! else null,
+                promptComponentDisplayState = if (promptComponentDisplayState != null) promptComponentDisplayState else null,
+                onDismiss = { jsDialogState = null },
+                isPromptPanelVisible = isPromptPanelVisible,
+
                 isPermissionPanelVisible = isPermissionPanelVisible,
                 permissionLauncher = permissionLauncher,
                 pendingPermissionRequest = pendingPermissionRequest,
-                staticSystemBarBottom = staticSystemBarBottom,
                 modifier = Modifier
                     // This aligns the panel to the bottom center of the Box
                     .windowInsetsPadding(WindowInsets.ime)
                     .align(Alignment.BottomCenter),
                 activeTabIndex = activeTabIndex,
                 tabs = tabs,
-                colorScheme = colorScheme,
                 isImmersiveMode = isImmersiveMode,
                 isUrlBarVisible = isUrlBarVisible,
                 isBottomPanelVisible = isBottomPanelVisible,
@@ -1458,7 +1539,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 //                        url = url,
                 focusManager = focusManager,
                 keyboardController = keyboardController,
-                textFieldHeightDp = textFieldHeightDp,
                 toggleOptionsPanel = { isOptionsPanelVisible = it },
                 changeTextFieldValue = { textFieldValue = it },
                 setPendingPermissionRequest = { pendingPermissionRequest = it },
@@ -1466,7 +1546,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                     webView.loadUrl(newUrl)
 //                            }
                 },
-                setTextFieldHeightPx = { textFieldHeightPx = it },
                 setIsFocusOnTextField = { isFocusOnTextField = it },
 
 
@@ -1497,8 +1576,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                         }
                         .pointerInput(Unit) {
                             // 1. Get the CoroutineScope at the top level of pointerInput
-                            val coroutineScope = this
-
                             detectDragGestures(
                                 onDragStart = {
                                     // This is called once the drag passes the touch slop
@@ -1515,10 +1592,10 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                                     // 2. Compare the horizontal and vertical movement
                                     if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
                                         // -- HORIZONTAL DRAG IS DOMINANT --
-                                        if (dx < 0) { // Dragging left
-                                            squareAlignment = Alignment.BottomStart
+                                        squareAlignment = if (dx < 0) { // Dragging left
+                                            Alignment.BottomStart
                                         } else { // Dragging right
-                                            squareAlignment = Alignment.BottomEnd
+                                            Alignment.BottomEnd
                                         }
                                     } else {
                                         // -- VERTICAL DRAG IS DOMINANT --
@@ -1581,23 +1658,6 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize()
             )
         }
-
-        GestureNavigationOverlay(
-            browserSettings = browserSettings,
-            colorScheme = colorScheme,
-            staticSystemBarTop = staticSystemBarTop,
-            offsetY = offsetY,
-            activeAction = activeGestureAction,
-            canGoBack = canGoBack,
-            canGoForward = canGoForward,
-            onHeightMeasured = { measuredHeight ->
-                // Only set the initial height once to avoid recomposition loops
-                if (overlayHeightPx == 0f && measuredHeight > 0) {
-                    overlayHeightPx = measuredHeight
-                }
-            }
-        )
-
     }
 
 
@@ -1605,14 +1665,24 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    navigateWebView: () -> Unit,
+    hapticFeedback: HapticFeedback,
+    setActiveNavAction: (GestureNavAction) -> Unit,
+    setIsNavPanelVisible: (Boolean) -> Unit,
+    canGoBack: Boolean,
+    canGoForward: Boolean,
+    isNavPanelVisible: Boolean,
+    activeNavAction: GestureNavAction,
+    isPromptPanelVisible: Boolean = false,
+    state: JsDialogState?,
+    promptComponentDisplayState: JsDialogState?,
+    onDismiss: () -> Unit,
     isPermissionPanelVisible: Boolean = false,
-    permissionLauncher: ManagedActivityResultLauncher<Array<String>, Map<String, @JvmSuppressWildcards() Boolean>>,
+    permissionLauncher: ManagedActivityResultLauncher<Array<String>, Map<String, @JvmSuppressWildcards Boolean>>,
     pendingPermissionRequest: CustomPermissionRequest?,
-    staticSystemBarBottom: Dp,
     modifier: Modifier,
     activeTabIndex: MutableState<Int>,
     tabs: List<Tab>,
-    colorScheme: ColorScheme,
     isImmersiveMode: Boolean,
     isUrlBarVisible: Boolean,
     isBottomPanelVisible: Boolean,
@@ -1623,7 +1693,6 @@ fun BottomPanel(
 //    url: String,
     focusManager: FocusManager,
     keyboardController: SoftwareKeyboardController?,
-    textFieldHeightDp: Dp,
     toggleOptionsPanel: (Boolean) -> Unit = {},
     changeTextFieldValue: (TextFieldValue) -> Unit = {},
     onNewUrl: (String) -> Unit = {},
@@ -1645,7 +1714,7 @@ fun BottomPanel(
             modifier = Modifier
                 .padding(browserSettings.paddingDp.dp)
                 .background(
-                    Color.Black.copy(alpha = 0.3f),
+                    Color.Black.copy(alpha = 0.5f),
                     shape = RoundedCornerShape(
                         cornerRadiusForLayer(
                             1,
@@ -1656,10 +1725,27 @@ fun BottomPanel(
                 )
         ) {
 
+            PromptPanel(
+                browserSettings = browserSettings,
+//                modifier = modifier,
+                isPromptPanelVisible = isPromptPanelVisible,
+                onDismiss = onDismiss,
+                state = state,
+                promptComponentDisplayState = promptComponentDisplayState,
+
+                )
+
+            AnimatedVisibility(visible = isNavPanelVisible) {
+                NavigationPanel(
+                    browserSettings = browserSettings,
+                    activeAction = activeNavAction,
+                    canGoBack = canGoBack, // Make sure to pass these down from BrowserScreen
+                    canGoForward = canGoForward // And this one too
+                )
+            }
 
             PermissionPanel(
                 isPermissionPanelVisible = isPermissionPanelVisible,
-                colorScheme = colorScheme,
                 browserSettings = browserSettings,
                 request = pendingPermissionRequest,
                 onAllow = {
@@ -1682,14 +1768,26 @@ fun BottomPanel(
 
             // URL BAR
             AnimatedVisibility(
-                modifier = modifier,
+                modifier = modifier
+                    .pointerInput(Unit) {
+                        // The long press on the UrlBar will activate the gesture
+
+                    },
                 visible = isUrlBarVisible,
 //                enter = fadeIn(animationSpec = tween(browserSettings.animationSpeed)),
 //                exit = fadeOut(animationSpec = tween(browserSettings.animationSpeed))
-                enter = expandVertically(tween(browserSettings.animationSpeed)) + fadeIn(tween(browserSettings.animationSpeed)),
-                exit = shrinkVertically(tween(browserSettings.animationSpeed)) +  fadeOut(tween(browserSettings.animationSpeed))
+                enter = expandVertically(tween(browserSettings.animationSpeed)) + fadeIn(
+                    tween(
+                        browserSettings.animationSpeed
+                    )
+                ),
+                exit = shrinkVertically(tween(browserSettings.animationSpeed)) + fadeOut(
+                    tween(
+                        browserSettings.animationSpeed
+                    )
+                )
             ) {
-                Row(
+                Box(
                     modifier = Modifier
                         .pointerInput(Unit) {
                             detectVerticalDragGestures(
@@ -1705,13 +1803,11 @@ fun BottomPanel(
                                     }
                                 })
                         }
-                    //                    .padding(browserSettings.paddingDp.dp)
-                    ,
-                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val focusRequester = remember { FocusRequester() }
+
                     OutlinedTextField(
                         modifier = Modifier
-                            .weight(1f)
                             .height(
                                 cornerRadiusForLayer(
                                     1,
@@ -1719,20 +1815,11 @@ fun BottomPanel(
                                     browserSettings.paddingDp
                                 ).dp * 2
                             )
-                            //                        .border(
-                            //                            BorderStroke(3.dp, Color.White), // 👈 Set border width & color here
-                            //                            shape = RoundedCornerShape(
-                            //                                cornerRadiusForLayer(
-                            //                                    1,
-                            //                                    browserSettings.deviceCornerRadius,
-                            //                                    browserSettings.paddingDp
-                            //                                ).dp
-                            //                            )
-                            //                        )
                             .onSizeChanged { size ->
                                 setTextFieldHeightPx(size.height)
                             }
                             .fillMaxWidth()
+                            .focusRequester(focusRequester)
                             //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
                             .onFocusChanged {
                                 val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
@@ -1758,7 +1845,8 @@ fun BottomPanel(
                             .pointerInput(Unit) {
                                 detectHorizontalDragGestures { _, dragAmount ->
                                     if (dragAmount > 0) {
-                                        val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
+                                        val resetUrl =
+                                            tabs[activeTabIndex.value].currentUrl ?: ""
                                         changeTextFieldValue(
                                             TextFieldValue(
                                                 resetUrl,
@@ -1810,7 +1898,10 @@ fun BottomPanel(
                                     }
                                 } else {
                                     val encodedQuery =
-                                        URLEncoder.encode(input, StandardCharsets.UTF_8.toString())
+                                        URLEncoder.encode(
+                                            input,
+                                            StandardCharsets.UTF_8.toString()
+                                        )
                                     "https://www.google.com/search?q=$encodedQuery"
                                 }
 
@@ -1829,7 +1920,7 @@ fun BottomPanel(
                             ).dp
                         ),
                         colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Black.copy(0.95f), // Background when focused
+                            focusedContainerColor = Color.Black, // Background when focused
                             unfocusedContainerColor = Color.Black.copy(0.8f), // Background when unfocused
                             cursorColor = Color.White,
                             disabledContainerColor = Color.White, // Background when disabled
@@ -1842,12 +1933,134 @@ fun BottomPanel(
                             unfocusedTextColor = Color.White.copy(0.8f),
                         )
                     )
+
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                Color.Transparent, shape = RoundedCornerShape(
+                                    cornerRadiusForLayer(
+                                        1,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp
+                                )
+                            )
+                            .clip(
+                                RoundedCornerShape(
+                                    cornerRadiusForLayer(
+                                        1,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp
+                                )
+                            )
+                            .matchParentSize()
+                            .pointerInput(Unit, canGoBack, canGoForward) {
+                                // 1. CAPTURE the CoroutineScope provided by pointerInput
+                                val coroutineScope = CoroutineScope(coroutineContext)
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+
+                                    // 2. USE the captured scope to launch the long press job
+                                    val longPressJob = coroutineScope.launch {
+                                        delay(viewConfiguration.longPressTimeoutMillis)
+
+                                        // LONG PRESS CONFIRMED
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        focusManager.clearFocus(true)
+                                        setIsNavPanelVisible(true)
+                                        setActiveNavAction(GestureNavAction.NONE)
+
+                                    }
+
+                                    val drag =
+                                        awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                                            if (longPressJob.isActive) {
+                                                longPressJob.cancel()
+                                            }
+                                            change.consume()
+                                        }
+
+                                    if (longPressJob.isCompleted && !longPressJob.isCancelled) {
+                                        if (drag != null) {
+                                            var horizontalDragAccumulator = 0f
+                                            var verticalDragAccumulator = 0f
+                                            var previousAction = GestureNavAction.REFRESH
+                                            val horizontalDragThreshold =
+                                                with(density) { 40.dp.toPx() }
+
+                                            val verticalCancelThreshold =
+                                                with(density) { -40.dp.toPx() }
+
+
+                                            drag(drag.id) { change ->
+                                                change.consume()
+                                                horizontalDragAccumulator += change.position.x - change.previousPosition.x
+                                                verticalDragAccumulator += change.position.y - change.previousPosition.y
+
+                                                val newAction = when {
+                                                    verticalDragAccumulator < verticalCancelThreshold -> GestureNavAction.REFRESH
+                                                    horizontalDragAccumulator < -horizontalDragThreshold -> if (canGoBack) GestureNavAction.BACK else GestureNavAction.NONE
+                                                    horizontalDragAccumulator > horizontalDragThreshold -> if (canGoForward) GestureNavAction.FORWARD else GestureNavAction.NONE
+                                                    else -> GestureNavAction.NONE
+                                                }
+
+                                                if (newAction != previousAction) {
+                                                    hapticFeedback.performHapticFeedback(
+                                                        HapticFeedbackType.TextHandleMove
+                                                    )
+                                                    previousAction = newAction
+                                                }
+//                                                    activeNavAction = newAction
+                                                setActiveNavAction(newAction)
+                                            }
+
+                                            navigateWebView()
+                                        }
+                                    } else {
+                                        if (drag != null) {
+                                            // IT'S A VERTICAL SWIPE to open OptionsPanel
+                                            var vAccumulator = 0f
+                                            drag(drag.id) { change ->
+                                                vAccumulator += change.position.y - change.previousPosition.y
+                                            }
+                                            // Check the final drag direction
+                                            if (vAccumulator < 0) toggleOptionsPanel(true) // Swipe Up
+                                            else toggleOptionsPanel(false) // Swipe Down
+
+                                        } else {
+                                            // Gesture is fully over
+                                            if (longPressJob.isActive) {
+                                                longPressJob.cancel()
+                                                // This was a tap
+                                                focusRequester.requestFocus()
+                                            }
+                                        }
+                                    }
+
+//                                        // Gesture is fully over
+//                                        if (longPressJob.isActive) {
+//                                            longPressJob.cancel()
+//                                            // This was a tap
+//                                            focusRequester.requestFocus()
+//                                        }
+
+                                    // Reset the UI state
+//                                        isNavPanelVisible = false
+                                    setIsNavPanelVisible(false)
+//                                        activeNavAction = GestureNavAction.NONE
+                                    setActiveNavAction(GestureNavAction.NONE)
+                                }
+                            }
+                    )
+                    {
+
+                    }
                 }
             }
 
             // SETTING OPTIONS
             OptionsPanel(
-                colorScheme = colorScheme,
                 isImmersiveMode = isImmersiveMode,
                 isOptionsPanelVisible = isOptionsPanelVisible,
                 toggleOptionsPanel = toggleOptionsPanel,
@@ -1863,7 +2076,6 @@ fun BottomPanel(
 
 @Composable
 fun PermissionPanel(
-    colorScheme: ColorScheme,
     browserSettings: BrowserSettings,
     // The pending request, which also controls visibility. Null means hidden.
     request: CustomPermissionRequest?,
@@ -1874,16 +2086,23 @@ fun PermissionPanel(
     isPermissionPanelVisible: Boolean = false,
 
     ) {
-    val isVisible = isPermissionPanelVisible
+    var requestToShow by remember { mutableStateOf(request) }
+
+    LaunchedEffect(request) {
+        if (request != null) {
+            // If there's a new request, update immediately.
+            requestToShow = request
+        }
+    }
 
     AnimatedVisibility(
-        visible = isVisible,
-        enter = expandVertically(animationSpec = tween(browserSettings.animationSpeed)),
-        exit = shrinkVertically(animationSpec = tween(browserSettings.animationSpeed))
+        visible = isPermissionPanelVisible,
+        enter = expandVertically(animationSpec = tween(browserSettings.animationSpeed)) + fadeIn(tween(browserSettings.animationSpeed)),
+        exit = shrinkVertically(animationSpec = tween(browserSettings.animationSpeed))  + fadeOut(tween(browserSettings.animationSpeed))
     ) {
-        // We need a non-null request to proceed, which is safe inside this
-        // AnimatedVisibility block.
-        if (request == null) return@AnimatedVisibility
+
+        val currentRequest = requestToShow
+        if (currentRequest == null) return@AnimatedVisibility
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -1894,7 +2113,7 @@ fun PermissionPanel(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding( browserSettings.paddingDp.dp),
+                    .padding(browserSettings.paddingDp.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
 
@@ -1911,15 +2130,15 @@ fun PermissionPanel(
                             .weight(1f)
                             .height(
                                 cornerRadiusForLayer(
-                                    1,
+                                    2,
                                     browserSettings.deviceCornerRadius,
                                     browserSettings.paddingDp
                                 ).dp * 2
                             )
                             .border(
-                                5.dp, Color.White, shape = RoundedCornerShape(
+                                4.dp, Color.White, shape = RoundedCornerShape(
                                     cornerRadiusForLayer(
-                                        1,
+                                        2,
                                         browserSettings.deviceCornerRadius,
                                         browserSettings.paddingDp
                                     ).dp
@@ -1927,11 +2146,11 @@ fun PermissionPanel(
                             ),
 
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = Color.Black.copy(alpha = 0.4f)
+                            containerColor = Color.Black.copy(alpha = 0.5f)
                         ),
                     ) {
                         Icon(
-                            painter = painterResource(id = request.iconResDeny), // You can make this icon generic too
+                            painter = painterResource(id = currentRequest.iconResDeny), // You can make this icon generic too
                             contentDescription = "Deny Permission",
                             tint = Color.White
                         )
@@ -1944,7 +2163,7 @@ fun PermissionPanel(
                             .weight(1f)
                             .height(
                                 cornerRadiusForLayer(
-                                    1,
+                                    2,
                                     browserSettings.deviceCornerRadius,
                                     browserSettings.paddingDp
                                 ).dp * 2
@@ -1954,7 +2173,7 @@ fun PermissionPanel(
                         )
                     ) {
                         Icon(
-                            painter = painterResource(id = request.iconResAllow), // You can make this icon generic too
+                            painter = painterResource(id = currentRequest.iconResAllow), // You can make this icon generic too
                             contentDescription = "Allow Permission",
                             tint = Color.White
                         )
@@ -1968,7 +2187,6 @@ fun PermissionPanel(
 
 @Composable
 fun OptionsPanel(
-    colorScheme: ColorScheme,
     isImmersiveMode: Boolean,
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
@@ -2010,8 +2228,16 @@ fun OptionsPanel(
 
     AnimatedVisibility(
         visible = isOptionsPanelVisible,
-        enter = expandVertically(tween(browserSettings.animationSpeed)),
-        exit = shrinkVertically(tween(browserSettings.animationSpeed)),
+        enter = expandVertically(tween(browserSettings.animationSpeed)) + fadeIn(
+            tween(
+                browserSettings.animationSpeed
+            )
+        ),
+        exit = shrinkVertically(tween(browserSettings.animationSpeed)) + fadeOut(
+            tween(
+                browserSettings.animationSpeed
+            )
+        ),
     ) {
         Box(
             modifier = Modifier
@@ -2054,7 +2280,7 @@ fun OptionsPanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(
-                            Color.White.copy(alpha = 0.4f),
+                            Color.Black.copy(alpha = 0.4f),
                             shape = RoundedCornerShape(
                                 cornerRadiusForLayer(
                                     2,
@@ -2149,152 +2375,400 @@ fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier, colorSchem
     }
 }
 
-
 @Composable
-fun GestureNavigationOverlay(
+fun PromptPanel(
     browserSettings: BrowserSettings,
-    colorScheme: ColorScheme,
-    staticSystemBarTop: Dp,
-    offsetY: Animatable<Float, *>,
-    activeAction: GestureNavAction,
-    canGoBack: Boolean,
-    canGoForward: Boolean,
-    onHeightMeasured: (Float) -> Unit,
+    isPromptPanelVisible: Boolean,
+    state: JsDialogState?,
+    promptComponentDisplayState: JsDialogState?,
+    onDismiss: () -> Unit,
 ) {
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .onGloballyPositioned {
-                onHeightMeasured(it.size.height.toFloat())
-            }
-            .offset { IntOffset(0, offsetY.value.roundToInt()) }
+    AnimatedVisibility(
+//        modifier = modifier,
+        visible = isPromptPanelVisible,
+        enter = fadeIn(tween(browserSettings.animationSpeed)),
+        exit = shrinkVertically(tween(browserSettings.animationSpeed)) + fadeOut(
+            tween(
+                browserSettings.animationSpeed
+            )
+        )
     ) {
-        Box(
+        var textInput by remember(state) {
+            mutableStateOf(if (state is JsPrompt) state.defaultValue else "")
+        }
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = staticSystemBarTop + browserSettings.paddingDp.dp)
-                .padding(horizontal = browserSettings.paddingDp.dp)
-                .height(browserSettings.singleLineHeight.dp * 1.5f)
-        ) {
-            val backgroundColor by animateColorAsState(
-                targetValue = if (activeAction != GestureNavAction.NONE) colorScheme.foregroundColor.copy(
-                    alpha = 0.9f
-                ) else colorScheme.foregroundColor.copy(alpha = 0.5f),
-                label = "BackgroundColor"
-            )
-            val containerBorderRadius by animateDpAsState(
-                targetValue = if (activeAction != GestureNavAction.NONE) browserSettings.singleLineHeight.dp * 1.5f else browserSettings.deviceCornerRadius.dp,
-                animationSpec = tween(
-                    durationMillis = 100, // Set custom duration in milliseconds
-                    easing = EaseIn // Optional: customize easing
-                ),
-                label = "ContainerBorderRadius"
-            )
+                .padding(browserSettings.paddingDp.dp)
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(containerBorderRadius))
-                    .background(backgroundColor)
-                    .blur(10.dp)
-            )
+        ) {
 
             Row(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(
-                        vertical = browserSettings.paddingDp.dp,
-                        horizontal = browserSettings.singleLineHeight.dp * 1f
-                    ),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // --- DYNAMIC WEIGHT ANIMATION ---
-                // Animate the weight of each button based on the active action.
-                val backWeight by animateFloatAsState(
-                    targetValue = if (activeAction == GestureNavAction.BACK) 2f else 1f,
-                    label = "BackWeight"
-                )
-                val refreshWeight by animateFloatAsState(
-                    targetValue = if (activeAction == GestureNavAction.REFRESH) 2f else 1f,
-                    label = "RefreshWeight"
-                )
-                val forwardWeight by animateFloatAsState(
-                    targetValue = if (activeAction == GestureNavAction.FORWARD) 2f else 1f,
-                    label = "ForwardWeight"
-                )
-                // ---
-
-                // --- Back Button ---
-                val backColor by animateColorAsState(
-                    targetValue = if (activeAction == GestureNavAction.BACK && canGoBack) colorScheme.backgroundColor else Color.Transparent,
-                    label = "BackColor"
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(backWeight) // Use the animated weight
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(browserSettings.deviceCornerRadius.dp))
-                        .background(backColor)
-                ) {
-                    if (canGoBack) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_arrow_back),
-                            contentDescription = "Go Back",
-                            tint = if (activeAction == GestureNavAction.BACK) colorScheme.foregroundColor else colorScheme.backgroundColor,
-                            modifier = Modifier.align(Alignment.Center)
+                    .fillMaxWidth()
+                    .padding(bottom = browserSettings.paddingDp.dp)
+                    .padding(horizontal = browserSettings.paddingDp.dp * 3)
+                    .background(
+                        Color.Black,
+                        shape = RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
                         )
-                    }
-                }
-
-                Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
-
-                // --- Refresh Button ---
-                val refreshColor by animateColorAsState(
-                    targetValue = if (activeAction == GestureNavAction.REFRESH) colorScheme.backgroundColor else Color.Transparent,
-                    label = "RefreshColor"
-                )
-                Box(
+                    ),
+                verticalAlignment = Alignment.CenterVertically // Keeps text aligned nicely
+            ) {
+                // "from" Text - Fixed Size
+                Row(
                     modifier = Modifier
-                        .weight(refreshWeight) // Use the animated weight
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(browserSettings.deviceCornerRadius.dp))
-                        .background(refreshColor)
+                        .padding(browserSettings.paddingDp.dp)
                 ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_refresh),
-                        contentDescription = "Refresh",
-                        tint = if (activeAction == GestureNavAction.REFRESH) colorScheme.foregroundColor else colorScheme.backgroundColor,
-                        modifier = Modifier.align(Alignment.Center)
+                    Text(
+                        text = "from ", // Added a space for better readability
+                        color = Color.White.copy(alpha = 0.7f), // Subtly de-emphasize
+                        maxLines = 1, // Ensure it doesn't wrap
                     )
-                }
 
-                Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
-
-                // --- Forward Button ---
-                val forwardColor by animateColorAsState(
-                    targetValue = if (activeAction == GestureNavAction.FORWARD && canGoForward) colorScheme.backgroundColor else Color.Transparent,
-                    label = "ForwardColor"
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(forwardWeight) // Use the animated weight
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(browserSettings.deviceCornerRadius.dp))
-                        .background(forwardColor)
-                ) {
-                    if (canGoForward) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_arrow_forward),
-                            contentDescription = "Go Forward",
-                            tint = if (activeAction == GestureNavAction.FORWARD) colorScheme.foregroundColor else colorScheme.backgroundColor,
-                            modifier = Modifier.align(Alignment.Center)
+                    // URL Text - Scrollable and takes up remaining space
+                    Box(
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            text = webView.url ?: "the current page", // Safely handle null URL
+                            color = Color.White,
+                            maxLines = 1, // Crucial for horizontal scrolling
+                            overflow = TextOverflow.Ellipsis, // Good practice, though scrolling will hide it
+                            modifier = Modifier
+//                                .weight(1f) // Takes all available remaining space
+                                .horizontalScroll(rememberScrollState()) // THIS MAKES IT SCROLLABLE
                         )
                     }
                 }
             }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Color.Black,
+                        shape = RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
+                    )
+            )
+            {
+
+                val textModifier = Modifier
+                    .padding(browserSettings.paddingDp.dp)
+                Column(
+                    modifier = Modifier
+                        .padding(browserSettings.paddingDp.dp)
+                        .background(
+                            color = Color.Transparent,
+                            shape = RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp
+                            )
+                        )
+                ) {
+                    when (promptComponentDisplayState) {
+                        is JsAlert -> Text(
+                            text = promptComponentDisplayState.message,
+                            modifier = textModifier
+                        )
+
+                        is JsConfirm -> Text(
+                            text = promptComponentDisplayState.message,
+                            modifier = textModifier
+                        )
+
+                        is JsPrompt -> {
+                            Text(
+                                text = promptComponentDisplayState.message,
+                                modifier = textModifier
+                            )
+                            Spacer(Modifier.height(browserSettings.paddingDp.dp))
+                            OutlinedTextField(
+                                value = textInput,
+                                onValueChange = { textInput = it },
+                                maxLines = 6, //hardcode
+                                modifier = Modifier
+                                    .height(IntrinsicSize.Min)
+                                    .fillMaxWidth(),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        webView.requestFocus()
+                                        promptComponentDisplayState.onResult(textInput)
+                                        onDismiss()
+                                    }
+                                ),
+                                shape = RoundedCornerShape(
+                                    cornerRadiusForLayer(
+                                        3,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp
+                                ),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Black.copy(0.95f), // Background when focused
+                                    unfocusedContainerColor = Color.Black.copy(0.8f), // Background when unfocused
+                                    cursorColor = Color.White,
+                                    disabledContainerColor = Color.White, // Background when disabled
+                                    errorContainerColor = Color.Red, // Background when in error state.
+                                    focusedIndicatorColor = Color.White.copy(0.95f),      // Outline color when focused
+                                    unfocusedIndicatorColor = Color.White.copy(0.8f),    // Outline color when unfocused
+                                    disabledIndicatorColor = Color.White, // Outline color when disabled
+                                    errorIndicatorColor = Color.Red,          // Outline color on error
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White.copy(0.8f),
+                                )
+                            )
+                        }
+
+                        null -> {
+
+                        }
+                    }
+                }
+
+                // Action buttons
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(browserSettings.paddingDp.dp),
+                    horizontalArrangement = Arrangement.spacedBy(
+                        browserSettings.paddingDp.dp
+                    ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val buttonModifier = Modifier
+                        .height(
+                            cornerRadiusForLayer(
+                                3,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp * 2
+                        )
+                        .weight(1f)
+
+                    // Dismiss/Cancel Button (only for confirm/prompt)
+                    if (promptComponentDisplayState is JsConfirm || promptComponentDisplayState is JsPrompt) {
+                        Button(
+                            modifier = buttonModifier
+                                .border(
+                                    4.dp, Color.Black, shape = RoundedCornerShape(
+                                        cornerRadiusForLayer(
+                                            3,
+                                            browserSettings.deviceCornerRadius,
+                                            browserSettings.paddingDp,
+                                        ).dp
+                                    )
+                                ),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White.copy(alpha = 0.5f)
+                            ),
+                            shape = RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp,
+                                ).dp
+                            ),
+                            onClick = {
+                                webView.requestFocus()
+                                when (state) {
+                                    is JsConfirm -> state.onResult(false)
+                                    is JsPrompt -> state.onResult(null)
+                                    else -> {}
+                                }
+                                onDismiss()
+                            },
+
+                            ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_close),
+                                contentDescription = "Dismiss",
+                            )
+                        }
+                    }
+
+
+                    // Confirm Button
+                    Button(
+                        modifier = buttonModifier
+                            .background(
+                                Color.White, shape = RoundedCornerShape(
+                                    cornerRadiusForLayer(
+                                        3,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp
+                                )
+                            ),
+                        shape = RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp,
+                            ).dp
+                        ),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White
+                        ),
+                        onClick = {
+                            webView.requestFocus()
+                            when (state) {
+                                is JsAlert -> { /* Just dismiss */
+                                }
+
+                                is JsConfirm -> state.onResult(true)
+                                is JsPrompt -> state.onResult(textInput)
+                                null -> {
+
+                                }
+                            }
+                            onDismiss()
+                        },
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_check),
+                            contentDescription = "Confirm",
+                        )
+                    }
+                }
+
+
+            }
+
+
+        }
+
+    }
+}
+
+
+
+@Composable
+fun NavigationPanel(
+    modifier: Modifier = Modifier,
+    browserSettings: BrowserSettings,
+    activeAction: GestureNavAction,
+    canGoBack: Boolean,
+    canGoForward: Boolean
+) {
+    Box(
+        modifier = Modifier
+            .padding(browserSettings.paddingDp.dp)
+    ) {
+        Column(
+            modifier = modifier
+
+                .clip(
+                    RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
+                )
+                .background(Color.Black.copy(0.3f)),
+
+            ) {
+            Row(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .height(browserSettings.singleLineHeight.dp)
+                    .padding(browserSettings.paddingDp.dp),
+
+
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Refresh Icon
+                NavigationItem(
+                    modifier = Modifier.weight(1f),
+                    activeAction = activeAction,
+                    gestureNavAction = GestureNavAction.REFRESH,
+                    actionIcon = painterResource(R.drawable.ic_refresh)
+                )
+            }
+            Row(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .height(browserSettings.singleLineHeight.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Back Icon
+                NavigationItem(
+                    modifier = Modifier.weight(1f),
+                    activeAction = activeAction,
+                    gestureNavAction = GestureNavAction.BACK,
+                    actionIcon = painterResource(R.drawable.ic_arrow_back),
+                    visibility = canGoBack
+                )
+
+                // Cancel Icon
+                NavigationItem(
+                    modifier = Modifier.weight(1f),
+                    activeAction = activeAction,
+                    gestureNavAction = GestureNavAction.NONE,
+                    actionIcon = painterResource(R.drawable.ic_close)
+                )
+
+                // Forward Icon
+                // Back Icon
+                NavigationItem(
+                    modifier = Modifier.weight(1f),
+                    activeAction = activeAction,
+                    gestureNavAction = GestureNavAction.FORWARD,
+                    actionIcon = painterResource(R.drawable.ic_arrow_forward),
+                    visibility = canGoForward
+                )
+            }
         }
     }
+}
+
+
+@Composable
+fun NavigationItem(
+    modifier: Modifier,
+    activeAction: GestureNavAction,
+    gestureNavAction: GestureNavAction,
+    actionIcon: Painter,
+    visibility: Boolean = true,
+) {
+    // Cancel Icon
+    val refreshColor by animateColorAsState(if (activeAction == gestureNavAction) Color.White else Color.Transparent)
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(16.dp))
+            .background(refreshColor)
+    ) {
+        if (visibility) {
+            Icon(
+                actionIcon,
+                "Refresh",
+                Modifier.align(Alignment.Center),
+                tint = if (activeAction == gestureNavAction) Color.Black else Color.White
+            )
+        }
+
+    }
+
 }
 
 //endregion
