@@ -46,6 +46,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
@@ -60,6 +61,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -112,6 +114,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
+import coil.compose.AsyncImage
+import kotlin.system.exitProcess
 
 
 //region Global Variables
@@ -131,6 +135,16 @@ fun cornerRadiusForLayer(layer: Int, deviceCornerRadius: Float = 0f, padding: Fl
         return deviceCornerRadius
     }
     return (cornerRadiusForLayer(layer - 1, deviceCornerRadius, padding) - padding)
+}
+
+fun getFaviconUrl(pageUrl: String): String {
+    val host = try {
+        pageUrl.toUri().host ?: ""
+    } catch (e: Exception) {
+        e.toString()
+    }
+    // Using Google's favicon service is a reliable way to get icons.
+    return "https://www.google.com/s2/favicons?sz=64&domain_url=$host"
 }
 
 //endregion
@@ -178,7 +192,9 @@ enum class GestureNavAction {
     NONE, // The overlay is hidden
     BACK,
     REFRESH,
-    FORWARD
+    FORWARD,
+    NEW_TAB,
+    CLOSE_TAB,
 }
 
 data class CustomPermissionRequest(
@@ -236,6 +252,14 @@ class TabManager(context: Context) {
         }
         Log.d("TabManager", "Tabs saved.")
     }
+    fun clearAllTabs() {
+        prefs.edit {
+            remove(tabsKey)
+            commit()
+        }
+
+    }
+
     fun createAndSelectNewTab(url: String) {
         // 1. Load the current list of tabs.
         val tabs = loadTabs(url) // Pass url as fallback, though it won't be used here.
@@ -247,7 +271,7 @@ class TabManager(context: Context) {
         val newTab = Tab(
             state = TabState.ACTIVE,
             historyState = SerializableBackForwardList(
-                items = listOf(SerializableHistoryItem(url = url, title = "")),
+                items = listOf(SerializableHistoryItem(url = url, title = "oo")),
                 currentIndex = 0
             )
         )
@@ -259,7 +283,7 @@ class TabManager(context: Context) {
         saveTabs(tabs)
         Log.i("TabManager", "Create New Tab")
         Log.i("TabManager", "tabs: ${tabs.size}")
-        Log.i("TabManager", "tabs: ${tabs}")
+        Log.i("TabManager", "tabs: $tabs")
     }
 
     fun loadTabs(defaultUrl: String): MutableList<Tab> {
@@ -269,8 +293,15 @@ class TabManager(context: Context) {
         Log.i("TabManager", "Loading tabs with json: $jsonString")
         return if (jsonString != null) {
             try {
-                // Try to decode the saved JSON string back into a list of tabs
-                json.decodeFromString<MutableList<Tab>>(jsonString)
+                val loadedTabs = json.decodeFromString<MutableList<Tab>>(jsonString)
+
+
+                if (loadedTabs.isEmpty()) {
+                    Log.w("TabManager", "Loaded tab list was empty. Creating default.")
+                    return createDefaultTabs(defaultUrl)
+                }
+
+                return loadedTabs
 
             } catch (e: Exception) {
                 Log.e("TabManager", "Failed to decode tabs, creating default.", e)
@@ -290,7 +321,7 @@ class TabManager(context: Context) {
                 state = TabState.ACTIVE,
                 // Create a default history state for the first launch
                 historyState = SerializableBackForwardList(
-                    items = listOf(SerializableHistoryItem(url = defaultUrl, title = "")),
+                    items = listOf(SerializableHistoryItem(url = defaultUrl, title = "oo")),
                     currentIndex = 0
                 )
             )
@@ -583,6 +614,10 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
     var isPermissionPanelVisible by rememberSaveable { mutableStateOf(false) }
     var isBottomPanelVisible by rememberSaveable { mutableStateOf(true) }
     var isPromptPanelVisible by rememberSaveable { mutableStateOf(false) }
+    var isTabsPanelVisible by remember { mutableStateOf(false) }
+    var tabsPanelLock by remember { mutableStateOf(false) }
+
+
 
 
     var isNavPanelVisible by remember { mutableStateOf(false) }
@@ -744,6 +779,87 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                         }
                 }
             }
+
+            GestureNavAction.CLOSE_TAB -> {
+                if (tabs.size > 1) {
+                    val tabToRemoveIndex = activeTabIndex.intValue
+                    tabs.removeAt(tabToRemoveIndex)
+
+                    // Determine the next active tab
+                    val nextTabIndex = if (tabToRemoveIndex >= tabs.size) {
+                        tabs.lastIndex
+                    } else {
+                        tabToRemoveIndex
+                    }
+
+                    activeTabIndex.intValue = nextTabIndex
+                    tabs[nextTabIndex].state = TabState.ACTIVE
+
+                    val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
+                    webView.loadUrl(urlToLoad)
+                    textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
+                    saveTrigger++
+                } else {
+// CREATE NEW DEFAULT TAB WHEN CLOSE THE LAST TAB
+//                    val newTab = Tab(
+//                        state = TabState.ACTIVE,
+//                        historyState = SerializableBackForwardList(
+//                            items = listOf(SerializableHistoryItem(url = browserSettings.defaultUrl, title = "oo")),
+//                            currentIndex = 0
+//                        )
+//                    )
+//
+//                    // 2. Replace the entire tabs list with just this new tab
+//                    tabs.clear()
+//                    tabs.add(newTab)
+//
+//                    // 3. Reset the active index to the start
+//                    activeTabIndex.intValue = 0
+//
+//                    // 4. Load the default URL and update UI
+//                    webView.loadUrl(browserSettings.defaultUrl)
+//                    textFieldValue = TextFieldValue(browserSettings.defaultUrl, TextRange(browserSettings.defaultUrl.length))
+//                    saveTrigger++
+
+                    // 1. Remove the last tab from the list.
+                    tabs.clear()
+
+                    // 2. Save the now-empty tab list.
+                    tabManager.clearAllTabs()
+
+
+                    // 3. Finish the activity to close the app.
+                    activity?.finishAndRemoveTask()
+
+                    exitProcess(0)
+
+                }
+            }
+
+            GestureNavAction.NEW_TAB -> {
+                // 1. Deactivate current tab
+                tabs[activeTabIndex.intValue].state = TabState.BACKGROUND
+
+                // 2. Create the new tab
+                val newTab = Tab(
+                    state = TabState.ACTIVE,
+                    historyState = SerializableBackForwardList(
+                        items = listOf(SerializableHistoryItem(url = browserSettings.defaultUrl, title = "oo")),
+                        currentIndex = 0
+                    )
+                )
+
+                // 3. Add it right after the current one
+                val newIndex = activeTabIndex.intValue + 1
+                tabs.add(newIndex, newTab)
+
+                // 4. Set it as active and load
+                activeTabIndex.intValue = newIndex
+                webView.loadUrl(browserSettings.defaultUrl)
+                textFieldValue = TextFieldValue(browserSettings.defaultUrl, TextRange(browserSettings.defaultUrl.length))
+                saveTrigger++
+            }
+
 
             GestureNavAction.NONE -> { /* Do nothing */
             }
@@ -1057,7 +1173,10 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
                     if (newHost != requestHost) {
                         // The user is navigating away, so clear the old permission request.
-                        Log.d("Permission Panel", "Navigating away from permission origin. Clearing request.")
+                        Log.d(
+                            "Permission Panel",
+                            "Navigating away from permission origin. Clearing request."
+                        )
                         pendingPermissionRequest = null
                     }
                 }
@@ -1222,7 +1341,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                             updatedHistoryItems.add(
                                 SerializableHistoryItem(
                                     url = realtimeCurrentItemUrl,
-                                    title = realtimeHistory.currentItem?.title ?: ""
+                                    title = realtimeHistory.currentItem?.title ?: "oo"
                                 )
                             )
                             updatedIndex++
@@ -1246,7 +1365,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                                 Log.e("doUpdateVisitedHistory", "Update existing url in database")
                                 updatedHistoryItems[updatedIndex] = SerializableHistoryItem(
                                     url = realtimeCurrentItemUrl,
-                                    title = realtimeHistory.currentItem?.title ?: ""
+                                    title = realtimeHistory.currentItem?.title ?: "oo"
                                 )
                             }
 
@@ -1311,6 +1430,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
     }
     LaunchedEffect(isUrlBarVisible) {
         if (!isUrlBarVisible) isOptionsPanelVisible = false
+        if (!tabsPanelLock) isTabsPanelVisible = isUrlBarVisible
     }
     LaunchedEffect(jsDialogState) {
         isPromptPanelVisible = jsDialogState != null
@@ -1323,7 +1443,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
 
     LaunchedEffect(pendingPermissionRequest) {
-        Log.i("Permission Panel","pendingPermissionRequest: $pendingPermissionRequest")
+        Log.i("Permission Panel", "pendingPermissionRequest: $pendingPermissionRequest")
         isPermissionPanelVisible = pendingPermissionRequest != null
     }
     // This effect will re-launch whenever isBottomPanelVisible changes.
@@ -1400,12 +1520,14 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
     LaunchedEffect(saveTrigger) {
         if (saveTrigger > 0) {
             tabManager.saveTabs(tabs)
+            saveTrigger = 0
         }
     }
 
     LaunchedEffect(Unit) {
         if (!initialLoadDone) {
-            val urlToLoad = initialUrl ?: tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
+            val urlToLoad =
+                initialUrl ?: tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
             webView.loadUrl(urlToLoad)
             initialLoadDone = true
         }
@@ -1557,6 +1679,24 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
             }
 
             BottomPanel(
+                toggleIsTabsPanelVisible = {
+                    isTabsPanelVisible = !isTabsPanelVisible
+                    tabsPanelLock = !tabsPanelLock
+                },
+                isTabsPanelVisible = isTabsPanelVisible,
+                onTabSelected = { newIndex ->
+                    if (activeTabIndex.intValue != newIndex) {
+                        tabs[activeTabIndex.intValue].state = TabState.BACKGROUND
+                        tabs[newIndex].state = TabState.ACTIVE
+                        activeTabIndex.intValue = newIndex
+
+                        val urlToLoad = tabs[newIndex].currentUrl ?: browserSettings.defaultUrl
+                        webView.loadUrl(urlToLoad)
+                        textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
+                        saveTrigger++
+                    }
+
+                },
                 navigateWebView = {
                     navigateWebView()
                 },
@@ -1719,6 +1859,8 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    isTabsPanelVisible: Boolean,
+    onTabSelected: (Int) -> Unit,
     navigateWebView: () -> Unit,
     hapticFeedback: HapticFeedback,
     setActiveNavAction: (GestureNavAction) -> Unit,
@@ -1748,6 +1890,7 @@ fun BottomPanel(
     focusManager: FocusManager,
     keyboardController: SoftwareKeyboardController?,
     toggleOptionsPanel: (Boolean) -> Unit = {},
+    toggleIsTabsPanelVisible: () -> Unit = {},
     changeTextFieldValue: (TextFieldValue) -> Unit = {},
     onNewUrl: (String) -> Unit = {},
     setTextFieldHeightPx: (Int) -> Unit = {},
@@ -1778,7 +1921,13 @@ fun BottomPanel(
                     )
                 )
         ) {
-
+            NavigationPanel(
+                isNavPanelVisible = isNavPanelVisible,
+                browserSettings = browserSettings,
+                activeAction = activeNavAction,
+                canGoBack = canGoBack, // Make sure to pass these down from BrowserScreen
+                canGoForward = canGoForward // And this one too
+            )
             PromptPanel(
                 browserSettings = browserSettings,
 //                modifier = modifier,
@@ -1810,14 +1959,14 @@ fun BottomPanel(
                 }
             )
 
-            NavigationPanel(
-                isNavPanelVisible = isNavPanelVisible,
-                browserSettings = browserSettings,
-                activeAction = activeNavAction,
-                canGoBack = canGoBack, // Make sure to pass these down from BrowserScreen
-                canGoForward = canGoForward // And this one too
-            )
-
+            AnimatedVisibility(visible = isTabsPanelVisible) {
+                TabsPanel(
+                    tabs = tabs,
+                    activeTabIndex = activeTabIndex.value,
+                    browserSettings = browserSettings,
+                    onTabSelected = onTabSelected
+                )
+            }
 
             // URL BAR
             AnimatedVisibility(
@@ -2052,7 +2201,13 @@ fun BottomPanel(
                                                 verticalDragAccumulator += change.position.y - change.previousPosition.y
 
                                                 val newAction = when {
-                                                    verticalDragAccumulator < verticalCancelThreshold -> GestureNavAction.REFRESH
+                                                    verticalDragAccumulator < verticalCancelThreshold -> {
+                                                        when {
+                                                            horizontalDragAccumulator < -horizontalDragThreshold -> GestureNavAction.CLOSE_TAB
+                                                            horizontalDragAccumulator > horizontalDragThreshold -> GestureNavAction.NEW_TAB
+                                                            else -> GestureNavAction.REFRESH
+                                                        }
+                                                    }
                                                     horizontalDragAccumulator < -horizontalDragThreshold -> if (canGoBack) GestureNavAction.BACK else GestureNavAction.NONE
                                                     horizontalDragAccumulator > horizontalDragThreshold -> if (canGoForward) GestureNavAction.FORWARD else GestureNavAction.NONE
                                                     else -> GestureNavAction.NONE
@@ -2118,6 +2273,8 @@ fun BottomPanel(
                 toggleOptionsPanel = toggleOptionsPanel,
                 updateBrowserSettings = updateBrowserSettings,
                 browserSettings = browserSettings,
+                toggleIsTabsPanelVisible = toggleIsTabsPanelVisible,
+                tabs = tabs,
             )
         }
 
@@ -2143,7 +2300,7 @@ fun PermissionPanel(
     LaunchedEffect(request) {
         if (request != null) {
             // If there's a new request, update immediately.
-            Log.i("Permission Panel" , "New request received")
+            Log.i("Permission Panel", "New request received")
             requestToShow = request
         }
     }
@@ -2166,7 +2323,7 @@ fun PermissionPanel(
                 .fillMaxWidth()
                 .padding(browserSettings.paddingDp.dp)
                 .background(
-                    color =  Color.Black.copy(0.3f),
+                    color = Color.Black.copy(0.3f),
                     shape = RoundedCornerShape(
                         cornerRadiusForLayer(
                             2,
@@ -2174,8 +2331,7 @@ fun PermissionPanel(
                             browserSettings.paddingDp
                         ).dp
                     )
-                )
-            ,
+                ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
 
@@ -2242,8 +2398,10 @@ fun OptionsPanel(
     isImmersiveMode: Boolean,
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
+    toggleIsTabsPanelVisible: () -> Unit,
     updateBrowserSettings: (BrowserSettings) -> Int,
     browserSettings: BrowserSettings,
+    tabs: List<Tab>,
 ) {
 
 
@@ -2256,10 +2414,17 @@ fun OptionsPanel(
             ) {
                 updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
             },
+            OptionItem(
+                R.drawable.ic_tabs, // You'll need an icon for this
+                "Show Tabs Panel" // Display the number of open tabs
+            ) {
+                toggleIsTabsPanelVisible()
+            },
 
             OptionItem(R.drawable.ic_bug, "logBrowserSettings") {
                 Log.e("BROWSER SETTINGS", browserSettings.toString())
                 Log.e("isImmersiveMode", isImmersiveMode.toString())
+                Log.e("Tabs List", tabs.toString())
             },
             OptionItem(R.drawable.ic_fullscreen, "Button 4") { /* ... */ },
             OptionItem(R.drawable.ic_fullscreen, "Button 5") { /* ... */ },
@@ -2752,19 +2917,37 @@ fun NavigationPanel(
                 Row(
                     modifier = modifier
                         .fillMaxWidth()
-                        .padding( top = browserSettings.paddingDp.dp)
-                        .padding( horizontal = browserSettings.paddingDp.dp),
+                        .padding(top = browserSettings.paddingDp.dp)
+                        .padding(horizontal = browserSettings.paddingDp.dp),
 
 
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+
+                    NavigationItem(
+                        modifier = Modifier.weight(1f),
+                        activeAction = activeAction,
+                        gestureNavAction = GestureNavAction.CLOSE_TAB,
+                        actionIcon = painterResource(R.drawable.ic_tab_close),
+                        browserSettings = browserSettings,
+                    )
+
+
                     // Refresh Icon
                     NavigationItem(
                         modifier = Modifier.weight(1f),
                         activeAction = activeAction,
                         gestureNavAction = GestureNavAction.REFRESH,
                         actionIcon = painterResource(R.drawable.ic_refresh),
+                        browserSettings = browserSettings,
+                    )
+
+                    NavigationItem(
+                        modifier = Modifier.weight(1f),
+                        activeAction = activeAction,
+                        gestureNavAction = GestureNavAction.NEW_TAB,
+                        actionIcon = painterResource(R.drawable.ic_tab_new_right),
                         browserSettings = browserSettings,
                     )
                 }
@@ -2857,6 +3040,139 @@ fun NavigationItem(
 
     }
 
+}
+
+@Composable
+fun TabsPanel(
+    modifier: Modifier = Modifier,
+    tabs: List<Tab>,
+    activeTabIndex: Int,
+    browserSettings: BrowserSettings,
+    onTabSelected: (Int) -> Unit
+) {
+    if (tabs.isEmpty()) return
+
+    val pagerState = rememberPagerState(initialPage = activeTabIndex, pageCount = { tabs.size })
+
+    // This effect is still useful to sync the pager if a new tab is created
+    LaunchedEffect(activeTabIndex, tabs.size) {
+        if (pagerState.currentPage != activeTabIndex) {
+            pagerState.animateScrollToPage(activeTabIndex)
+        }
+    }
+
+
+
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(browserSettings.paddingDp.dp)
+            .clip(
+                RoundedCornerShape(
+                    cornerRadiusForLayer(
+                        2,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp
+                )
+            )
+            .background(Color.Black.copy(0.3f))
+    ) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = modifier
+                .fillMaxWidth(),
+            // We use a smaller content padding so the active tab is larger
+            contentPadding = PaddingValues(horizontal = 32.dp),
+            pageSpacing = browserSettings.paddingDp.dp / 2
+        ) { pageIndex ->
+            val tab = tabs[pageIndex]
+
+            val currentHistory = tab.historyState
+            val title = currentHistory?.items?.getOrNull(currentHistory.currentIndex)?.title ?: "New Tab"
+            val faviconUrl = getFaviconUrl(tab.currentUrl ?: "")
+
+
+            TabItem(
+                faviconUrl = faviconUrl,
+                title = title,
+                // "Active" still means it's the centered page in the pager for visual purposes
+                isActive = pagerState.currentPage == pageIndex,
+                browserSettings = browserSettings,
+                // The onClick event is what now triggers the selection
+                onClick = { onTabSelected(pageIndex) }
+            )
+        }
+    }
+}
+
+@Composable
+fun TabItem(
+    modifier: Modifier = Modifier,
+    faviconUrl: String,
+    title: String,
+    isActive: Boolean,
+    browserSettings: BrowserSettings,
+    onClick: () -> Unit // Add an onClick callback
+) {
+    Box(
+
+        modifier = modifier
+            .padding(horizontal = browserSettings.paddingDp.dp)
+            .clip(
+                RoundedCornerShape(
+                    cornerRadiusForLayer(
+                        2,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp
+                )
+            )
+    ) {
+        Row(
+            modifier = modifier
+                // Make the entire item clickable
+                .clickable(onClick = onClick)
+                .height(
+                    cornerRadiusForLayer(
+                        2,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp * 2
+                )
+                .clip(
+                    RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
+                )
+                .background(if (isActive) Color.Black.copy(alpha = 0.5f) else Color.Black.copy(alpha = 0.2f)) // Different background for inactive
+                .padding(horizontal = browserSettings.paddingDp.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AsyncImage(
+                model = faviconUrl,
+                contentDescription = "Favicon",
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+            )
+
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = title,
+                color = if (isActive) Color.White else Color.White.copy(alpha = 0.7f), // Dim the text for inactive
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+
+        }
+    }
 }
 
 //endregion
