@@ -22,6 +22,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
+import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -58,10 +59,10 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -115,11 +116,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlin.system.exitProcess
 
 
 //region Global Variables
-private lateinit var webView: CustomWebView
 var databaseCurrentIndexHolder = -1
 var realtimePreviousIndexHolder = 0
 var pixel_9_corner_radius = 54.6f
@@ -137,7 +141,7 @@ fun cornerRadiusForLayer(layer: Int, deviceCornerRadius: Float = 0f, padding: Fl
     return (cornerRadiusForLayer(layer - 1, deviceCornerRadius, padding) - padding)
 }
 
-fun getFaviconUrl(pageUrl: String): String {
+fun getFaviconUrlFromGoogleServer(pageUrl: String): String {
     val host = try {
         pageUrl.toUri().host ?: ""
     } catch (e: Exception) {
@@ -147,6 +151,25 @@ fun getFaviconUrl(pageUrl: String): String {
     return "https://www.google.com/s2/favicons?sz=64&domain_url=$host"
 }
 
+//endregion
+
+//region JavaScript Interface
+class FaviconJavascriptInterface(
+    private val onFaviconUrlFound: (String) -> Unit
+) {
+    @Suppress("unused")
+    @JavascriptInterface
+    fun passFaviconUrl(absoluteIconUrl: String?) {
+        if (absoluteIconUrl != null) {
+            Log.d("Favicon", "Received absolute icon URL from JS: $absoluteIconUrl")
+            onFaviconUrlFound(absoluteIconUrl)
+        } else {
+            // Here you can decide on a fallback. Maybe do nothing and let Coil show a placeholder.
+            // Or you can try the /favicon.ico, but it's less reliable.
+            Log.d("Favicon", "No icon URL found in page HTML.")
+        }
+    }
+}
 //endregion
 
 //region Data Class
@@ -212,13 +235,17 @@ data class CustomPermissionRequest(
 enum class TabState {
     ACTIVE,      // The tab currently visible to the user
     BACKGROUND,  // A tab that is loaded but not visible
-//    FROZEN       // A tab that needs to be reloaded when opened
+    FROZEN       // A tab that needs to be reloaded when opened
 }
 
 // The data class for a single tab
 // Serializable version of WebHistoryItem
 @Serializable
-data class SerializableHistoryItem(val url: String, val title: String)
+data class SerializableHistoryItem(
+    val url: String,
+    val title: String,
+    val faviconUrl: String? = null,
+)
 
 // Serializable version of WebBackForwardList
 @Serializable
@@ -243,47 +270,44 @@ class TabManager(context: Context) {
     private val json = Json { ignoreUnknownKeys = true } // Lenient JSON parser
 
     private val tabsKey = "tabs_list_json"
+    private val activeTabIndexKey = "active_tab_index"
 
-    fun saveTabs(tabs: List<Tab>) {
+    fun saveTabs(tabs: List<Tab>, activeTabIndex: Int) {
         // Convert the list of tabs into a single JSON string
         val jsonString = json.encodeToString(tabs)
         prefs.edit {
             putString(tabsKey, jsonString)
+            putInt(activeTabIndexKey, activeTabIndex)
         }
+
         Log.d("TabManager", "Tabs saved.")
     }
+
+    // New function to freeze all tabs on exit
+    fun freezeAllTabs() {
+        val tabs = loadTabs(default_url) // Load the current state
+        if (tabs.isNotEmpty()) {
+            val activeIndex = prefs.getInt(activeTabIndexKey, 0)
+
+            // Freeze all tabs
+            tabs.forEach { it.state = TabState.FROZEN }
+
+            // Mark the last known active tab as ACTIVE so we can find it on next launch
+            if (activeIndex in tabs.indices) {
+                tabs[activeIndex].state = TabState.ACTIVE
+            }
+
+            saveTabs(tabs, activeIndex)
+            Log.d("TabManager", "All tabs have been frozen.")
+        }
+    }
+
     fun clearAllTabs() {
         prefs.edit {
             remove(tabsKey)
             commit()
         }
 
-    }
-
-    fun createAndSelectNewTab(url: String) {
-        // 1. Load the current list of tabs.
-        val tabs = loadTabs(url) // Pass url as fallback, though it won't be used here.
-
-        // 2. Deactivate the currently active tab.
-        tabs.firstOrNull { it.state == TabState.ACTIVE }?.state = TabState.BACKGROUND
-
-        // 3. Create the new tab and set it as ACTIVE.
-        val newTab = Tab(
-            state = TabState.ACTIVE,
-            historyState = SerializableBackForwardList(
-                items = listOf(SerializableHistoryItem(url = url, title = "oo")),
-                currentIndex = 0
-            )
-        )
-
-        // 4. Add the new tab to the list.
-        tabs.add(newTab)
-
-        // 5. Save the updated list of tabs back to SharedPreferences.
-        saveTabs(tabs)
-        Log.i("TabManager", "Create New Tab")
-        Log.i("TabManager", "tabs: ${tabs.size}")
-        Log.i("TabManager", "tabs: $tabs")
     }
 
     fun loadTabs(defaultUrl: String): MutableList<Tab> {
@@ -299,6 +323,10 @@ class TabManager(context: Context) {
                 if (loadedTabs.isEmpty()) {
                     Log.w("TabManager", "Loaded tab list was empty. Creating default.")
                     return createDefaultTabs(defaultUrl)
+                }
+                val activeIndex = prefs.getInt(activeTabIndexKey, 0)
+                loadedTabs.forEachIndexed { index, tab ->
+                    tab.state = if (index == activeIndex) TabState.ACTIVE else TabState.FROZEN
                 }
 
                 return loadedTabs
@@ -441,39 +469,61 @@ class CustomWebView(context: Context) : WebView(context) {
 //        return super.startActionMode(callback, type)
 //    }
 }
-//endregion
+
+class WebViewManager(private val context: Context) {
+
+    private val webViewPool = mutableMapOf<Long, CustomWebView>()
+    private var activeWebView: CustomWebView? = null
+    val activity = context as? Activity
+
+    //region JS Code
+    private val jsFaviconDiscovery = """
+    (function() {
+        let icon = document.querySelector("link[rel='apple-touch-icon']") ||
+                   document.querySelector("link[rel='icon']") ||
+                   document.querySelector("link[rel='shortcut icon']");
+        
+        // The 'href' property of an HTMLAnchorElement or HTMLLinkElement is
+        // automatically resolved to an absolute URL by the browser engine.
+        // We don't need to resolve it in Kotlin anymore.
+        WebAppFavicon.passFaviconUrl(icon ? icon.href : null);
+    })();
+""".trimIndent()
+    //endregion
 
 
-//region Composable
-
-
-class MainActivity : ComponentActivity() {
-    @SuppressLint("SetJavaScriptEnabled")
-    override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
-        super.onCreate(savedInstanceState)
-
-        val tabManager = TabManager(this)
-        var initialUrl: String? = null
-
-        // Check if the app was launched from a VIEW intent (a link)
-        if (intent?.action == Intent.ACTION_VIEW) {
-            intent.dataString?.let { urlFromIntent ->
-                Log.d("MainActivity", "Launched with VIEW intent for URL: $urlFromIntent")
-
-                // Use our new function to create a new tab for this URL
-                tabManager.createAndSelectNewTab(urlFromIntent)
-
-                // Store the URL to be loaded
-                initialUrl = urlFromIntent
-            }
+    // This method gets the WebView for a given tab, creating one if it doesn't exist.
+    fun getWebView(tab: Tab): CustomWebView {
+        val webView = webViewPool.getOrPut(tab.id) {
+            createAndConfigureWebView()
         }
-        webView = CustomWebView(this).apply {
+        activeWebView = webView
+        return webView
+    }
+
+//    // Pre-loads a WebView for a background tab if it's not already loaded.
+//    fun preloadWebView(tab: Tab) {
+//        if (!webViewPool.containsKey(tab.id)) {
+//            val backgroundWebView = getWebView(tab)
+//            backgroundWebView.loadUrl(tab.currentUrl ?: "")
+//        }
+//    }
+
+    // Call this when closing a tab to release resources.
+    fun destroyWebView(tab: Tab) {
+        webViewPool.remove(tab.id)?.apply {
+            (parent as? ViewGroup)?.removeView(this)
+            destroy()
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun createAndConfigureWebView(): CustomWebView {
+        return CustomWebView(context).apply {
             // Force WebView to be transparent so Compose can control the background
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
 
             // Apply all your production-grade settings
-            // --- This initial setup block should contain ALL static settings ---
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -510,18 +560,502 @@ class MainActivity : ComponentActivity() {
 
             // Add your JS interface
 //            addJavascriptInterface(WebAppInterface(), "Android")
+        }
+    }
+
+    // We can also move the client setup here.
+    // Note: These now take lambdas to communicate back to the Composable.
+    fun setWebViewClients(
+        webView: CustomWebView,
+        tab: Tab,
+        onFaviconChanged: (Long, String) -> Unit,
+        onJsAlert: (String) -> Unit,
+        onJsConfirm: (String, (Boolean) -> Unit) -> Unit,
+        onJsPrompt: (String, String, (String?) -> Unit) -> Unit,
+        onPermissionRequest: (CustomPermissionRequest?) -> Unit,
+        setCustomViewCallback: (WebChromeClient.CustomViewCallback?) -> Unit,
+        setOriginalOrientation: (Int) -> Unit,
+        resetCustomView: () -> Unit,
+        // ... add other callbacks as needed
+        onPageStartedFun: (WebView, String?, Bitmap?) -> Unit,
+        onPageFinishedFun: (WebView, String?) -> Unit,
+        onDoUpdateVisitedHistoryFun: (WebView, String?, Boolean) -> Unit,
+    ) {
+
+        webView.addJavascriptInterface(
+            FaviconJavascriptInterface { faviconUrl ->
+                // This is called from the JS bridge
+                onFaviconChanged(tab.id, faviconUrl)
+            },
+            "WebAppFavicon" // This name must match the JS
+        )
+
+        // The WebChromeClient handles UI-related browser events.
+        webView.webChromeClient = object : WebChromeClient() {
+
+            private var fullscreenView: View? = null
+
+            // Handles window.alert()
+            override fun onJsAlert(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: android.webkit.JsResult?
+            ): Boolean {
+
+                // jsDialogState = JsAlert(message ?: "")
+
+                onJsAlert(message ?: "")
+
+                // We consume the result here and will handle it in our Compose Dialog
+                result?.confirm()
+                return true // Return true to indicate we've handled it.
+            }
+
+            // Handles window.confirm()
+            override fun onJsConfirm(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: android.webkit.JsResult?
+            ): Boolean {
+//                jsDialogState = JsConfirm(message ?: "") { confirmed ->
+//                    if (confirmed) result?.confirm() else result?.cancel()
+//                }
+
+                onJsConfirm(message ?: "") { confirmed ->
+                    if (confirmed) result?.confirm() else result?.cancel()
+                }
+
+                return true
+            }
+
+            // Handles window.prompt()
+            override fun onJsPrompt(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                defaultValue: String?,
+                result: android.webkit.JsPromptResult?
+            ): Boolean {
+//                jsDialogState = JsPrompt(message ?: "", defaultValue ?: "") { inputText ->
+//                    if (inputText != null) {
+//                        result?.confirm(inputText)
+//                    } else {
+//                        result?.cancel()
+//                    }
+//                }
+
+                onJsPrompt(message ?: "", defaultValue ?: "") { inputText ->
+                    if (inputText != null) {
+                        result?.confirm(inputText)
+                    } else {
+                        result?.cancel()
+                    }
+                }
+
+                return true
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?
+            ) {
+                if (origin == null || callback == null) return
+
+                // Create a new generic permission request for this specific geolocation prompt.
+                val newRequest = CustomPermissionRequest(
+                    origin = origin,
+                    title = "Location Access Required",
+                    rationale = "This website wants to use your device's location.",
+                    iconResAllow = R.drawable.ic_location_on,
+                    iconResDeny = R.drawable.ic_location_off,
+                    permissionsToRequest = listOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    ),
+                    // This is the key: the onResult callback for this specific request
+                    // knows how to talk back to the WebView's Geolocation callback.
+                    onResult = { permissions ->
+                        val isGranted =
+                            permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+                        callback.invoke(origin, isGranted, false)
+                    }
+                )
+                onPermissionRequest(newRequest)
+
+            }
+
+
+            override fun onPermissionRequest(request: PermissionRequest) {
+                Log.d(
+                    "WebViewPermission",
+                    "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}"
+                )
+
+                val requestedAndroidPermissions = mutableListOf<String>()
+                var title = "Permission Required" // Default title
+                var rationale =
+                    "'${request.origin}' wants to use your device features." // Default rationale
+                var allowIcon = R.drawable.ic_bug // Default allow icon
+                var denyIcon = R.drawable.ic_bug   // Default deny icon
+
+                val requestsCamera =
+                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                val requestsMicrophone =
+                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+
+                if (requestsCamera) {
+                    requestedAndroidPermissions.add(Manifest.permission.CAMERA)
+                    title = "Camera Access"
+                    rationale = "Allow camera access for video recording."
+                    allowIcon = R.drawable.ic_camera_on
+                    denyIcon = R.drawable.ic_camera_off
+                } else if (requestsMicrophone) {
+                    requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
+                    title = "Microphone Access"
+                    rationale = "Allow microphone access for audio recording."
+                    allowIcon = R.drawable.ic_mic_on
+                    denyIcon = R.drawable.ic_mic_off
+                }
+
+                // Add other permission mappings if needed
+                if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
+                    // Handle protected media if needed
+                    Log.d(
+                        "WebViewPermission",
+                        "Protected media ID requested - typically not mapped to runtime permissions"
+                    )
+                    // If no other Android permissions were added, you might want to deny or handle appropriately.
+                    if (requestedAndroidPermissions.isEmpty()) {
+                        Log.d(
+                            "WebViewPermission",
+                            "Protected media ID requested with no other mappable Android permissions; denying request."
+                        )
+                        request.deny()
+                        return
+                    }
+                }
+
+                if (requestedAndroidPermissions.isEmpty()) {
+                    Log.d(
+                        "WebViewPermission",
+                        "No mappable Android permissions for the requested WebView resources; denying request."
+                    )
+                    request.deny()
+                    return
+                }
+
+                // Check if we already have these permissions
+                val context = webView.context
+                val hasAllPermissions = requestedAndroidPermissions.all { permission ->
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        permission
+                    ) == PackageManager.PERMISSION_GRANTED
+                }
+
+                if (hasAllPermissions) {
+                    // If we already have permissions, grant them immediately
+                    Log.d(
+                        "WebViewPermission",
+                        "Permissions already granted, granting to WebView"
+                    )
+                    request.grant(request.resources)
+                    return
+                }
+
+
+                // Create the custom request
+                val newRequest = CustomPermissionRequest(
+                    origin = request.origin.toString(),
+                    title = title,
+                    rationale = rationale,
+                    iconResAllow = allowIcon,
+                    iconResDeny = denyIcon,
+                    permissionsToRequest = requestedAndroidPermissions,
+                    onResult = { permissionsResult ->
+                        activity?.runOnUiThread {
+                            // Check which permissions were actually granted
+                            val grantedPermissions = permissionsResult.filter { it.value }.keys
+
+                            // Build a list of WebView resources to grant based on granted Android permissions
+                            val resourcesToGrant = mutableListOf<String>()
+
+                            if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
+                                request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                            ) {
+                                resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                            }
+
+                            if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
+                                request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                            ) {
+                                resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                            }
+
+                            if (resourcesToGrant.isNotEmpty()) {
+                                Log.d(
+                                    "WebViewPermission",
+                                    "Granting resources: ${resourcesToGrant.joinToString()}"
+                                )
+                                request.grant(resourcesToGrant.toTypedArray())
+                            } else {
+                                Log.d(
+                                    "WebViewPermission",
+                                    "No permissions granted; denying all resources."
+                                )
+                                request.deny()
+                            }
+                        }
+                    }
+                )
+
+                onPermissionRequest(newRequest)
+            }
+
+            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                if (fullscreenView != null) {
+                    callback?.onCustomViewHidden()
+                    return
+                }
+
+
+//                originalOrientation = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+                setOriginalOrientation(
+                    activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                )
+
+//                customViewCallback = callback
+                setCustomViewCallback(callback)
+                fullscreenView = view
+
+                // B. Get the root view of the Activity and add our fullscreen view to it.
+                val decorView = activity?.window?.decorView as? ViewGroup
+                decorView?.addView(
+                    fullscreenView,
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+
+                // C. Now, control the window
+                val insetsController = activity?.let {
+                    WindowCompat.getInsetsController(
+                        it.window,
+                        it.window.decorView
+                    )
+                }
+                insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+
+                // Tell the WebView to resume, as it might have paused.
+                webView.onResume()
+            }
+
+            override fun onHideCustomView() {
+                val decorView = activity?.window?.decorView as? ViewGroup
+                decorView?.removeView(fullscreenView)
+                fullscreenView = null
+
+                val insetsController = activity?.let {
+                    WindowCompat.getInsetsController(
+                        it.window,
+                        it.window.decorView
+                    )
+                }
+                insetsController?.show(WindowInsetsCompat.Type.systemBars())
+
+                resetCustomView()
+//                activity?.requestedOrientation = originalOrientation
+//
+//                customViewCallback?.onCustomViewHidden()
+//                customViewCallback = null
+
+                webView.onResume()
+            }
+
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                super.onProgressChanged(view, newProgress)
+                // Inject our JavaScript helper as the page is loading.
+                val js =
+                    "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
+                view?.evaluateJavascript(js, null)
+            }
+
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                consoleMessage?.let {
+                    Log.d(
+                        "WebViewConsole",
+                        "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}"
+                    )
+                }
+                return true
+            }
+
 
         }
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                if (view != null) onPageStartedFun(view, url, favicon)
+            }
+
+            override fun onPageFinished(view: WebView?, currentUrlString: String?) {
+                super.onPageFinished(view, currentUrlString)
+
+
+
+                if (view != null) {
+                    Log.e("Favicon", "onPageFinished")
+                    view.evaluateJavascript(jsFaviconDiscovery, null)
+
+                    onPageFinishedFun(view, currentUrlString)
+                }
+            }
+
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                val url = request?.url ?: return false
+                val urlString = url.toString()
+
+                if (url.scheme == "http" || url.scheme == "https") {
+                    return false // Let the WebView handle normal web links
+                }
+
+                if (url.scheme == "intent") {
+                    try {
+                        val intent = Intent.parseUri(urlString, Intent.URI_INTENT_SCHEME)
+                        view?.context?.startActivity(intent)
+                    } catch (e: Exception) {
+                        Log.w(
+                            "shouldOverrideUrlLoading",
+                            "Could not handle intent, trying fallback",
+                            e
+                        )
+                        val packageName = try {
+                            Intent.parseUri(urlString, Intent.URI_INTENT_SCHEME).`package`
+                        } catch (parseEx: URISyntaxException) {
+                            Log.e(
+                                "shouldOverrideUrlLoading",
+                                "Could not get package name from intent",
+                                parseEx
+                            )
+                            null
+                        }
+
+                        if (packageName != null) {
+                            try {
+                                val marketIntent = Intent(
+                                    Intent.ACTION_VIEW,
+                                    "market://details?id=$packageName".toUri()
+                                )
+                                view?.context?.startActivity(marketIntent)
+                                view?.goBack()
+                            } catch (marketError: Exception) {
+                                Log.e(
+                                    "shouldOverrideUrlLoading",
+                                    "Could not open Play Store for package: $packageName",
+                                    marketError
+                                )
+                            }
+                        }
+                    }
+                    return true // We've handled the intent
+                }
+
+                // Handle other simple schemes like market://, mailto:// etc.
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, url)
+                    // DO NOT add FLAG_ACTIVITY_NEW_TASK
+                    view?.context?.startActivity(intent)
+
+                    // Immediately go back to the previous page
+                    view?.goBack()
+                } catch (e: Exception) {
+                    Log.w("WebView", "No app found to handle URL: $urlString", e)
+                }
+                return true
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+
+                if (view != null) onDoUpdateVisitedHistoryFun(view, url, isReload)
+
+
+                super.doUpdateVisitedHistory(view, url, isReload)
+
+
+            }
+        }
+    }
+}
+
+//endregion
+
+
+//region Composable
+
+
+class MainActivity : ComponentActivity() {
+
+    private val tabManager by lazy { TabManager(this) }
+    val newUrlFromIntent = MutableStateFlow<String?>(null)
+
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
 
 
         setContent {
             BrowserTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    BrowserScreen(initialUrl = initialUrl)
+                    BrowserScreen(newUrlFlow = newUrlFromIntent)
                 }
             }
         }
 
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Handle intents that arrive while the app is already running
+        handleIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        // Hide the system bars.
+        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+        // Configure the behavior for revealing them temporarily.
+        windowInsetsController.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW) {
+            intent.dataString?.let { urlFromIntent ->
+                Log.d("MainActivity", "Handling VIEW intent for URL: $urlFromIntent")
+                // Instead of creating the tab here, we just emit the URL.
+                // The Composable will react to this emission.
+                newUrlFromIntent.update { urlFromIntent }
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        Log.d("MainActivity", "onStop called. Freezing all tabs.")
+        // When the app goes to the background, freeze everything.
+        tabManager.freezeAllTabs()
     }
 }
 
@@ -552,11 +1086,14 @@ fun rememberHasDisplayCutout(): State<Boolean> {
 }
 
 @Composable
-fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
+fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier) {
 
 
     //region Variables
     val context = LocalContext.current
+
+    val webViewManager = remember { WebViewManager(context) }
+
     val sharedPrefs =
         remember { context.getSharedPreferences("BrowserPrefs", Context.MODE_PRIVATE) }
     var browserSettings by remember {
@@ -589,6 +1126,18 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
         mutableIntStateOf(tabs.indexOfFirst { it.state == TabState.ACTIVE }.coerceAtLeast(0))
     }
 
+    val activeTab = tabs.getOrNull(activeTabIndex.intValue)
+
+    val activeWebView = activeTab?.let { tab ->
+        webViewManager.getWebView(tab).apply {
+            // If the tab was frozen, its WebView was just created and needs to load its URL
+            if (tab.state == TabState.FROZEN || this.url == null) {
+                Log.d("BrowserScreen", "Loading URL for previously frozen tab: ${tab.currentUrl}")
+                this.loadUrl(tab.currentUrl ?: browserSettings.defaultUrl)
+            }
+        }
+    }
+
     var initialLoadDone by rememberSaveable { mutableStateOf(false) }
 
     var saveTrigger by remember { mutableIntStateOf(0) }
@@ -617,8 +1166,6 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
     var isPromptPanelVisible by rememberSaveable { mutableStateOf(false) }
     var isTabsPanelVisible by remember { mutableStateOf(false) }
     var tabsPanelLock by remember { mutableStateOf(true) }
-
-
 
 
     var isNavPanelVisible by remember { mutableStateOf(false) }
@@ -715,6 +1262,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
     var jsDialogState by remember { mutableStateOf<JsDialogState?>(null) }
     var promptComponentDisplayState by remember { mutableStateOf<JsDialogState?>(null) }
 
+
     //endregion
     // FUNCTIONS
 
@@ -725,22 +1273,28 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
         browserSettings = newSettings
         Log.e("updateBrowserSettings", browserSettings.toString())
     }
-    fun createNewTab(insertAtIndex: Int) {
-        tabs[activeTabIndex.intValue].state = TabState.BACKGROUND
+
+    fun createNewTab(insertAtIndex: Int, url: String = browserSettings.defaultUrl) {
+        if (activeTabIndex.intValue in tabs.indices) {
+            tabs[activeTabIndex.intValue].state = TabState.BACKGROUND
+        }
 
         val newTab = Tab(
             state = TabState.ACTIVE,
             historyState = SerializableBackForwardList(
-                items = listOf(SerializableHistoryItem(url = browserSettings.defaultUrl, title = "oo")),
+                items = listOf(SerializableHistoryItem(url = url, title = "New Tab")),
                 currentIndex = 0
             )
         )
 
         tabs.add(insertAtIndex, newTab)
 
+        val newWebView = webViewManager.getWebView(newTab)
+        newWebView.loadUrl(url)
+
         activeTabIndex.intValue = insertAtIndex
-        webView.loadUrl(browserSettings.defaultUrl)
-        textFieldValue = TextFieldValue(browserSettings.defaultUrl)
+
+        textFieldValue = TextFieldValue(url, TextRange(url.length))
         saveTrigger++
     }
 
@@ -755,7 +1309,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                     history.items.getOrNull(newIndex)
                         ?.let { itemToLoad ->
                             isNavigateInProgress = true
-                            webView.loadUrl(itemToLoad.url)
+                            activeWebView?.loadUrl(itemToLoad.url)
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
                                     historyState = history.copy(
@@ -773,7 +1327,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
             GestureNavAction.REFRESH -> {
                 isNavigateInProgress = true
 
-                webView.reload()
+                activeWebView?.reload()
             }
 
             GestureNavAction.FORWARD -> if (canGoForward) {
@@ -784,7 +1338,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                     history.items.getOrNull(newIndex)
                         ?.let { itemToLoad ->
                             isNavigateInProgress = true
-                            webView.loadUrl(itemToLoad.url)
+                            activeWebView?.loadUrl(itemToLoad.url)
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
                                     historyState = history.copy(
@@ -802,6 +1356,8 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
             GestureNavAction.CLOSE_TAB -> {
                 if (tabs.size > 1) {
                     val tabToRemoveIndex = activeTabIndex.intValue
+                    val tabToRemove = tabs[tabToRemoveIndex]
+                    webViewManager.destroyWebView(tabToRemove)
                     tabs.removeAt(tabToRemoveIndex)
 
                     // Determine the next active tab
@@ -815,7 +1371,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                     tabs[nextTabIndex].state = TabState.ACTIVE
 
                     val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
-                    webView.loadUrl(urlToLoad)
+                    activeWebView?.loadUrl(urlToLoad)
                     textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
                     saveTrigger++
                 } else {
@@ -836,7 +1392,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 //                    activeTabIndex.intValue = 0
 //
 //                    // 4. Load the default URL and update UI
-//                    webView.loadUrl(browserSettings.defaultUrl)
+//                    activeWebView.loadUrl(browserSettings.defaultUrl)
 //                    textFieldValue = TextFieldValue(browserSettings.defaultUrl, TextRange(browserSettings.defaultUrl.length))
 //                    saveTrigger++
 
@@ -856,27 +1412,9 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
             }
 
             GestureNavAction.NEW_TAB -> {
-                // 1. Deactivate current tab
-                tabs[activeTabIndex.intValue].state = TabState.BACKGROUND
 
-                // 2. Create the new tab
-                val newTab = Tab(
-                    state = TabState.ACTIVE,
-                    historyState = SerializableBackForwardList(
-                        items = listOf(SerializableHistoryItem(url = browserSettings.defaultUrl, title = "oo")),
-                        currentIndex = 0
-                    )
-                )
-
-                // 3. Add it right after the current one
                 val newIndex = activeTabIndex.intValue + 1
-                tabs.add(newIndex, newTab)
-
-                // 4. Set it as active and load
-                activeTabIndex.intValue = newIndex
-                webView.loadUrl(browserSettings.defaultUrl)
-                textFieldValue = TextFieldValue(browserSettings.defaultUrl, TextRange(browserSettings.defaultUrl.length))
-                saveTrigger++
+                createNewTab(newIndex)
             }
 
 
@@ -891,556 +1429,264 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
     // This effect now ONLY handles the very first restoration of state.
 
-    SideEffect {
-
-        webView.onWebViewTouch = {
-            // Only hide the panel if it's currently visible.
-            if (isUrlBarVisible) {
-                isUrlBarVisible = false
-            }
-        }
-
-        // The WebChromeClient handles UI-related browser events.
-        webView.webChromeClient = object : WebChromeClient() {
-
-            private var fullscreenView: View? = null
-
-            // Handles window.alert()
-            override fun onJsAlert(
-                view: WebView?,
-                url: String?,
-                message: String?,
-                result: android.webkit.JsResult?
-            ): Boolean {
-                jsDialogState = JsAlert(message ?: "")
-                // We consume the result here and will handle it in our Compose Dialog
-                result?.confirm()
-                return true // Return true to indicate we've handled it.
-            }
-
-            // Handles window.confirm()
-            override fun onJsConfirm(
-                view: WebView?,
-                url: String?,
-                message: String?,
-                result: android.webkit.JsResult?
-            ): Boolean {
-                jsDialogState = JsConfirm(message ?: "") { confirmed ->
-                    if (confirmed) result?.confirm() else result?.cancel()
-                }
-                return true
-            }
-
-            // Handles window.prompt()
-            override fun onJsPrompt(
-                view: WebView?,
-                url: String?,
-                message: String?,
-                defaultValue: String?,
-                result: android.webkit.JsPromptResult?
-            ): Boolean {
-                jsDialogState = JsPrompt(message ?: "", defaultValue ?: "") { inputText ->
-                    if (inputText != null) {
-                        result?.confirm(inputText)
-                    } else {
-                        result?.cancel()
-                    }
-                }
-                return true
-            }
-
-            override fun onGeolocationPermissionsShowPrompt(
-                origin: String?,
-                callback: GeolocationPermissions.Callback?
-            ) {
-                if (origin == null || callback == null) return
-
-                // Create a new generic permission request for this specific geolocation prompt.
-                pendingPermissionRequest = CustomPermissionRequest(
-                    origin = origin,
-                    title = "Location Access Required",
-                    rationale = "This website wants to use your device's location.",
-                    iconResAllow = R.drawable.ic_location_on,
-                    iconResDeny = R.drawable.ic_location_off,
-                    permissionsToRequest = listOf(
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.ACCESS_COARSE_LOCATION
-                    ),
-                    // This is the key: the onResult callback for this specific request
-                    // knows how to talk back to the WebView's Geolocation callback.
-                    onResult = { permissions ->
-                        val isGranted =
-                            permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-                        callback.invoke(origin, isGranted, false)
-                    }
-                )
-            }
-
-
-            override fun onPermissionRequest(request: PermissionRequest) {
-                Log.d(
-                    "WebViewPermission",
-                    "onPermissionRequest called for: ${request.resources.joinToString(", ")} from origin: ${request.origin}"
-                )
-
-                val requestedAndroidPermissions = mutableListOf<String>()
-                var title = "Permission Required" // Default title
-                var rationale =
-                    "'${request.origin}' wants to use your device features." // Default rationale
-                var allowIcon = R.drawable.ic_bug // Default allow icon
-                var denyIcon = R.drawable.ic_bug   // Default deny icon
-
-                val requestsCamera =
-                    request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                val requestsMicrophone =
-                    request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-
-                if (requestsCamera) {
-                    requestedAndroidPermissions.add(Manifest.permission.CAMERA)
-                    title = "Camera Access"
-                    rationale = "Allow camera access for video recording."
-                    allowIcon = R.drawable.ic_camera_on
-                    denyIcon = R.drawable.ic_camera_off
-                } else if (requestsMicrophone) {
-                    requestedAndroidPermissions.add(Manifest.permission.RECORD_AUDIO)
-                    title = "Microphone Access"
-                    rationale = "Allow microphone access for audio recording."
-                    allowIcon = R.drawable.ic_mic_on
-                    denyIcon = R.drawable.ic_mic_off
-                }
-
-                // Add other permission mappings if needed
-                if (request.resources.contains(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) {
-                    // Handle protected media if needed
-                    Log.d(
-                        "WebViewPermission",
-                        "Protected media ID requested - typically not mapped to runtime permissions"
-                    )
-                    // If no other Android permissions were added, you might want to deny or handle appropriately.
-                    if (requestedAndroidPermissions.isEmpty()) {
-                        Log.d(
-                            "WebViewPermission",
-                            "Protected media ID requested with no other mappable Android permissions; denying request."
-                        )
-                        request.deny()
-                        return
-                    }
-                }
-
-                if (requestedAndroidPermissions.isEmpty()) {
-                    Log.d(
-                        "WebViewPermission",
-                        "No mappable Android permissions for the requested WebView resources; denying request."
-                    )
-                    request.deny()
-                    return
-                }
-
-                // Check if we already have these permissions
-                val context = webView.context
-                val hasAllPermissions = requestedAndroidPermissions.all { permission ->
-                    ContextCompat.checkSelfPermission(
-                        context,
-                        permission
-                    ) == PackageManager.PERMISSION_GRANTED
-                }
-
-                if (hasAllPermissions) {
-                    // If we already have permissions, grant them immediately
-                    Log.d(
-                        "WebViewPermission",
-                        "Permissions already granted, granting to WebView"
-                    )
-                    request.grant(request.resources)
-                    return
-                }
-
-                // Create the custom request
-                pendingPermissionRequest = CustomPermissionRequest(
-                    origin = request.origin.toString(),
-                    title = title,
-                    rationale = rationale,
-                    iconResAllow = allowIcon,
-                    iconResDeny = denyIcon,
-                    permissionsToRequest = requestedAndroidPermissions,
-                    onResult = { permissionsResult ->
-                        activity?.runOnUiThread {
-                            // Check which permissions were actually granted
-                            val grantedPermissions = permissionsResult.filter { it.value }.keys
-
-                            // Build a list of WebView resources to grant based on granted Android permissions
-                            val resourcesToGrant = mutableListOf<String>()
-
-                            if (grantedPermissions.contains(Manifest.permission.CAMERA) &&
-                                request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                            ) {
-                                resourcesToGrant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                            }
-
-                            if (grantedPermissions.contains(Manifest.permission.RECORD_AUDIO) &&
-                                request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-                            ) {
-                                resourcesToGrant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-                            }
-
-                            if (resourcesToGrant.isNotEmpty()) {
-                                Log.d(
-                                    "WebViewPermission",
-                                    "Granting resources: ${resourcesToGrant.joinToString()}"
-                                )
-                                request.grant(resourcesToGrant.toTypedArray())
-                            } else {
-                                Log.d(
-                                    "WebViewPermission",
-                                    "No permissions granted; denying all resources."
-                                )
-                                request.deny()
-                            }
-                        }
-                    }
-                )
-            }
-
-            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                if (fullscreenView != null) {
-                    callback?.onCustomViewHidden()
-                    return
-                }
-
-
-                originalOrientation = activity?.requestedOrientation
-                    ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                customViewCallback = callback
-                fullscreenView = view
-
-                // B. Get the root view of the Activity and add our fullscreen view to it.
-                val decorView = activity?.window?.decorView as? ViewGroup
-                decorView?.addView(
-                    fullscreenView,
-                    ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                )
-
-                // C. Now, control the window
-                val insetsController = activity?.let {
-                    WindowCompat.getInsetsController(
-                        it.window,
-                        it.window.decorView
-                    )
-                }
-                insetsController?.hide(WindowInsetsCompat.Type.systemBars())
-                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-
-                // Tell the WebView to resume, as it might have paused.
-                webView.onResume()
-            }
-
-            override fun onHideCustomView() {
-                val decorView = activity?.window?.decorView as? ViewGroup
-                decorView?.removeView(fullscreenView)
-                fullscreenView = null
-
-                val insetsController = activity?.let {
-                    WindowCompat.getInsetsController(
-                        it.window,
-                        it.window.decorView
-                    )
-                }
-                insetsController?.show(WindowInsetsCompat.Type.systemBars())
-                activity?.requestedOrientation = originalOrientation
-
-                customViewCallback?.onCustomViewHidden()
-                customViewCallback = null
-
-                webView.onResume()
-            }
-
-            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                super.onProgressChanged(view, newProgress)
-                // Inject our JavaScript helper as the page is loading.
-                val js =
-                    "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
-                view?.evaluateJavascript(js, null)
-            }
-
-            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                consoleMessage?.let {
-                    Log.d(
-                        "WebViewConsole",
-                        "${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}"
-                    )
-                }
-                return true
-            }
-
-
-        }
-
-        // The WebViewClient handles content loading events.
-        webView.webViewClient = object : WebViewClient() {
-
-
-            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                super.onPageStarted(view, url, favicon)
-                pendingPermissionRequest?.let { request ->
-                    // Check if the new URL's host is DIFFERENT from the origin of the permission request.
-                    val newHost = url?.toUri()?.host
-                    val requestHost = request.origin.toUri().host
-
-                    if (newHost != requestHost) {
-                        // The user is navigating away, so clear the old permission request.
-                        Log.d(
-                            "Permission Panel",
-                            "Navigating away from permission origin. Clearing request."
-                        )
-                        pendingPermissionRequest = null
-                    }
-                }
-                isLoading = true
-
-            }
-
-            override fun onPageFinished(view: WebView?, currentUrlString: String?) {
-                super.onPageFinished(view, currentUrlString)
-                isLoading = false
-
-            }
-
-            override fun shouldOverrideUrlLoading(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): Boolean {
-                val url = request?.url ?: return false
-                val urlString = url.toString()
-
-                if (url.scheme == "http" || url.scheme == "https") {
-                    return false // Let the WebView handle normal web links
-                }
-
-                if (url.scheme == "intent") {
-                    try {
-                        val intent = Intent.parseUri(urlString, Intent.URI_INTENT_SCHEME)
-                        view?.context?.startActivity(intent)
-                    } catch (e: Exception) {
-                        Log.w(
-                            "shouldOverrideUrlLoading",
-                            "Could not handle intent, trying fallback",
-                            e
-                        )
-                        val packageName = try {
-                            Intent.parseUri(urlString, Intent.URI_INTENT_SCHEME).`package`
-                        } catch (parseEx: URISyntaxException) {
-                            Log.e(
-                                "shouldOverrideUrlLoading",
-                                "Could not get package name from intent",
-                                parseEx
-                            )
-                            null
-                        }
-
-                        if (packageName != null) {
-                            try {
-                                val marketIntent = Intent(
-                                    Intent.ACTION_VIEW,
-                                    "market://details?id=$packageName".toUri()
-                                )
-                                view?.context?.startActivity(marketIntent)
-                                view?.goBack()
-                            } catch (marketError: Exception) {
-                                Log.e(
-                                    "shouldOverrideUrlLoading",
-                                    "Could not open Play Store for package: $packageName",
-                                    marketError
-                                )
-                            }
-                        }
-                    }
-                    return true // We've handled the intent
-                }
-
-                // Handle other simple schemes like market://, mailto:// etc.
-                try {
-                    val intent = Intent(Intent.ACTION_VIEW, url)
-                    // DO NOT add FLAG_ACTIVITY_NEW_TASK
-                    view?.context?.startActivity(intent)
-
-                    // Immediately go back to the previous page
-                    view?.goBack()
-                } catch (e: Exception) {
-                    Log.w("WebView", "No app found to handle URL: $urlString", e)
-                }
-                return true
-            }
-
-            override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
-                Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
-                Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
-                Log.i("doUpdateVisitedHistory", "URL updated: $url")
-                Log.i("doUpdateVisitedHistory", "isReload: $isReload")
-                if (!isFocusOnTextField) webView.url?.let {
-                    textFieldValue = TextFieldValue(it, TextRange(it.length))
-                }
-
-                if (view == null || url == null) return
-
-
-                tabs[activeTabIndex.intValue].let { tab ->
-
-                    var databaseHistory = tabs[activeTabIndex.intValue].historyState
-
-                    if (databaseHistory == null) {
-                        val items =
-                            List(1) { SerializableHistoryItem(browserSettings.defaultUrl, "") }
-                        databaseHistory = SerializableBackForwardList(
-                            items = items,
-                            currentIndex = 0
-                        )
-                    }
-                    var updatedIndex: Int = databaseHistory.currentIndex
-
-
-                    val realtimeHistory = view.copyBackForwardList()
-
-                    if (realtimeHistory.size <= 1 && databaseHistory.items.size == 1 &&
-                        (realtimeHistory.currentItem?.url == null || realtimeHistory.currentItem?.url == "about:blank")
-                    ) {
-                        Log.d("doUpdateVisitedHistory", "Ignoring initial empty history update.")
-                        return
-                    }
-
-                    // LOG
-                    Log.w("doUpdateVisitedHistory", "Realtime History:")
-                    Log.i("doUpdateVisitedHistory", "Current Index ${realtimeHistory.currentIndex}")
-                    for (i in 0 until realtimeHistory.size) {
-                        val item = realtimeHistory.getItemAtIndex(i)
-                        val marker = if (realtimeHistory.currentIndex == i) " << Current" else " "
-                        Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
-                    }
-
-                    Log.w("doUpdateVisitedHistory", "Database History:")
-                    Log.i("doUpdateVisitedHistory", "Current Index ${databaseHistory.currentIndex}")
-
-                    for (i in 0 until databaseHistory.items.size) {
-                        val item = databaseHistory.items[i]
-                        val marker = if (databaseHistory.currentIndex == i) " << Current" else " "
-                        Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
-                    }
-                    Log.i("doUpdateVisitedHistory", "")
-
-                    val databaseCurrentItemUrl =
-                        databaseHistory.items[databaseHistory.currentIndex].url
-                    val realtimeCurrentItemUrl =
-                        realtimeHistory.getItemAtIndex(realtimeHistory.currentIndex).url
-
-                    var updatedHistoryItems = databaseHistory.items.toMutableList()
-
-                    if (databaseCurrentItemUrl == realtimeCurrentItemUrl) {
-                        Log.e("doUpdateVisitedHistory", "Same URl - Do Nothing")
-                        isNavigateInProgress = false
-                        return
-                    } else {
-                        var realtimePreviousItemUrl = " marcinlowercase "
-
-                        if (realtimeHistory.currentIndex != 0) {
-                            realtimePreviousItemUrl =
-                                realtimeHistory.getItemAtIndex(realtimeHistory.currentIndex - 1).url
-                        }
-
-                        if (databaseCurrentItemUrl == realtimePreviousItemUrl) {
-                            Log.e("doUpdateVisitedHistory", "Add new url to database")
-                            if (databaseHistory.currentIndex < databaseHistory.items.lastIndex) {
-                                updatedHistoryItems = databaseHistory.items.subList(
-                                    0,
-                                    databaseHistory.currentIndex + 1
-                                ).toMutableList()
-                            }
-                            updatedHistoryItems.add(
-                                SerializableHistoryItem(
-                                    url = realtimeCurrentItemUrl,
-                                    title = realtimeHistory.currentItem?.title ?: "oo"
-                                )
-                            )
-                            updatedIndex++
-                            databaseCurrentIndexHolder = updatedIndex
-
-                        } else {
-
-                            Log.e(
-                                "doUpdateVisitedHistory",
-                                "realTimePreviousItemUrl: $realtimePreviousIndexHolder"
-                            )
-                            Log.e(
-                                "doUpdateVisitedHistory",
-                                "databaseCurrentItemUrl: ${realtimeHistory.currentIndex}"
-                            )
-                            if (realtimePreviousIndexHolder > realtimeHistory.currentIndex) {
-                                Log.e("doUpdateVisitedHistory", "Back by Webview")
-
-                                updatedIndex--
-                            } else {
-                                Log.e("doUpdateVisitedHistory", "Update existing url in database")
-                                updatedHistoryItems[updatedIndex] = SerializableHistoryItem(
-                                    url = realtimeCurrentItemUrl,
-                                    title = realtimeHistory.currentItem?.title ?: "oo"
-                                )
-                            }
-
-
-                        }
-                        val updatedHistoryState = SerializableBackForwardList(
-                            items = updatedHistoryItems,
-                            currentIndex = updatedIndex
-                        )
-                        if (databaseHistory != updatedHistoryState) {
-
-                            tabs[activeTabIndex.intValue] =
-                                tab.copy(historyState = updatedHistoryState)
-                            saveTrigger++
-
-
-                            val newDatabaseHistory = tabs[activeTabIndex.intValue].historyState
-                            if (newDatabaseHistory == null) {
-                                return
-                            }
-                            Log.w("doUpdateVisitedHistory", "NEW Database History:")
-                            Log.i(
-                                "doUpdateVisitedHistory",
-                                "Current Index ${newDatabaseHistory.currentIndex}"
-                            )
-
-                            for (i in 0 until newDatabaseHistory.items.size) {
-                                val item = newDatabaseHistory.items[i]
-                                val marker =
-                                    if (newDatabaseHistory.currentIndex == i) " << Current" else " "
-                                Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
-                            }
-                            Log.i("doUpdateVisitedHistory", "")
-
-                        }
-                    }
-
-
-                    Log.i("doUpdateVisitedHistory", ">>>>>>>>>>>>>>>")
-                    Log.i("doUpdateVisitedHistory", "")
-                    Log.i("doUpdateVisitedHistory", "")
-
-                    realtimePreviousIndexHolder = realtimeHistory.currentIndex
-                }
-
-
-                super.doUpdateVisitedHistory(view, url, isReload)
-
-
-            }
-        }
-
-    }
-
 
     //region LaunchedEffect
+    LaunchedEffect(activeWebView) {
+        activeWebView?.let { webView ->
+
+            val tab = activeTab
+
+            // Set up all the clients for the *current* active WebView.
+            webViewManager.setWebViewClients(
+                webView = webView,
+                tab = tab, // Pass the active tab
+                onFaviconChanged = { tabId, faviconUrl ->
+                    // Find the index of the tab that fired this event.
+                    val tabIndex = tabs.indexOfFirst { it.id == tabId }
+                    if (tabIndex == -1) return@setWebViewClients
+
+                    val targetTab = tabs[tabIndex]
+                    val currentHistory = targetTab.historyState ?: return@setWebViewClients
+
+                    // Get the index of the current page in that tab's history.
+                    val historyIndex = currentHistory.currentIndex
+                    if (historyIndex !in currentHistory.items.indices) return@setWebViewClients
+
+                    // Get the specific history item that needs updating.
+                    val itemToUpdate = currentHistory.items[historyIndex]
+
+                    // Check if an update is even needed to prevent unnecessary recompositions.
+                    if (itemToUpdate.faviconUrl != faviconUrl) {
+                        Log.d(
+                            "FaviconUpdate",
+                            "Updating favicon for ${itemToUpdate.url} to $faviconUrl"
+                        )
+
+                        // Create a new history item with the updated favicon URL.
+                        val updatedItem = itemToUpdate.copy(faviconUrl = faviconUrl)
+
+                        // Create a new list of items with the updated item replaced.
+                        val updatedItems = currentHistory.items.toMutableList().apply {
+                            this[historyIndex] = updatedItem
+                        }
+
+                        // Create a new, updated history state object.
+                        val updatedHistory = currentHistory.copy(items = updatedItems)
+
+                        // Finally, replace the old tab object in our state list with a new one.
+                        tabs[tabIndex] = targetTab.copy(historyState = updatedHistory)
+
+                        saveTrigger++
+                    }
+                },
+                onJsAlert = { message -> jsDialogState = JsAlert(message) },
+                onJsConfirm = { message, onResult -> jsDialogState = JsConfirm(message, onResult) },
+                onJsPrompt = { message, default, onResult ->
+                    jsDialogState = JsPrompt(message, default, onResult)
+                },
+                onPermissionRequest = { request -> pendingPermissionRequest = request },
+                setCustomViewCallback = { callback -> customViewCallback = callback },
+                setOriginalOrientation = { orientation -> originalOrientation = orientation },
+                resetCustomView = {
+                    activity?.requestedOrientation = originalOrientation
+
+                    customViewCallback?.onCustomViewHidden()
+                    customViewCallback = null
+                },
+                onPageStartedFun = { view, url, favicon ->
+                    pendingPermissionRequest?.let { request ->
+                        // Check if the new URL's host is DIFFERENT from the origin of the permission request.
+                        val newHost = url?.toUri()?.host
+                        val requestHost = request.origin.toUri().host
+
+                        if (newHost != requestHost) {
+                            // The user is navigating away, so clear the old permission request.
+                            Log.d(
+                                "Permission Panel",
+                                "Navigating away from permission origin. Clearing request."
+                            )
+                            pendingPermissionRequest = null
+                        }
+                    }
+                    isLoading = true
+                },
+                onPageFinishedFun = { view, currentUrlString -> isLoading = false },
+
+                onDoUpdateVisitedHistoryFun = { view, url, isReload ->
+                    Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
+                    Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
+                    Log.i("doUpdateVisitedHistory", "URL updated: $url")
+                    Log.i("doUpdateVisitedHistory", "isReload: $isReload")
+                    if (!isFocusOnTextField) view.url?.let {
+                        textFieldValue = TextFieldValue(it, TextRange(it.length))
+                    }
+
+                    if (url == null) return@setWebViewClients
+
+
+                    tabs[activeTabIndex.intValue].let { tab ->
+
+                        var databaseHistory = tabs[activeTabIndex.intValue].historyState
+
+                        if (databaseHistory == null) {
+                            val items =
+                                List(1) { SerializableHistoryItem(browserSettings.defaultUrl, "") }
+                            databaseHistory = SerializableBackForwardList(
+                                items = items,
+                                currentIndex = 0
+                            )
+                        }
+                        var updatedIndex: Int = databaseHistory.currentIndex
+
+
+                        val realtimeHistory = view.copyBackForwardList()
+
+                        if (realtimeHistory.size <= 1 && databaseHistory.items.size == 1 &&
+                            (realtimeHistory.currentItem?.url == null || realtimeHistory.currentItem?.url == "about:blank")
+                        ) {
+                            Log.d(
+                                "doUpdateVisitedHistory",
+                                "Ignoring initial empty history update."
+                            )
+                            return@let
+                        }
+
+                        // LOG
+                        Log.w("doUpdateVisitedHistory", "Realtime History:")
+                        Log.i(
+                            "doUpdateVisitedHistory",
+                            "Current Index ${realtimeHistory.currentIndex}"
+                        )
+                        for (i in 0 until realtimeHistory.size) {
+                            val item = realtimeHistory.getItemAtIndex(i)
+                            val marker =
+                                if (realtimeHistory.currentIndex == i) " << Current" else " "
+                            Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
+                        }
+
+                        Log.w("doUpdateVisitedHistory", "Database History:")
+                        Log.i(
+                            "doUpdateVisitedHistory",
+                            "Current Index ${databaseHistory.currentIndex}"
+                        )
+
+                        for (i in 0 until databaseHistory.items.size) {
+                            val item = databaseHistory.items[i]
+                            val marker =
+                                if (databaseHistory.currentIndex == i) " << Current" else " "
+                            Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
+                        }
+                        Log.i("doUpdateVisitedHistory", "")
+
+                        val databaseCurrentItemUrl =
+                            databaseHistory.items[databaseHistory.currentIndex].url
+                        val realtimeCurrentItemUrl =
+                            realtimeHistory.getItemAtIndex(realtimeHistory.currentIndex).url
+
+                        var updatedHistoryItems = databaseHistory.items.toMutableList()
+
+                        if (databaseCurrentItemUrl == realtimeCurrentItemUrl) {
+                            Log.e("doUpdateVisitedHistory", "Same URl - Do Nothing")
+                            isNavigateInProgress = false
+                            return@let
+                        } else {
+                            var realtimePreviousItemUrl = " marcinlowercase "
+
+                            if (realtimeHistory.currentIndex != 0) {
+                                realtimePreviousItemUrl =
+                                    realtimeHistory.getItemAtIndex(realtimeHistory.currentIndex - 1).url
+                            }
+
+                            if (databaseCurrentItemUrl == realtimePreviousItemUrl) {
+                                Log.e("doUpdateVisitedHistory", "Add new url to database")
+                                if (databaseHistory.currentIndex < databaseHistory.items.lastIndex) {
+                                    updatedHistoryItems = databaseHistory.items.subList(
+                                        0,
+                                        databaseHistory.currentIndex + 1
+                                    ).toMutableList()
+                                }
+                                updatedHistoryItems.add(
+                                    SerializableHistoryItem(
+                                        url = realtimeCurrentItemUrl,
+                                        title = realtimeHistory.currentItem?.title ?: "oo"
+                                    )
+                                )
+                                updatedIndex++
+                                databaseCurrentIndexHolder = updatedIndex
+
+                            } else {
+
+                                Log.e(
+                                    "doUpdateVisitedHistory",
+                                    "realTimePreviousItemUrl: $realtimePreviousIndexHolder"
+                                )
+                                Log.e(
+                                    "doUpdateVisitedHistory",
+                                    "databaseCurrentItemUrl: ${realtimeHistory.currentIndex}"
+                                )
+                                if (realtimePreviousIndexHolder > realtimeHistory.currentIndex) {
+                                    Log.e("doUpdateVisitedHistory", "Back by Webview")
+
+                                    updatedIndex--
+                                } else {
+                                    Log.e(
+                                        "doUpdateVisitedHistory",
+                                        "Update existing url in database"
+                                    )
+                                    updatedHistoryItems[updatedIndex] = SerializableHistoryItem(
+                                        url = realtimeCurrentItemUrl,
+                                        title = realtimeHistory.currentItem?.title ?: "oo"
+                                    )
+                                }
+
+
+                            }
+                            val updatedHistoryState = SerializableBackForwardList(
+                                items = updatedHistoryItems,
+                                currentIndex = updatedIndex
+                            )
+                            if (databaseHistory != updatedHistoryState) {
+
+                                tabs[activeTabIndex.intValue] =
+                                    tab.copy(historyState = updatedHistoryState)
+                                saveTrigger++
+
+
+                                val newDatabaseHistory = tabs[activeTabIndex.intValue].historyState
+                                if (newDatabaseHistory == null) {
+                                    return@let
+                                }
+                                Log.w("doUpdateVisitedHistory", "NEW Database History:")
+                                Log.i(
+                                    "doUpdateVisitedHistory",
+                                    "Current Index ${newDatabaseHistory.currentIndex}"
+                                )
+
+                                for (i in 0 until newDatabaseHistory.items.size) {
+                                    val item = newDatabaseHistory.items[i]
+                                    val marker =
+                                        if (newDatabaseHistory.currentIndex == i) " << Current" else " "
+                                    Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
+                                }
+                                Log.i("doUpdateVisitedHistory", "")
+
+                            }
+                        }
+
+
+                        Log.i("doUpdateVisitedHistory", ">>>>>>>>>>>>>>>")
+                        Log.i("doUpdateVisitedHistory", "")
+                        Log.i("doUpdateVisitedHistory", "")
+
+                        realtimePreviousIndexHolder = realtimeHistory.currentIndex
+                    }
+                }
+            )
+            webView.onWebViewTouch = {
+                if (isUrlBarVisible) isUrlBarVisible = false
+            }
+        }
+    }
 
     LaunchedEffect(jsDialogState) {
         if (jsDialogState != null) {
@@ -1513,17 +1759,17 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
     LaunchedEffect(browserSettings.isDesktopMode) {
         if (browserSettings.isDesktopMode) {
-            webView.settings.userAgentString = desktopUserAgent
-            webView.settings.useWideViewPort = true
-            webView.settings.loadWithOverviewMode = true
+            activeWebView?.settings?.userAgentString = desktopUserAgent
+            activeWebView?.settings?.useWideViewPort = true
+            activeWebView?.settings?.loadWithOverviewMode = true
         } else {
-            webView.settings.userAgentString = mobileUserAgent
-            webView.settings.useWideViewPort = false
-            webView.settings.loadWithOverviewMode = false
+            activeWebView?.settings?.userAgentString = mobileUserAgent
+            activeWebView?.settings?.useWideViewPort = false
+            activeWebView?.settings?.loadWithOverviewMode = false
         }
 
         // This reload is still essential to get the new HTML from the server.
-        webView.reload()
+        activeWebView?.reload()
     }
     LaunchedEffect(Unit) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
@@ -1538,17 +1784,34 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
     }
     LaunchedEffect(saveTrigger) {
         if (saveTrigger > 0) {
-            tabManager.saveTabs(tabs)
+            tabManager.saveTabs(tabs, activeTabIndex.intValue)
             saveTrigger = 0
         }
     }
 
     LaunchedEffect(Unit) {
+        newUrlFlow.collect { url ->
+            if (url != null) {
+                Log.d("BrowserScreen", "New URL collected from flow: $url")
+
+                // When a new URL arrives, create a new tab for it.
+                // We'll insert it right after the current active tab.
+                val insertIndex = (activeTabIndex.intValue + 1).coerceAtMost(tabs.size)
+                createNewTab(insertIndex, url)
+
+                // IMPORTANT: Consume the event by setting the flow back to null
+                (context as MainActivity).newUrlFromIntent.update { null }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
         if (!initialLoadDone) {
-            val urlToLoad =
-                initialUrl ?: tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
-            webView.loadUrl(urlToLoad)
+
+            val urlToLoad = tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
+            activeWebView?.loadUrl(urlToLoad)
             initialLoadDone = true
+
         }
     }
 
@@ -1570,21 +1833,21 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
     }
 
 
-    // This effect runs whenever the isDesktopMode flag changes.
-    LaunchedEffect(browserSettings.isDesktopMode) {
-        val newAgent = if (browserSettings.isDesktopMode) desktopUserAgent else mobileUserAgent
-        if (webView.settings.userAgentString != newAgent) {
-            webView.settings.userAgentString = newAgent
-            // Reload the page to apply the new User Agent
-            webView.reload()
-        }
-    }
+//    // This effect runs whenever the isDesktopMode flag changes.
+//    LaunchedEffect(browserSettings.isDesktopMode) {
+//        val newAgent = if (browserSettings.isDesktopMode) desktopUserAgent else mobileUserAgent
+//        if (activeWebView?.settings?.userAgentString != newAgent) {
+//            activeWebView?.settings?.userAgentString = newAgent
+//            // Reload the page to apply the new User Agent
+//            activeWebView?.reload()
+//        }
+//    }
 
     // This effect will re-launch whenever the animatedPadding value changes (i.e., every frame).
     LaunchedEffect(animatedPadding) {
         // We now have a hook that runs on every animation frame.
         // We can command our WebView to update its layout.
-        webView.requestLayout()
+        activeWebView?.requestLayout()
     }
 
     LaunchedEffect(canGoBack, canGoForward) {
@@ -1610,7 +1873,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                     history.items.getOrNull(newIndex)
                         ?.let { itemToLoad ->
                             isNavigateInProgress = true
-                            webView.loadUrl(itemToLoad.url)
+                            activeWebView?.loadUrl(itemToLoad.url)
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
                                     historyState = history.copy(
@@ -1673,14 +1936,41 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
                     ) {
                         AndroidView(
-                            factory = {
-                                FrameLayout(it).apply {
-                                    // If the WebView still has a parent from a previous composition, remove it.
-                                    (webView.parent as? ViewGroup)?.removeView(webView)
-
-                                    // Add our singleton WebView to it.
-                                    addView(
-                                        webView,
+//                            factory = {
+//                                FrameLayout(it).apply {
+//                                    // If the WebView still has a parent from a previous composition, remove it.
+//                                    if ( activeWebView != null)(activeWebView.parent as? ViewGroup)?.removeView(activeWebView)
+//
+//                                    // Add our singleton WebView to it.
+//                                    addView(
+//                                        activeWebView,
+//                                        FrameLayout.LayoutParams(
+//                                            FrameLayout.LayoutParams.MATCH_PARENT,
+//                                            FrameLayout.LayoutParams.MATCH_PARENT
+//                                        ).apply {
+//                                            gravity = Gravity.CENTER
+//                                        }
+//                                    )
+//                                }
+//                            },
+                            // The factory now ONLY creates the container. It's simple.
+                            factory = { context ->
+                                FrameLayout(context)
+                            },
+                            // --- THIS UPDATE BLOCK IS THE FIX ---
+                            // It's called on the initial composition AND every time
+                            // 'activeWebView' changes.
+                            update = { frameLayout ->
+                                // Check if the correct WebView is already being shown.
+                                // This prevents unnecessary add/remove operations.
+                                if (frameLayout.getChildAt(0) != activeWebView) {
+                                    // 1. Safely remove the new WebView from its old parent, if any.
+                                    (activeWebView?.parent as? ViewGroup)?.removeView(activeWebView)
+                                    // 2. Clear out the old WebView from our container.
+                                    frameLayout.removeAllViews()
+                                    // 3. Add the new, correct WebView to our container.
+                                    frameLayout.addView(
+                                        activeWebView,
                                         FrameLayout.LayoutParams(
                                             FrameLayout.LayoutParams.MATCH_PARENT,
                                             FrameLayout.LayoutParams.MATCH_PARENT
@@ -1698,6 +1988,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
             }
 
             BottomPanel(
+                activeWebView = activeWebView,
                 isUrlOverlayBoxVisible = isUrlOverlayBoxVisible,
                 setIsUrlOverlayBoxVisible = { isUrlOverlayBoxVisible = it },
                 onNewTabClicked = { index ->
@@ -1712,10 +2003,11 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                     if (activeTabIndex.intValue != newIndex) {
                         tabs[activeTabIndex.intValue].state = TabState.BACKGROUND
                         tabs[newIndex].state = TabState.ACTIVE
+
                         activeTabIndex.intValue = newIndex
 
                         val urlToLoad = tabs[newIndex].currentUrl ?: browserSettings.defaultUrl
-                        webView.loadUrl(urlToLoad)
+//                        activeWebView?.loadUrl(urlToLoad)
                         textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
                         saveTrigger++
                     }
@@ -1761,7 +2053,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
                 changeTextFieldValue = { textFieldValue = it },
                 setPendingPermissionRequest = { pendingPermissionRequest = it },
                 onNewUrl = { newUrl ->
-                    webView.loadUrl(newUrl)
+                    activeWebView?.loadUrl(newUrl)
 //                            }
                 },
                 setIsFocusOnTextField = { isFocusOnTextField = it },
@@ -1883,6 +2175,7 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    activeWebView: CustomWebView?,
     isUrlOverlayBoxVisible: Boolean,
     setIsUrlOverlayBoxVisible: (Boolean) -> Unit,
     onNewTabClicked: (Int) -> Unit,
@@ -1957,6 +2250,7 @@ fun BottomPanel(
                 canGoForward = canGoForward // And this one too
             )
             PromptPanel(
+                activeWebView = activeWebView,
                 browserSettings = browserSettings,
 //                modifier = modifier,
                 isPromptPanelVisible = isPromptPanelVisible,
@@ -1987,15 +2281,15 @@ fun BottomPanel(
                 }
             )
 
-            AnimatedVisibility(visible = isTabsPanelVisible) {
-                TabsPanel(
-                    tabs = tabs,
-                    activeTabIndex = activeTabIndex.value,
-                    browserSettings = browserSettings,
-                    onTabSelected = onTabSelected,
-                    onNewTabClicked = onNewTabClicked,
-                )
-            }
+            TabsPanel(
+                isTabsPanelVisible = isTabsPanelVisible,
+                tabs = tabs,
+                activeTabIndex = activeTabIndex.value,
+                browserSettings = browserSettings,
+                onTabSelected = onTabSelected,
+                onNewTabClicked = onNewTabClicked,
+            )
+
 
             // URL BAR
             AnimatedVisibility(
@@ -2238,6 +2532,7 @@ fun BottomPanel(
                                                             else -> GestureNavAction.REFRESH
                                                         }
                                                     }
+
                                                     horizontalDragAccumulator < -horizontalDragThreshold -> if (canGoBack) GestureNavAction.BACK else GestureNavAction.NONE
                                                     horizontalDragAccumulator > horizontalDragThreshold -> if (canGoForward) GestureNavAction.FORWARD else GestureNavAction.NONE
                                                     else -> GestureNavAction.NONE
@@ -2625,6 +2920,7 @@ fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier, colorSchem
 
 @Composable
 fun PromptPanel(
+    activeWebView: CustomWebView?,
     browserSettings: BrowserSettings,
     isPromptPanelVisible: Boolean,
     state: JsDialogState?,
@@ -2683,7 +2979,8 @@ fun PromptPanel(
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(
-                            text = webView.url ?: "the current page", // Safely handle null URL
+                            text = activeWebView?.url
+                                ?: "the current page", // Safely handle null URL
                             color = Color.White,
                             maxLines = 1, // Crucial for horizontal scrolling
                             overflow = TextOverflow.Ellipsis, // Good practice, though scrolling will hide it
@@ -2754,7 +3051,7 @@ fun PromptPanel(
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                                 keyboardActions = KeyboardActions(
                                     onDone = {
-                                        webView.requestFocus()
+                                        activeWebView?.requestFocus()
                                         promptComponentDisplayState.onResult(textInput)
                                         onDismiss()
                                     }
@@ -2832,7 +3129,7 @@ fun PromptPanel(
                                 ).dp
                             ),
                             onClick = {
-                                webView.requestFocus()
+                                activeWebView?.requestFocus()
                                 when (state) {
                                     is JsConfirm -> state.onResult(false)
                                     is JsPrompt -> state.onResult(null)
@@ -2873,7 +3170,7 @@ fun PromptPanel(
                             containerColor = Color.White
                         ),
                         onClick = {
-                            webView.requestFocus()
+                            activeWebView?.requestFocus()
                             when (state) {
                                 is JsAlert -> { /* Just dismiss */
                                 }
@@ -3075,6 +3372,7 @@ fun NavigationItem(
 
 @Composable
 fun TabsPanel(
+    isTabsPanelVisible: Boolean,
     modifier: Modifier = Modifier,
     tabs: List<Tab>,
     activeTabIndex: Int,
@@ -3084,70 +3382,84 @@ fun TabsPanel(
 ) {
     if (tabs.isEmpty()) return
 
-    val pagerState = rememberPagerState(initialPage = activeTabIndex + 1, pageCount = { tabs.size + 2 })
+    val pagerState =
+        rememberPagerState(initialPage = activeTabIndex + 1, pageCount = { tabs.size + 2 })
 
     // This effect is still useful to sync the pager if a new tab is created
     LaunchedEffect(activeTabIndex, tabs.size) {
-        if (pagerState.currentPage != activeTabIndex+1) {
-            pagerState.animateScrollToPage(activeTabIndex+1)
+        if (pagerState.currentPage != activeTabIndex + 1) {
+            pagerState.animateScrollToPage(activeTabIndex + 1)
         }
     }
 
 
 
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(browserSettings.paddingDp.dp)
-            .clip(
-                RoundedCornerShape(
-                    cornerRadiusForLayer(
-                        2,
-                        browserSettings.deviceCornerRadius,
-                        browserSettings.paddingDp
-                    ).dp
+    AnimatedVisibility(visible = isTabsPanelVisible) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(browserSettings.paddingDp.dp)
+                .clip(
+                    RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
                 )
-            )
-            .background(Color.Black.copy(0.3f))
-    ) {
-        HorizontalPager(
-            state = pagerState,
-            modifier = modifier
-                .fillMaxWidth(),
-            // We use a smaller content padding so the active tab is larger
-            contentPadding = PaddingValues(horizontal = 32.dp),
-            pageSpacing = browserSettings.paddingDp.dp / 2
-        ) { pageIndex ->
-            when (pageIndex) {
-                0 -> {
-                    // This is the FIRST page: New Tab button on the left
-                    NewTabButton(
-                        browserSettings = browserSettings,
-                        onClick = { onNewTabClicked(0) } // Request new tab at index 0
-                    )
-                }
-                in 1..tabs.size -> {
-                    // This is a regular tab page. Map pageIndex back to tabIndex.
-                    val tabIndex = pageIndex - 1
-                    val tab = tabs[tabIndex]
-                    val title = tab.historyState?.items?.getOrNull(tab.historyState!!.currentIndex)?.title ?: "New Tab"
-                    val faviconUrl = getFaviconUrl(tab.currentUrl ?: "")
+                .background(Color.Black.copy(0.3f))
+        ) {
+            HorizontalPager(
+                state = pagerState,
+                modifier = modifier
+                    .fillMaxWidth(),
+                // We use a smaller content padding so the active tab is larger
+                contentPadding = PaddingValues(horizontal = 32.dp),
+                pageSpacing = browserSettings.paddingDp.dp / 2
+            ) { pageIndex ->
+                when (pageIndex) {
+                    0 -> {
+                        // This is the FIRST page: New Tab button on the left
+                        NewTabButton(
+                            browserSettings = browserSettings,
+                            onClick = { onNewTabClicked(0) } // Request new tab at index 0
+                        )
+                    }
 
-                    TabItem(
-                        faviconUrl = faviconUrl,
-                        title = title,
-                        isActive = pagerState.currentPage == pageIndex,
-                        browserSettings = browserSettings,
-                        onClick = { onTabSelected(tabIndex) }
-                    )
-                }
-                else -> {
-                    // This is the LAST page: New Tab button on the right
-                    NewTabButton(
-                        browserSettings = browserSettings,
-                        onClick = { onNewTabClicked(tabs.size) } // Request new tab at the end
-                    )
+                    in 1..tabs.size -> {
+                        // This is a regular tab page. Map pageIndex back to tabIndex.
+                        val tabIndex = pageIndex - 1
+                        val tab = tabs[tabIndex]
+
+                        val currentHistory = tab.historyState
+                        val currentItem =
+                            currentHistory?.items?.getOrNull(currentHistory.currentIndex)
+
+                        val title =
+                            tab.historyState?.items?.getOrNull(tab.historyState!!.currentIndex)?.title
+                                ?: "New Tab"
+                        val faviconUrl = currentItem?.faviconUrl ?: getFaviconUrlFromGoogleServer(
+                            tab.currentUrl ?: ""
+                        )
+                        Log.w("Favicon", faviconUrl)
+                        TabItem(
+                            faviconUrl = faviconUrl,
+                            title = title,
+                            isActive = pagerState.currentPage == pageIndex,
+                            browserSettings = browserSettings,
+                            onClick = { onTabSelected(tabIndex) }
+                        )
+                    }
+
+                    else -> {
+                        // This is the LAST page: New Tab button on the right
+                        NewTabButton(
+                            browserSettings = browserSettings,
+                            onClick = { onNewTabClicked(tabs.size) } // Request new tab at the end
+                        )
+                    }
                 }
             }
         }
@@ -3166,11 +3478,11 @@ fun TabItem(
     Box(
 
         modifier = modifier
-            .padding(horizontal = browserSettings.paddingDp.dp)
+            .padding(browserSettings.paddingDp.dp)
             .clip(
                 RoundedCornerShape(
                     cornerRadiusForLayer(
-                        2,
+                        3,
                         browserSettings.deviceCornerRadius,
                         browserSettings.paddingDp
                     ).dp
@@ -3183,7 +3495,7 @@ fun TabItem(
                 .clickable(onClick = onClick)
                 .height(
                     cornerRadiusForLayer(
-                        2,
+                        3,
                         browserSettings.deviceCornerRadius,
                         browserSettings.paddingDp
                     ).dp * 2
@@ -3191,7 +3503,7 @@ fun TabItem(
                 .clip(
                     RoundedCornerShape(
                         cornerRadiusForLayer(
-                            2,
+                            3,
                             browserSettings.deviceCornerRadius,
                             browserSettings.paddingDp
                         ).dp
@@ -3201,22 +3513,50 @@ fun TabItem(
                 .padding(horizontal = browserSettings.paddingDp.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AsyncImage(
-                model = faviconUrl,
-                contentDescription = "Favicon",
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-            )
+            Row(
+                modifier = modifier
+                    .padding(browserSettings.paddingDp.dp)
 
-            Spacer(Modifier.width(browserSettings.paddingDp.dp))
-            Text(
-                text = title,
-                color = if (isActive) Color.White else Color.White.copy(alpha = 0.7f), // Dim the text for inactive
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
+            ) {
+                Box(
+                    modifier = modifier
+                        .size(
+                            browserSettings.paddingDp.dp * 3
+                        )
+                        .clip(
+                            RoundedCornerShape(
+                                browserSettings.paddingDp  / 2
+                            )
+                        )
+                        .background(Color.White)
+
+
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(faviconUrl)
+                            .size(with(LocalDensity.current) { 24.dp.toPx().toInt() })
+                            .crossfade(true)
+                            .error(R.drawable.ic_language) // A generic globe icon
+                            .placeholder(R.drawable.ic_language) // Show while loading
+                            .build(),
+                        contentDescription = "Favicon",
+                        modifier = modifier
+                            .padding(browserSettings.paddingDp.dp / 8)
+
+
+                    )
+                }
+
+                Spacer(Modifier.width(browserSettings.paddingDp.dp))
+                Text(
+                    text = title,
+                    color = if (isActive) Color.White else Color.White.copy(alpha = 0.7f), // Dim the text for inactive
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
 
         }
     }
@@ -3229,29 +3569,41 @@ fun NewTabButton(
     onClick: () -> Unit
 ) {
     Box(
-        modifier = modifier
+        modifier = modifier.padding(browserSettings.paddingDp.dp)
+    )
+    {
+        Box(
+            modifier = modifier
 
-            .padding(horizontal = browserSettings.paddingDp.dp)
-            .clip(RoundedCornerShape(cornerRadiusForLayer(2, browserSettings.deviceCornerRadius, browserSettings.paddingDp).dp))
-            .clickable(onClick = onClick)
-            .background(Color.Black.copy(alpha = 0.2f))
-            .height(
-                cornerRadiusForLayer(
-                    2,
-                    browserSettings.deviceCornerRadius,
-                    browserSettings.paddingDp
-                ).dp * 2
+                .padding(horizontal = browserSettings.paddingDp.dp)
+                .clip(
+                    RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            3,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
+                )
+                .clickable(onClick = onClick)
+                .background(Color.Black.copy(alpha = 0.2f))
+                .height(
+                    cornerRadiusForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp * 2
+                )
+                .fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(id = R.drawable.ic_add),
+                contentDescription = "New Tab",
+                tint = Color.White,
+                modifier = Modifier.size(32.dp)
             )
-            .fillMaxWidth()
-        ,
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            painter = painterResource(id = R.drawable.ic_add),
-            contentDescription = "New Tab",
-            tint = Color.White,
-            modifier = Modifier.size(32.dp)
-        )
+        }
     }
 }
 //endregion

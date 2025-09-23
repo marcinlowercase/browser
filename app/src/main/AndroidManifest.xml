@@ -24,6 +24,7 @@
 
     <application
         android:allowBackup="false"
+        android:name=".CustomApplication"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -39,6 +40,7 @@
             android:theme="@style/Theme.Browser"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:launchMode="singleTask"
             >
 
             <intent-filter>
