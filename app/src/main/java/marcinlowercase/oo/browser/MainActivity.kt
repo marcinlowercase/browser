@@ -611,11 +611,12 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
 
     var isUrlBarVisible by rememberSaveable { mutableStateOf(true) }
+    var isUrlOverlayBoxVisible by rememberSaveable { mutableStateOf(true) }
     var isPermissionPanelVisible by rememberSaveable { mutableStateOf(false) }
     var isBottomPanelVisible by rememberSaveable { mutableStateOf(true) }
     var isPromptPanelVisible by rememberSaveable { mutableStateOf(false) }
     var isTabsPanelVisible by remember { mutableStateOf(false) }
-    var tabsPanelLock by remember { mutableStateOf(false) }
+    var tabsPanelLock by remember { mutableStateOf(true) }
 
 
 
@@ -1697,6 +1698,8 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
             }
 
             BottomPanel(
+                isUrlOverlayBoxVisible = isUrlOverlayBoxVisible,
+                setIsUrlOverlayBoxVisible = { isUrlOverlayBoxVisible = it },
                 onNewTabClicked = { index ->
                     createNewTab(index)
                 },
@@ -1880,6 +1883,8 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    isUrlOverlayBoxVisible: Boolean,
+    setIsUrlOverlayBoxVisible: (Boolean) -> Unit,
     onNewTabClicked: (Int) -> Unit,
 
     isTabsPanelVisible: Boolean,
@@ -2066,6 +2071,7 @@ fun BottomPanel(
                                             )
                                         )
                                     }
+                                    setIsUrlOverlayBoxVisible(true)
                                 }
                             }
                             .pointerInput(Unit) {
@@ -2160,7 +2166,7 @@ fun BottomPanel(
                         )
                     )
 
-                    Box(
+                    if (isUrlOverlayBoxVisible) Box(
                         modifier = Modifier
                             .background(
                                 Color.Transparent, shape = RoundedCornerShape(
@@ -2266,6 +2272,7 @@ fun BottomPanel(
                                                 longPressJob.cancel()
                                                 // This was a tap
                                                 focusRequester.requestFocus()
+                                                setIsUrlOverlayBoxVisible(false)
                                             }
                                         }
                                     }
@@ -2953,7 +2960,7 @@ fun NavigationPanel(
                         modifier = Modifier.weight(1f),
                         activeAction = activeAction,
                         gestureNavAction = GestureNavAction.CLOSE_TAB,
-                        actionIcon = painterResource(R.drawable.ic_tab_close),
+                        actionIcon = painterResource(R.drawable.ic_close),
                         browserSettings = browserSettings,
                     )
 
@@ -2971,7 +2978,7 @@ fun NavigationPanel(
                         modifier = Modifier.weight(1f),
                         activeAction = activeAction,
                         gestureNavAction = GestureNavAction.NEW_TAB,
-                        actionIcon = painterResource(R.drawable.ic_tab_new_right),
+                        actionIcon = painterResource(R.drawable.ic_add),
                         browserSettings = browserSettings,
                     )
                 }
@@ -2999,7 +3006,7 @@ fun NavigationPanel(
                         modifier = Modifier.weight(1f),
                         activeAction = activeAction,
                         gestureNavAction = GestureNavAction.NONE,
-                        actionIcon = painterResource(R.drawable.ic_close),
+                        actionIcon = painterResource(R.drawable.ic_minimize),
                         browserSettings = browserSettings,
                     )
 
