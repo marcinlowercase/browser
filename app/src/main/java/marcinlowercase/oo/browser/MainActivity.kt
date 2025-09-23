@@ -182,6 +182,7 @@ enum class GestureNavAction {
 }
 
 data class CustomPermissionRequest(
+    val origin: String,
     val title: String,
     val rationale: String,
     val iconResAllow: Int,
@@ -781,6 +782,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                 // Create a new generic permission request for this specific geolocation prompt.
                 pendingPermissionRequest = CustomPermissionRequest(
+                    origin = origin,
                     title = "Location Access Required",
                     rationale = "This website wants to use your device's location.",
                     iconResAllow = R.drawable.ic_location_on,
@@ -881,6 +883,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
                 // Create the custom request
                 pendingPermissionRequest = CustomPermissionRequest(
+                    origin = request.origin.toString(),
                     title = title,
                     rationale = rationale,
                     iconResAllow = allowIcon,
@@ -1007,7 +1010,17 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
-                if (pendingPermissionRequest != null) pendingPermissionRequest = null
+                pendingPermissionRequest?.let { request ->
+                    // Check if the new URL's host is DIFFERENT from the origin of the permission request.
+                    val newHost = url?.toUri()?.host
+                    val requestHost = request.origin.toUri().host
+
+                    if (newHost != requestHost) {
+                        // The user is navigating away, so clear the old permission request.
+                        Log.d("Permission Panel", "Navigating away from permission origin. Clearing request.")
+                        pendingPermissionRequest = null
+                    }
+                }
                 isLoading = true
 
             }
@@ -1270,6 +1283,7 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
 
 
     LaunchedEffect(pendingPermissionRequest) {
+        Log.i("Permission Panel","pendingPermissionRequest: $pendingPermissionRequest")
         isPermissionPanelVisible = pendingPermissionRequest != null
     }
     // This effect will re-launch whenever isBottomPanelVisible changes.
@@ -1735,15 +1749,6 @@ fun BottomPanel(
 
                 )
 
-            AnimatedVisibility(visible = isNavPanelVisible) {
-                NavigationPanel(
-                    browserSettings = browserSettings,
-                    activeAction = activeNavAction,
-                    canGoBack = canGoBack, // Make sure to pass these down from BrowserScreen
-                    canGoForward = canGoForward // And this one too
-                )
-            }
-
             PermissionPanel(
                 isPermissionPanelVisible = isPermissionPanelVisible,
                 browserSettings = browserSettings,
@@ -1763,6 +1768,14 @@ fun BottomPanel(
                     setPendingPermissionRequest(null)
 //                    pendingPermissionRequest = null
                 }
+            )
+
+            NavigationPanel(
+                isNavPanelVisible = isNavPanelVisible,
+                browserSettings = browserSettings,
+                activeAction = activeNavAction,
+                canGoBack = canGoBack, // Make sure to pass these down from BrowserScreen
+                canGoForward = canGoForward // And this one too
             )
 
 
@@ -2091,14 +2104,19 @@ fun PermissionPanel(
     LaunchedEffect(request) {
         if (request != null) {
             // If there's a new request, update immediately.
+            Log.i("Permission Panel" , "New request received")
             requestToShow = request
         }
     }
 
     AnimatedVisibility(
         visible = isPermissionPanelVisible,
-        enter = expandVertically(animationSpec = tween(browserSettings.animationSpeed)) + fadeIn(tween(browserSettings.animationSpeed)),
-        exit = shrinkVertically(animationSpec = tween(browserSettings.animationSpeed))  + fadeOut(tween(browserSettings.animationSpeed))
+        enter = expandVertically(animationSpec = tween(browserSettings.animationSpeed)) + fadeIn(
+            tween(browserSettings.animationSpeed)
+        ),
+        exit = shrinkVertically(animationSpec = tween(browserSettings.animationSpeed)) + fadeOut(
+            tween(browserSettings.animationSpeed)
+        )
     ) {
 
         val currentRequest = requestToShow
@@ -2134,19 +2152,10 @@ fun PermissionPanel(
                                     browserSettings.deviceCornerRadius,
                                     browserSettings.paddingDp
                                 ).dp * 2
-                            )
-                            .border(
-                                4.dp, Color.White, shape = RoundedCornerShape(
-                                    cornerRadiusForLayer(
-                                        2,
-                                        browserSettings.deviceCornerRadius,
-                                        browserSettings.paddingDp
-                                    ).dp
-                                )
                             ),
 
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = Color.Black.copy(alpha = 0.5f)
+                            containerColor = Color.Transparent
                         ),
                     ) {
                         Icon(
@@ -2169,13 +2178,13 @@ fun PermissionPanel(
                                 ).dp * 2
                             ),
                         colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = Color.Black
+                            containerColor = Color.White
                         )
                     ) {
                         Icon(
                             painter = painterResource(id = currentRequest.iconResAllow), // You can make this icon generic too
                             contentDescription = "Allow Permission",
-                            tint = Color.White
+                            tint = Color.Black
                         )
                     }
                 }
@@ -2657,85 +2666,106 @@ fun PromptPanel(
 }
 
 
-
 @Composable
 fun NavigationPanel(
+    isNavPanelVisible: Boolean,
     modifier: Modifier = Modifier,
     browserSettings: BrowserSettings,
     activeAction: GestureNavAction,
     canGoBack: Boolean,
     canGoForward: Boolean
 ) {
-    Box(
-        modifier = Modifier
-            .padding(browserSettings.paddingDp.dp)
+    AnimatedVisibility(
+        visible = isNavPanelVisible,
+        enter = expandVertically(tween(browserSettings.animationSpeed)) + fadeIn(
+            tween(
+                browserSettings.animationSpeed
+            )
+        ),
+        exit = shrinkVertically(tween(browserSettings.animationSpeed)) + fadeOut(
+            tween(
+                browserSettings.animationSpeed
+            )
+        )
     ) {
-        Column(
-            modifier = modifier
+        Box(
+            modifier = Modifier
+                .padding(browserSettings.paddingDp.dp)
+        ) {
+            Column(
+                modifier = modifier
 
-                .clip(
-                    RoundedCornerShape(
-                        cornerRadiusForLayer(
-                            2,
-                            browserSettings.deviceCornerRadius,
-                            browserSettings.paddingDp
-                        ).dp
+                    .clip(
+                        RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
                     )
-                )
-                .background(Color.Black.copy(0.3f)),
+                    .background(Color.Black.copy(0.3f)),
 
-            ) {
-            Row(
-                modifier = modifier
-                    .fillMaxWidth()
-                    .height(browserSettings.singleLineHeight.dp)
-                    .padding(browserSettings.paddingDp.dp),
+                ) {
+                Row(
+                    modifier = modifier
+                        .fillMaxWidth()
+                        .padding( top = browserSettings.paddingDp.dp)
+                        .padding( horizontal = browserSettings.paddingDp.dp),
 
 
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Refresh Icon
-                NavigationItem(
-                    modifier = Modifier.weight(1f),
-                    activeAction = activeAction,
-                    gestureNavAction = GestureNavAction.REFRESH,
-                    actionIcon = painterResource(R.drawable.ic_refresh)
-                )
-            }
-            Row(
-                modifier = modifier
-                    .fillMaxWidth()
-                    .height(browserSettings.singleLineHeight.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Back Icon
-                NavigationItem(
-                    modifier = Modifier.weight(1f),
-                    activeAction = activeAction,
-                    gestureNavAction = GestureNavAction.BACK,
-                    actionIcon = painterResource(R.drawable.ic_arrow_back),
-                    visibility = canGoBack
-                )
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Refresh Icon
+                    NavigationItem(
+                        modifier = Modifier.weight(1f),
+                        activeAction = activeAction,
+                        gestureNavAction = GestureNavAction.REFRESH,
+                        actionIcon = painterResource(R.drawable.ic_refresh),
+                        browserSettings = browserSettings,
+                    )
+                }
+                Row(
+                    modifier = modifier
+                        .fillMaxWidth()
 
-                // Cancel Icon
-                NavigationItem(
-                    modifier = Modifier.weight(1f),
-                    activeAction = activeAction,
-                    gestureNavAction = GestureNavAction.NONE,
-                    actionIcon = painterResource(R.drawable.ic_close)
-                )
+                        .padding(browserSettings.paddingDp.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Back Icon
+                    NavigationItem(
+                        modifier = Modifier.weight(1f),
+                        activeAction = activeAction,
+                        gestureNavAction = GestureNavAction.BACK,
+                        actionIcon = painterResource(R.drawable.ic_arrow_back),
+                        visibility = canGoBack,
+                        browserSettings = browserSettings,
 
-                // Forward Icon
-                // Back Icon
-                NavigationItem(
-                    modifier = Modifier.weight(1f),
-                    activeAction = activeAction,
-                    gestureNavAction = GestureNavAction.FORWARD,
-                    actionIcon = painterResource(R.drawable.ic_arrow_forward),
-                    visibility = canGoForward
-                )
+                        )
+
+                    // Cancel Icon
+                    NavigationItem(
+                        modifier = Modifier.weight(1f),
+                        activeAction = activeAction,
+                        gestureNavAction = GestureNavAction.NONE,
+                        actionIcon = painterResource(R.drawable.ic_close),
+                        browserSettings = browserSettings,
+                    )
+
+                    // Forward Icon
+                    // Back Icon
+                    NavigationItem(
+                        modifier = Modifier.weight(1f),
+                        activeAction = activeAction,
+                        gestureNavAction = GestureNavAction.FORWARD,
+                        actionIcon = painterResource(R.drawable.ic_arrow_forward),
+                        visibility = canGoForward,
+                        browserSettings = browserSettings,
+
+                        )
+                }
             }
         }
     }
@@ -2749,13 +2779,29 @@ fun NavigationItem(
     gestureNavAction: GestureNavAction,
     actionIcon: Painter,
     visibility: Boolean = true,
+    browserSettings: BrowserSettings
 ) {
     // Cancel Icon
     val refreshColor by animateColorAsState(if (activeAction == gestureNavAction) Color.White else Color.Transparent)
     Box(
         modifier = modifier
-            .fillMaxHeight()
-            .clip(RoundedCornerShape(16.dp))
+            .height(
+                cornerRadiusForLayer(
+                    3,
+                    browserSettings.deviceCornerRadius,
+                    browserSettings.paddingDp
+                )
+                    .dp * 2
+            )
+            .clip(
+                RoundedCornerShape(
+                    cornerRadiusForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp
+                )
+            )
             .background(refreshColor)
     ) {
         if (visibility) {
