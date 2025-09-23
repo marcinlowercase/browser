@@ -236,6 +236,31 @@ class TabManager(context: Context) {
         }
         Log.d("TabManager", "Tabs saved.")
     }
+    fun createAndSelectNewTab(url: String) {
+        // 1. Load the current list of tabs.
+        val tabs = loadTabs(url) // Pass url as fallback, though it won't be used here.
+
+        // 2. Deactivate the currently active tab.
+        tabs.firstOrNull { it.state == TabState.ACTIVE }?.state = TabState.BACKGROUND
+
+        // 3. Create the new tab and set it as ACTIVE.
+        val newTab = Tab(
+            state = TabState.ACTIVE,
+            historyState = SerializableBackForwardList(
+                items = listOf(SerializableHistoryItem(url = url, title = "")),
+                currentIndex = 0
+            )
+        )
+
+        // 4. Add the new tab to the list.
+        tabs.add(newTab)
+
+        // 5. Save the updated list of tabs back to SharedPreferences.
+        saveTabs(tabs)
+        Log.i("TabManager", "Create New Tab")
+        Log.i("TabManager", "tabs: ${tabs.size}")
+        Log.i("TabManager", "tabs: ${tabs}")
+    }
 
     fun loadTabs(defaultUrl: String): MutableList<Tab> {
         val jsonString = prefs.getString(tabsKey, null)
@@ -397,6 +422,21 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
+        val tabManager = TabManager(this)
+        var initialUrl: String? = null
+
+        // Check if the app was launched from a VIEW intent (a link)
+        if (intent?.action == Intent.ACTION_VIEW) {
+            intent.dataString?.let { urlFromIntent ->
+                Log.d("MainActivity", "Launched with VIEW intent for URL: $urlFromIntent")
+
+                // Use our new function to create a new tab for this URL
+                tabManager.createAndSelectNewTab(urlFromIntent)
+
+                // Store the URL to be loaded
+                initialUrl = urlFromIntent
+            }
+        }
         webView = CustomWebView(this).apply {
             // Force WebView to be transparent so Compose can control the background
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
@@ -446,7 +486,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             BrowserTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    BrowserScreen()
+                    BrowserScreen(initialUrl = initialUrl)
                 }
             }
         }
@@ -481,7 +521,7 @@ fun rememberHasDisplayCutout(): State<Boolean> {
 }
 
 @Composable
-fun BrowserScreen(modifier: Modifier = Modifier) {
+fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
 
     //region Variables
@@ -1364,8 +1404,8 @@ fun BrowserScreen(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(Unit) {
-        val urlToLoad = tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
         if (!initialLoadDone) {
+            val urlToLoad = initialUrl ?: tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
             webView.loadUrl(urlToLoad)
             initialLoadDone = true
         }
@@ -2065,12 +2105,11 @@ fun BottomPanel(
                                     setActiveNavAction(GestureNavAction.NONE)
                                 }
                             }
-                    )
-                    {
-
+                    ) {
                     }
                 }
             }
+
 
             // SETTING OPTIONS
             OptionsPanel(
@@ -2122,71 +2161,75 @@ fun PermissionPanel(
         val currentRequest = requestToShow
         if (currentRequest == null) return@AnimatedVisibility
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = Color.Transparent
-            ),
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(browserSettings.paddingDp.dp)
+                .background(
+                    color =  Color.Black.copy(0.3f),
+                    shape = RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
+                )
+            ,
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(browserSettings.paddingDp.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+
+
+            // Action buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
             ) {
-
-
-                // Action buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
-                ) {
-                    // --- Deny Button ---
-                    IconButton(
-                        onClick = onDeny,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(
-                                cornerRadiusForLayer(
-                                    2,
-                                    browserSettings.deviceCornerRadius,
-                                    browserSettings.paddingDp
-                                ).dp * 2
-                            ),
-
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = Color.Transparent
+                // --- Deny Button ---
+                IconButton(
+                    onClick = onDeny,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp * 2
                         ),
-                    ) {
-                        Icon(
-                            painter = painterResource(id = currentRequest.iconResDeny), // You can make this icon generic too
-                            contentDescription = "Deny Permission",
-                            tint = Color.White
-                        )
-                    }
 
-                    // --- Allow Button ---
-                    IconButton(
-                        onClick = onAllow,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(
-                                cornerRadiusForLayer(
-                                    2,
-                                    browserSettings.deviceCornerRadius,
-                                    browserSettings.paddingDp
-                                ).dp * 2
-                            ),
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = Color.White
-                        )
-                    ) {
-                        Icon(
-                            painter = painterResource(id = currentRequest.iconResAllow), // You can make this icon generic too
-                            contentDescription = "Allow Permission",
-                            tint = Color.Black
-                        )
-                    }
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = Color.Transparent
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(id = currentRequest.iconResDeny), // You can make this icon generic too
+                        contentDescription = "Deny Permission",
+                        tint = Color.White
+                    )
+                }
+
+                // --- Allow Button ---
+                IconButton(
+                    onClick = onAllow,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp * 2
+                        ),
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = Color.White
+                    )
+                ) {
+                    Icon(
+                        painter = painterResource(id = currentRequest.iconResAllow), // You can make this icon generic too
+                        contentDescription = "Allow Permission",
+                        tint = Color.Black
+                    )
                 }
             }
         }
@@ -2289,7 +2332,7 @@ fun OptionsPanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(
-                            Color.Black.copy(alpha = 0.4f),
+                            Color.Black.copy(alpha = 0.3f),
                             shape = RoundedCornerShape(
                                 cornerRadiusForLayer(
                                     2,
@@ -2409,7 +2452,6 @@ fun PromptPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(browserSettings.paddingDp.dp)
-
         ) {
 
             Row(
@@ -2731,7 +2773,7 @@ fun NavigationPanel(
                         .fillMaxWidth()
 
                         .padding(browserSettings.paddingDp.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Back Icon
