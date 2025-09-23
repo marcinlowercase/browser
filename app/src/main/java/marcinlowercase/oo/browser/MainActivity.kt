@@ -724,6 +724,24 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
         browserSettings = newSettings
         Log.e("updateBrowserSettings", browserSettings.toString())
     }
+    fun createNewTab(insertAtIndex: Int) {
+        tabs[activeTabIndex.intValue].state = TabState.BACKGROUND
+
+        val newTab = Tab(
+            state = TabState.ACTIVE,
+            historyState = SerializableBackForwardList(
+                items = listOf(SerializableHistoryItem(url = browserSettings.defaultUrl, title = "oo")),
+                currentIndex = 0
+            )
+        )
+
+        tabs.add(insertAtIndex, newTab)
+
+        activeTabIndex.intValue = insertAtIndex
+        webView.loadUrl(browserSettings.defaultUrl)
+        textFieldValue = TextFieldValue(browserSettings.defaultUrl)
+        saveTrigger++
+    }
 
     fun navigateWebView() {
         when (activeNavAction) {
@@ -1679,6 +1697,9 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
             }
 
             BottomPanel(
+                onNewTabClicked = { index ->
+                    createNewTab(index)
+                },
                 toggleIsTabsPanelVisible = {
                     isTabsPanelVisible = !isTabsPanelVisible
                     tabsPanelLock = !tabsPanelLock
@@ -1859,6 +1880,8 @@ fun BrowserScreen(initialUrl: String?, modifier: Modifier = Modifier) {
 
 @Composable
 fun BottomPanel(
+    onNewTabClicked: (Int) -> Unit,
+
     isTabsPanelVisible: Boolean,
     onTabSelected: (Int) -> Unit,
     navigateWebView: () -> Unit,
@@ -1964,7 +1987,8 @@ fun BottomPanel(
                     tabs = tabs,
                     activeTabIndex = activeTabIndex.value,
                     browserSettings = browserSettings,
-                    onTabSelected = onTabSelected
+                    onTabSelected = onTabSelected,
+                    onNewTabClicked = onNewTabClicked,
                 )
             }
 
@@ -3048,16 +3072,17 @@ fun TabsPanel(
     tabs: List<Tab>,
     activeTabIndex: Int,
     browserSettings: BrowserSettings,
-    onTabSelected: (Int) -> Unit
+    onTabSelected: (Int) -> Unit,
+    onNewTabClicked: (Int) -> Unit
 ) {
     if (tabs.isEmpty()) return
 
-    val pagerState = rememberPagerState(initialPage = activeTabIndex, pageCount = { tabs.size })
+    val pagerState = rememberPagerState(initialPage = activeTabIndex + 1, pageCount = { tabs.size + 2 })
 
     // This effect is still useful to sync the pager if a new tab is created
     LaunchedEffect(activeTabIndex, tabs.size) {
-        if (pagerState.currentPage != activeTabIndex) {
-            pagerState.animateScrollToPage(activeTabIndex)
+        if (pagerState.currentPage != activeTabIndex+1) {
+            pagerState.animateScrollToPage(activeTabIndex+1)
         }
     }
 
@@ -3087,22 +3112,37 @@ fun TabsPanel(
             contentPadding = PaddingValues(horizontal = 32.dp),
             pageSpacing = browserSettings.paddingDp.dp / 2
         ) { pageIndex ->
-            val tab = tabs[pageIndex]
+            when (pageIndex) {
+                0 -> {
+                    // This is the FIRST page: New Tab button on the left
+                    NewTabButton(
+                        browserSettings = browserSettings,
+                        onClick = { onNewTabClicked(0) } // Request new tab at index 0
+                    )
+                }
+                in 1..tabs.size -> {
+                    // This is a regular tab page. Map pageIndex back to tabIndex.
+                    val tabIndex = pageIndex - 1
+                    val tab = tabs[tabIndex]
+                    val title = tab.historyState?.items?.getOrNull(tab.historyState!!.currentIndex)?.title ?: "New Tab"
+                    val faviconUrl = getFaviconUrl(tab.currentUrl ?: "")
 
-            val currentHistory = tab.historyState
-            val title = currentHistory?.items?.getOrNull(currentHistory.currentIndex)?.title ?: "New Tab"
-            val faviconUrl = getFaviconUrl(tab.currentUrl ?: "")
-
-
-            TabItem(
-                faviconUrl = faviconUrl,
-                title = title,
-                // "Active" still means it's the centered page in the pager for visual purposes
-                isActive = pagerState.currentPage == pageIndex,
-                browserSettings = browserSettings,
-                // The onClick event is what now triggers the selection
-                onClick = { onTabSelected(pageIndex) }
-            )
+                    TabItem(
+                        faviconUrl = faviconUrl,
+                        title = title,
+                        isActive = pagerState.currentPage == pageIndex,
+                        browserSettings = browserSettings,
+                        onClick = { onTabSelected(tabIndex) }
+                    )
+                }
+                else -> {
+                    // This is the LAST page: New Tab button on the right
+                    NewTabButton(
+                        browserSettings = browserSettings,
+                        onClick = { onNewTabClicked(tabs.size) } // Request new tab at the end
+                    )
+                }
+            }
         }
     }
 }
@@ -3162,7 +3202,7 @@ fun TabItem(
                     .clip(CircleShape)
             )
 
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(browserSettings.paddingDp.dp))
             Text(
                 text = title,
                 color = if (isActive) Color.White else Color.White.copy(alpha = 0.7f), // Dim the text for inactive
@@ -3175,4 +3215,36 @@ fun TabItem(
     }
 }
 
+@Composable
+fun NewTabButton(
+    modifier: Modifier = Modifier,
+    browserSettings: BrowserSettings,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+
+            .padding(horizontal = browserSettings.paddingDp.dp)
+            .clip(RoundedCornerShape(cornerRadiusForLayer(2, browserSettings.deviceCornerRadius, browserSettings.paddingDp).dp))
+            .clickable(onClick = onClick)
+            .background(Color.Black.copy(alpha = 0.2f))
+            .height(
+                cornerRadiusForLayer(
+                    2,
+                    browserSettings.deviceCornerRadius,
+                    browserSettings.paddingDp
+                ).dp * 2
+            )
+            .fillMaxWidth()
+        ,
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            painter = painterResource(id = R.drawable.ic_add),
+            contentDescription = "New Tab",
+            tint = Color.White,
+            modifier = Modifier.size(32.dp)
+        )
+    }
+}
 //endregion
