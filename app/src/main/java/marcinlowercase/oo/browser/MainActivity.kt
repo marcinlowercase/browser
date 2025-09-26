@@ -4211,6 +4211,7 @@ fun DownloadPanel(
 }
 
 
+@SuppressLint("DefaultLocale")
 @Composable
 fun DownloadRow(
     index: Int,
