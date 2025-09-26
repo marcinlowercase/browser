@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.DownloadManager
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -24,12 +26,14 @@ import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
+import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.ManagedActivityResultLauncher
@@ -45,6 +49,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,9 +65,11 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -82,8 +89,8 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -97,7 +104,6 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.edit
@@ -115,7 +121,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
-import coil.compose.AsyncImage
+import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -132,6 +138,25 @@ const val default_url = "https://oo3.deno.dev/i"
 //endregion
 
 //region Global Functions
+fun formatSpeed(bytesPerSecond: Float): String {
+    if (bytesPerSecond < 1024) return "%.0f B/s".format(bytesPerSecond)
+    val kbps = bytesPerSecond / 1024
+    if (kbps < 1024) return "%.1f KB/s".format(kbps)
+    val mbps = kbps / 1024
+    return "%.1f MB/s".format(mbps)
+}
+
+fun formatTimeRemaining(millis: Long): String {
+    if (millis <= 0) return ""
+    val totalSeconds = millis / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return if (minutes > 0) {
+        "${minutes}m ${seconds}s left"
+    } else {
+        "${seconds}s left"
+    }
+}
 
 fun cornerRadiusForLayer(layer: Int, deviceCornerRadius: Float = 0f, padding: Float = 0f): Float {
 
@@ -139,6 +164,10 @@ fun cornerRadiusForLayer(layer: Int, deviceCornerRadius: Float = 0f, padding: Fl
         return deviceCornerRadius
     }
     return (cornerRadiusForLayer(layer - 1, deviceCornerRadius, padding) - padding)
+}
+
+fun animationSpeedForLayer(layer: Int, animationSpeed: Int = 0): Int {
+    return if ((animationSpeed - 50) <= 0) 0 else animationSpeed - 50 * layer
 }
 
 fun getFaviconUrlFromGoogleServer(pageUrl: String): String {
@@ -173,6 +202,62 @@ class FaviconJavascriptInterface(
 //endregion
 
 //region Data Class
+
+private data class PollData(val timestampMs: Long, val bytesDownloaded: Long, val lastSpeedBps: Float = 0f)
+
+
+
+@Serializable
+enum class DownloadStatus {
+    PENDING,
+    RUNNING,
+    PAUSED,
+    SUCCESSFUL,
+    FAILED,
+    CANCELLED
+}
+
+@Serializable
+data class DownloadItem(
+    val id: Long, // This ID comes from Android's DownloadManager
+    val url: String,
+    val filename: String,
+    val mimeType: String,
+    var status: DownloadStatus = DownloadStatus.PENDING,
+    var progress: Int = 0, // Progress from 0 to 100
+    var totalBytes: Long = 0,
+    var downloadedBytes: Long = 0,
+    @Transient var downloadSpeedBps: Float = 0f, // Bytes per second
+    @Transient var timeRemainingMs: Long = 0L    // Milliseconds
+)
+
+
+class DownloadTracker(context: Context) {
+    private val prefs = context.getSharedPreferences("BrowserDownloads", Context.MODE_PRIVATE)
+    private val json = Json { ignoreUnknownKeys = true }
+    private val downloadsKey = "downloads_list_json"
+
+    fun saveDownloads(downloads: List<DownloadItem>) {
+        val jsonString = json.encodeToString(downloads)
+        prefs.edit { putString(downloadsKey, jsonString) }
+        Log.d("DownloadTracker", "${downloads.size} downloads saved.")
+    }
+
+    fun loadDownloads(): MutableList<DownloadItem> {
+        val jsonString = prefs.getString(downloadsKey, null)
+        return if (jsonString != null) {
+            try {
+                json.decodeFromString(jsonString)
+            } catch (e: Exception) {
+                Log.e("DownloadTracker", "Failed to decode downloads", e)
+                mutableListOf()
+            }
+        } else {
+            mutableListOf()
+        }
+    }
+}
+
 
 // A sealed interface to represent any type of JS Dialog
 sealed interface JsDialogState
@@ -209,6 +294,9 @@ data class BrowserSettings(
     val singleLineHeight: Int,
     val isDesktopMode: Boolean,
     val desktopModeWidth: Int,
+    val isSharpMode: Boolean,
+    val topSharpEdge: Float,
+    val bottomSharpEdge: Float,
 )
 
 enum class GestureNavAction {
@@ -576,10 +664,11 @@ class WebViewManager(private val context: Context) {
         setCustomViewCallback: (WebChromeClient.CustomViewCallback?) -> Unit,
         setOriginalOrientation: (Int) -> Unit,
         resetCustomView: () -> Unit,
-        // ... add other callbacks as needed
+        onDownloadRequested: (url: String, userAgent: String, contentDisposition: String, mimeType: String, contentLength: Long) -> Unit,
         onPageStartedFun: (WebView, String?, Bitmap?) -> Unit,
         onPageFinishedFun: (WebView, String?) -> Unit,
         onDoUpdateVisitedHistoryFun: (WebView, String?, Boolean) -> Unit,
+        onTitleReceived: (webView: WebView, url: String, title: String) -> Unit,
     ) {
 
         webView.addJavascriptInterface(
@@ -594,6 +683,15 @@ class WebViewManager(private val context: Context) {
         webView.webChromeClient = object : WebChromeClient() {
 
             private var fullscreenView: View? = null
+
+            override fun onReceivedTitle(view: WebView?, title: String?) {
+                super.onReceivedTitle(view, title)
+                // When the title is received, pass it back up along with the URL
+                // so we can find the correct history item to update.
+                if (view?.url != null && !title.isNullOrBlank()) {
+                    onTitleReceived(view, view.url!!, title)
+                }
+            }
 
             // Handles window.alert()
             override fun onJsAlert(
@@ -900,6 +998,8 @@ class WebViewManager(private val context: Context) {
         }
 
         webView.webViewClient = object : WebViewClient() {
+
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 if (view != null) onPageStartedFun(view, url, favicon)
@@ -994,6 +1094,9 @@ class WebViewManager(private val context: Context) {
 
             }
         }
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
+            onDownloadRequested(url, userAgent, contentDisposition, mimeType, contentLength)
+        }
     }
 }
 
@@ -1059,31 +1162,31 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable
-fun rememberHasDisplayCutout(): State<Boolean> {
-    // These are fine, as LocalConfiguration and LocalDensity are ambient Composable properties
-    val configuration = LocalConfiguration.current
-    val density = LocalDensity.current
-
-    // Directly get the PaddingValues at the Composable level
-    // WindowInsets.displayCutout here provides the current insets for the composition
-    val displayCutoutPaddingValues =
-        WindowInsets.displayCutout.asPaddingValues() // Pass density if needed, or rely on ambient if appropriate for the API version
-
-    // Now, derivedStateOf can read from displayCutoutPaddingValues
-    // We also key remember on configuration and density to re-evaluate if they change,
-    // and on displayCutoutPaddingValues itself to re-calculate if the insets change.
-    val hasCutout = remember(configuration, density, displayCutoutPaddingValues) {
-        derivedStateOf {
-            // Check if any of the cutout inset dimensions are greater than zero.
-            (displayCutoutPaddingValues.calculateTopPadding() > 0.dp ||
-                    displayCutoutPaddingValues.calculateLeftPadding(LayoutDirection.Ltr) > 0.dp ||
-                    displayCutoutPaddingValues.calculateRightPadding(LayoutDirection.Ltr) > 0.dp)
-            // Bottom cutouts are rare, so often omitted from this specific check
-        }
-    }
-    return hasCutout
-}
+//@Composable
+//fun rememberHasDisplayCutout(): State<Boolean> {
+//    // These are fine, as LocalConfiguration and LocalDensity are ambient Composable properties
+//    val configuration = LocalConfiguration.current
+//    val density = LocalDensity.current
+//
+//    // Directly get the PaddingValues at the Composable level
+//    // WindowInsets.displayCutout here provides the current insets for the composition
+//    val displayCutoutPaddingValues =
+//        WindowInsets.displayCutout.asPaddingValues() // Pass density if needed, or rely on ambient if appropriate for the API version
+//
+//    // Now, derivedStateOf can read from displayCutoutPaddingValues
+//    // We also key remember on configuration and density to re-evaluate if they change,
+//    // and on displayCutoutPaddingValues itself to re-calculate if the insets change.
+//    val hasCutout = remember(configuration, density, displayCutoutPaddingValues) {
+//        derivedStateOf {
+//            // Check if any of the cutout inset dimensions are greater than zero.
+//            (displayCutoutPaddingValues.calculateTopPadding() > 0.dp ||
+//                    displayCutoutPaddingValues.calculateLeftPadding(LayoutDirection.Ltr) > 0.dp ||
+//                    displayCutoutPaddingValues.calculateRightPadding(LayoutDirection.Ltr) > 0.dp)
+//            // Bottom cutouts are rare, so often omitted from this specific check
+//        }
+//    }
+//    return hasCutout
+//}
 
 @Composable
 fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier) {
@@ -1110,8 +1213,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 singleLineHeight = sharedPrefs.getInt("single_line_height", 64),
                 isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
                 desktopModeWidth = sharedPrefs.getInt("desktop_mode_width", 820),
-
-                )
+                isSharpMode = sharedPrefs.getBoolean("is_sharp_mode", false),
+                topSharpEdge = sharedPrefs.getFloat("top_sharp_edge", 65.90476f),
+                bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", 65.90476f),
+            )
         )
     }
 
@@ -1183,7 +1288,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     var overlayHeightPx by remember { mutableFloatStateOf(0f) }
 
 
-    val hasDisplayCutout by rememberHasDisplayCutout()
+//    val hasDisplayCutout by rememberHasDisplayCutout()
 
 
     val animatedPadding by animateDpAsState(
@@ -1192,7 +1297,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     )
 
     val animatedCornerRadius by animateDpAsState(
-        targetValue = if (hasDisplayCutout) browserSettings.deviceCornerRadius.dp else 0.dp,
+        targetValue = if (!browserSettings.isSharpMode) browserSettings.deviceCornerRadius.dp else 0.dp,
         label = "Corner Radius Animation",
     )
 
@@ -1200,6 +1305,17 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     val cutoutPaddingValues = WindowInsets.displayCutout.asPaddingValues()
     val cutoutTop = cutoutPaddingValues.calculateTopPadding()
     val cutoutBottom = cutoutPaddingValues.calculateBottomPadding()
+
+    Log.i("cutoutTop", "$cutoutTop")
+
+    val webViewTopPadding by animateDpAsState(
+        targetValue = if (browserSettings.isSharpMode) browserSettings.topSharpEdge.dp else cutoutTop,
+        label = "WebView Top Padding Animation"
+    )
+    val webViewBottomPadding by animateDpAsState(
+        targetValue = if (browserSettings.isSharpMode) browserSettings.bottomSharpEdge.dp else cutoutBottom,
+        label = "WebView Top Padding Animation"
+    )
 
 
     var pendingPermissionRequest by remember {
@@ -1263,11 +1379,43 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     var promptComponentDisplayState by remember { mutableStateOf<JsDialogState?>(null) }
 
 
+    val downloadTracker = remember { DownloadTracker(context) }
+    val downloads =
+        remember { mutableStateListOf<DownloadItem>().apply { addAll(downloadTracker.loadDownloads()) } }
+    var isDownloadPanelVisible by remember { mutableStateOf(false) }
+
     //endregion
     // FUNCTIONS
 
 
     //region Functions
+
+    /**
+     * Generates a unique filename by checking against a list of existing downloads.
+     * If "file.txt" exists, it will return "file (1).txt", then "file (2).txt", etc.
+     */
+    fun generateUniqueFilename(initialName: String, existingDownloads: List<DownloadItem>): String {
+        val existingFilenames = existingDownloads.map { it.filename }.toSet()
+
+        if (!existingFilenames.contains(initialName)) {
+            return initialName // The original name is already unique
+        }
+
+        val baseName = initialName.substringBeforeLast('.')
+        val extension = initialName.substringAfterLast('.', "")
+        val finalExtension = if (extension.isNotEmpty()) ".$extension" else ""
+
+        var counter = 1
+        while (true) {
+            val newName = "$baseName ($counter)$finalExtension"
+            if (!existingFilenames.contains(newName)) {
+                return newName
+            }
+            counter++
+        }
+    }
+
+
     // This function will be our single, safe way to update settings.
     val updateBrowserSettings = { newSettings: BrowserSettings ->
         browserSettings = newSettings
@@ -1423,11 +1571,164 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         }
     }
 
+    val handleDownloadClick = { item: DownloadItem ->
+        // Check for the POSITIVE case first
+        if (item.status == DownloadStatus.SUCCESSFUL) {
+            // All the logic to open the downloads folder goes INSIDE the 'if' block.
+            val intent = Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            try {
+                context.startActivity(intent)
+            } catch (_: ActivityNotFoundException) {
+                // Fallback for rare devices
+                val genericFileManagerIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    val downloadsUri = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                    setDataAndType(downloadsUri, "*/*")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                try {
+                    context.startActivity(genericFileManagerIntent)
+                } catch (_: ActivityNotFoundException) {
+                    Toast.makeText(context, "Could not find a file manager app.", Toast.LENGTH_LONG)
+                        .show()
+                }
+            }
+        } else {
+            // If the download is NOT successful, just show the toast.
+            // The lambda finishes naturally after this, no 'return' needed.
+            Toast.makeText(context, "Download has not completed.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val lastPollData = remember { mutableMapOf<Long, PollData>() }
+
 
     //endregion
 
 
     // This effect now ONLY handles the very first restoration of state.
+
+    LaunchedEffect(Unit) {
+        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+
+        // This loop runs for the entire lifecycle of the screen
+        while (true) {
+            // Find downloads that need monitoring IN THIS CURRENT ITERATION
+            val activeDownloads = downloads.filter { it.status == DownloadStatus.RUNNING || it.status == DownloadStatus.PENDING }
+
+            if (activeDownloads.isEmpty()) {
+                // If there's nothing to do, clear the tracker and just wait.
+                // This prevents stale data if the app is backgrounded and resumed.
+                if (lastPollData.isNotEmpty()) {
+                    lastPollData.clear()
+                }
+            } else {
+                // There are active downloads, so we poll them.
+                val currentTimeMs = System.currentTimeMillis()
+                var changed = false
+
+                activeDownloads.forEach { item ->
+                    val query = DownloadManager.Query().setFilterById(item.id)
+                    downloadManager.query(query)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+
+
+                            val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                            val downloadedBytesIndex = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                            val totalBytesIndex = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+
+                            if (statusIndex == -1 || downloadedBytesIndex == -1 || totalBytesIndex == -1) {
+                                Log.e("DownloadPolling", "A required DownloadManager column is missing.")
+                                return@use
+                            }
+
+                            val downloadedBytes = cursor.getLong(downloadedBytesIndex)
+                            val totalBytes = cursor.getLong(totalBytesIndex)
+                            val statusInt = cursor.getInt(statusIndex)
+
+
+                            var speedBps = item.downloadSpeedBps
+                            var etrMs = item.timeRemainingMs
+
+                            val lastData = lastPollData[item.id]
+
+                            if (lastData != null) {
+                                // Check if the actual downloaded bytes have changed since our last check
+                                if (downloadedBytes > lastData.bytesDownloaded) {
+                                    val timeDeltaMs = currentTimeMs - lastData.timestampMs
+                                    val bytesDelta = downloadedBytes - lastData.bytesDownloaded
+
+                                    if (timeDeltaMs > 0) {
+                                        speedBps = (bytesDelta * 1000f) / timeDeltaMs
+                                        if (totalBytes > 0) {
+                                            val bytesRemaining = totalBytes - downloadedBytes
+                                            etrMs = ((bytesRemaining / speedBps) * 1000).toLong()
+                                        }
+                                        // Update the tracker with the new data
+                                        lastPollData[item.id] = PollData(currentTimeMs, downloadedBytes, speedBps)
+                                    }
+                                } else {
+                                    // NO CHANGE in bytes. Keep displaying the last known good speed.
+                                    // We also check if too much time has passed since the last update.
+                                    // If so, we reset speed to 0, assuming a stall.
+                                    if ((currentTimeMs - lastData.timestampMs) > 2000) { // 2 seconds threshold
+                                        speedBps = 0f
+                                        etrMs = 0L
+                                        // Update the tracker so we don't keep resetting
+                                        lastPollData[item.id] = lastData.copy(lastSpeedBps = 0f)
+                                    }
+                                }
+                            } else {
+                                // First poll, initialize
+                                lastPollData[item.id] = PollData(currentTimeMs, downloadedBytes)
+                            }
+
+                            val status = when (statusInt) {
+                                DownloadManager.STATUS_RUNNING -> DownloadStatus.RUNNING
+                                DownloadManager.STATUS_PAUSED -> DownloadStatus.PAUSED
+                                DownloadManager.STATUS_SUCCESSFUL -> DownloadStatus.SUCCESSFUL
+                                DownloadManager.STATUS_FAILED -> DownloadStatus.FAILED
+                                else -> item.status
+                            }
+                            val progress = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt() else 0
+                            val itemIndex = downloads.indexOfFirst { it.id == item.id }
+                            Log.i("DownloadPolling", "Item index: $itemIndex")
+                            Log.i("DownloadPolling", "speedBps: $speedBps")
+                            Log.i("DownloadPolling", "etrMs: $etrMs")
+
+                            if (itemIndex != -1) {
+                                val updatedItem = downloads[itemIndex].copy(
+                                    status = status,
+                                    progress = progress,
+                                    downloadedBytes = downloadedBytes,
+                                    totalBytes = totalBytes
+                                )
+                                // 2. Manually set the transient data on the new object
+                                updatedItem.downloadSpeedBps = speedBps
+                                updatedItem.timeRemainingMs = etrMs
+
+                                // 3. Replace the old item in the list. THIS TRIGGERS THE UI UPDATE.
+                                downloads[itemIndex] = updatedItem
+                                changed = true
+                            }
+
+                            if (status != DownloadStatus.RUNNING && status != DownloadStatus.PENDING) {
+                                lastPollData.remove(item.id)
+                            }
+                        }
+                    }
+                }
+                if (changed) {
+                    downloadTracker.saveDownloads(downloads)
+                }
+            }
+
+            // The delay is now at the end of the main while loop
+            delay(100L)
+        }
+    }
 
 
     //region LaunchedEffect
@@ -1435,6 +1736,14 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         activeWebView?.let { webView ->
 
             val tab = activeTab
+            val jsFaviconDiscovery = """
+        (function() {
+            let icon = document.querySelector("link[rel='apple-touch-icon']") ||
+                       document.querySelector("link[rel='icon']") ||
+                       document.querySelector("link[rel='shortcut icon']");
+            WebAppFavicon.passFaviconUrl(icon ? icon.href : null);
+        })();
+        """.trimIndent()
 
             // Set up all the clients for the *current* active WebView.
             webViewManager.setWebViewClients(
@@ -1456,27 +1765,24 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     val itemToUpdate = currentHistory.items[historyIndex]
 
                     // Check if an update is even needed to prevent unnecessary recompositions.
-                    if (itemToUpdate.faviconUrl != faviconUrl) {
+                    if (faviconUrl.isNotBlank()) {
                         Log.d(
-                            "FaviconUpdate",
-                            "Updating favicon for ${itemToUpdate.url} to $faviconUrl"
+                            "Favicon",
+                            "Update new favicon for ${itemToUpdate.url} to $faviconUrl"
                         )
 
-                        // Create a new history item with the updated favicon URL.
                         val updatedItem = itemToUpdate.copy(faviconUrl = faviconUrl)
-
-                        // Create a new list of items with the updated item replaced.
                         val updatedItems = currentHistory.items.toMutableList().apply {
                             this[historyIndex] = updatedItem
                         }
-
-                        // Create a new, updated history state object.
                         val updatedHistory = currentHistory.copy(items = updatedItems)
-
-                        // Finally, replace the old tab object in our state list with a new one.
                         tabs[tabIndex] = targetTab.copy(historyState = updatedHistory)
-
                         saveTrigger++
+                    } else {
+                        Log.d(
+                            "FaviconUpdate",
+                            "Skipping favicon update for ${itemToUpdate.url}. An icon already exists or the new one is invalid."
+                        )
                     }
                 },
                 onJsAlert = { message -> jsDialogState = JsAlert(message) },
@@ -1511,7 +1817,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     isLoading = true
                 },
                 onPageFinishedFun = { view, currentUrlString -> isLoading = false },
-
                 onDoUpdateVisitedHistoryFun = { view, url, isReload ->
                     Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
                     Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
@@ -1551,6 +1856,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             return@let
                         }
 
+
                         // LOG
                         Log.w("doUpdateVisitedHistory", "Realtime History:")
                         Log.i(
@@ -1561,7 +1867,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             val item = realtimeHistory.getItemAtIndex(i)
                             val marker =
                                 if (realtimeHistory.currentIndex == i) " << Current" else " "
-                            Log.i("doUpdateVisitedHistory", "$i. URL: ${item.url} $marker")
+                            Log.i(
+                                "doUpdateVisitedHistory",
+                                "$i. URL: ${item.url} << ${item.title} >> $marker"
+                            )
                         }
 
                         Log.w("doUpdateVisitedHistory", "Database History:")
@@ -1605,6 +1914,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                         databaseHistory.currentIndex + 1
                                     ).toMutableList()
                                 }
+                                Log.e(
+                                    "doUpdateVisitedHistory",
+                                    "Title ${realtimeHistory.currentItem?.title}"
+                                )
                                 updatedHistoryItems.add(
                                     SerializableHistoryItem(
                                         url = realtimeCurrentItemUrl,
@@ -1680,7 +1993,71 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
                         realtimePreviousIndexHolder = realtimeHistory.currentIndex
                     }
-                }
+                },
+                onTitleReceived = { view, url, title ->
+                    val tabIndex = tabs.indexOfFirst { it.id == activeTab.id }
+                    if (tabIndex == -1) return@setWebViewClients
+
+                    val targetTab = tabs[tabIndex]
+                    val currentHistory = targetTab.historyState ?: return@setWebViewClients
+
+                    // Find the specific history item that matches this URL.
+                    val historyIndexToUpdate = currentHistory.items.indexOfFirst { it.url == url }
+                    if (historyIndexToUpdate == -1) return@setWebViewClients
+
+                    val itemToUpdate = currentHistory.items[historyIndexToUpdate]
+
+                    // Only update if the title has actually changed to prevent loops
+                    if (itemToUpdate.title != title) {
+                        Log.d("onReceivedTitle", "Updating title for '$url' to '$title'")
+                        val updatedItem = itemToUpdate.copy(title = title)
+                        val updatedItems = currentHistory.items.toMutableList().apply {
+                            this[historyIndexToUpdate] = updatedItem
+                        }
+                        val updatedHistory = currentHistory.copy(items = updatedItems)
+                        tabs[tabIndex] = targetTab.copy(historyState = updatedHistory)
+                        saveTrigger++
+                    }
+
+                    view.evaluateJavascript(jsFaviconDiscovery, null)
+
+
+                },
+                onDownloadRequested = { url, userAgent, contentDisposition, mimeType, contentLength ->
+                    val initialFilename = URLUtil.guessFileName(url, contentDisposition, mimeType)
+
+                    // 2. Generate a guaranteed unique filename using our helper
+                    val finalFilename = generateUniqueFilename(initialFilename, downloads)
+
+
+                    Toast.makeText(context, "Downloading $finalFilename", Toast.LENGTH_SHORT).show()
+
+                    // 3. Use the final, unique filename for the DownloadManager request
+                    val request = DownloadManager.Request(url.toUri())
+                        .setTitle(finalFilename) // Use unique name
+                        .setDescription("Downloading...")
+                        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                        .setDestinationInExternalPublicDir(
+                            android.os.Environment.DIRECTORY_DOWNLOADS,
+                            finalFilename
+                        ) // Use unique name
+                        .addRequestHeader("User-Agent", userAgent)
+
+                    val downloadManager =
+                        context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                    val downloadId = downloadManager.enqueue(request)
+
+                    // 4. Use the final, unique filename for our internal state object
+                    val newDownload = DownloadItem(
+                        id = downloadId,
+                        url = url,
+                        filename = finalFilename, // Use unique name
+                        mimeType = mimeType,
+                        status = DownloadStatus.PENDING
+                    )
+                    downloads.add(0, newDownload)
+                    downloadTracker.saveDownloads(downloads)
+                },
             )
             webView.onWebViewTouch = {
                 if (isUrlBarVisible) isUrlBarVisible = false
@@ -1824,6 +2201,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             putInt("animation_speed", browserSettings.animationSpeed)
             putInt("single_line_height", browserSettings.singleLineHeight)
             putInt("desktop_mode_width", browserSettings.desktopModeWidth)
+            putBoolean("is_sharp_mode", browserSettings.isSharpMode)
+            putFloat("top_sharp_edge", browserSettings.topSharpEdge)
+            putFloat("bottom_sharp_edge", browserSettings.bottomSharpEdge)
 
         }
     }
@@ -1901,14 +2281,14 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .padding(top = cutoutTop, bottom = cutoutBottom)
+//                .padding(top = cutoutTop, bottom = cutoutBottom)
         ) {
             Column(
                 modifier = modifier
                     .fillMaxSize()
-                    .padding(
-                        bottom = cutoutBottom
-                    )
+                    .padding(top = webViewTopPadding, bottom = webViewBottomPadding)
+
+
             ) {
 
 
@@ -1917,16 +2297,11 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-//                            .padding(animatedPadding)
-//                            .padding(
-////                                top = animatedCutoutTop,
-//                                start = animatedCutoutStart,
-//                                end = animatedCutoutEnd,
-//                                bottom = animatedCutoutBottom
-//                            )
-//                        .padding(all = (if (pendingPermissionRequest != null) browserSettings.paddingDp.dp else 0.dp))
-
-                        .clip(RoundedCornerShape(animatedCornerRadius))
+                        .clip(
+                            RoundedCornerShape(
+                                animatedCornerRadius
+                            )
+                        )
                         .testTag("WebViewContainer")
 
                 ) {
@@ -1936,23 +2311,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
                     ) {
                         AndroidView(
-//                            factory = {
-//                                FrameLayout(it).apply {
-//                                    // If the WebView still has a parent from a previous composition, remove it.
-//                                    if ( activeWebView != null)(activeWebView.parent as? ViewGroup)?.removeView(activeWebView)
-//
-//                                    // Add our singleton WebView to it.
-//                                    addView(
-//                                        activeWebView,
-//                                        FrameLayout.LayoutParams(
-//                                            FrameLayout.LayoutParams.MATCH_PARENT,
-//                                            FrameLayout.LayoutParams.MATCH_PARENT
-//                                        ).apply {
-//                                            gravity = Gravity.CENTER
-//                                        }
-//                                    )
-//                                }
-//                            },
                             // The factory now ONLY creates the container. It's simple.
                             factory = { context ->
                                 FrameLayout(context)
@@ -1988,6 +2346,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             }
 
             BottomPanel(
+                onDownloadClicked = handleDownloadClick,
+                downloads = downloads,
+                isDownloadPanelVisible = isDownloadPanelVisible,
+                toggleIsDownloadPanelVisible = { isDownloadPanelVisible = !isDownloadPanelVisible },
                 activeWebView = activeWebView,
                 isUrlOverlayBoxVisible = isUrlOverlayBoxVisible,
                 setIsUrlOverlayBoxVisible = { isUrlOverlayBoxVisible = it },
@@ -2066,10 +2428,23 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             AnimatedVisibility(
                 visible = !isBottomPanelVisible,
                 modifier = Modifier.align(squareAlignment), // Align to bottom-right corner
-                enter = fadeIn(animationSpec = tween(browserSettings.animationSpeed)),
-                exit = fadeOut(animationSpec = tween(browserSettings.animationSpeed))
+                enter = fadeIn(
+                    animationSpec = tween(
+                        animationSpeedForLayer(
+                            0,
+                            browserSettings.animationSpeed
+                        )
+                    )
+                ),
+                exit = fadeOut(
+                    animationSpec = tween(
+                        animationSpeedForLayer(
+                            0,
+                            browserSettings.animationSpeed
+                        )
+                    )
+                )
             ) {
-
 
                 Box(
                     modifier = Modifier
@@ -2175,6 +2550,11 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 @Composable
 fun BottomPanel(
+    onDownloadClicked: (DownloadItem) -> Unit,
+    isDownloadPanelVisible: Boolean,
+    downloads: List<DownloadItem>,
+    toggleIsDownloadPanelVisible: () -> Unit,
+
     activeWebView: CustomWebView?,
     isUrlOverlayBoxVisible: Boolean,
     setIsUrlOverlayBoxVisible: (Boolean) -> Unit,
@@ -2222,10 +2602,22 @@ fun BottomPanel(
     AnimatedVisibility(
         modifier = modifier,
         visible = isBottomPanelVisible,
-        enter = fadeIn(animationSpec = tween(browserSettings.animationSpeed)),
-        exit = fadeOut(animationSpec = tween(browserSettings.animationSpeed))
-//        enter = expandVertically(tween(browserSettings.animationSpeed)),
-//        exit = shrinkVertically(tween(browserSettings.animationSpeed))
+        enter = fadeIn(
+            animationSpec = tween(
+                animationSpeedForLayer(
+                    0,
+                    browserSettings.animationSpeed
+                )
+            )
+        ),
+        exit = fadeOut(
+            animationSpec = tween(
+                animationSpeedForLayer(
+                    0,
+                    browserSettings.animationSpeed
+                )
+            )
+        )
     ) {
 
         Column(
@@ -2281,6 +2673,13 @@ fun BottomPanel(
                 }
             )
 
+            DownloadPanel(
+                isDownloadPanelVisible = isDownloadPanelVisible,
+                downloads = downloads,
+                browserSettings = browserSettings,
+                onDownloadClicked = onDownloadClicked
+            )
+
             TabsPanel(
                 isTabsPanelVisible = isTabsPanelVisible,
                 tabs = tabs,
@@ -2299,16 +2698,28 @@ fun BottomPanel(
 
                     },
                 visible = isUrlBarVisible,
-//                enter = fadeIn(animationSpec = tween(browserSettings.animationSpeed)),
-//                exit = fadeOut(animationSpec = tween(browserSettings.animationSpeed))
-                enter = expandVertically(tween(browserSettings.animationSpeed)) + fadeIn(
+                enter = expandVertically(
                     tween(
-                        browserSettings.animationSpeed
+                        animationSpeedForLayer(
+                            1,
+                            browserSettings.animationSpeed
+                        )
+                    )
+                ) + fadeIn(
+                    tween(
+                        animationSpeedForLayer(1, browserSettings.animationSpeed)
                     )
                 ),
-                exit = shrinkVertically(tween(browserSettings.animationSpeed)) + fadeOut(
+                exit = shrinkVertically(
                     tween(
-                        browserSettings.animationSpeed
+                        animationSpeedForLayer(
+                            1,
+                            browserSettings.animationSpeed
+                        )
+                    )
+                ) + fadeOut(
+                    tween(
+                        animationSpeedForLayer(1, browserSettings.animationSpeed)
                     )
                 )
             ) {
@@ -2601,6 +3012,7 @@ fun BottomPanel(
                 browserSettings = browserSettings,
                 toggleIsTabsPanelVisible = toggleIsTabsPanelVisible,
                 tabs = tabs,
+                toggleIsDownloadPanelVisible = toggleIsDownloadPanelVisible
             )
         }
 
@@ -2722,6 +3134,8 @@ fun PermissionPanel(
 @Composable
 fun OptionsPanel(
     isImmersiveMode: Boolean,
+    toggleIsDownloadPanelVisible: () -> Unit,
+
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
     toggleIsTabsPanelVisible: () -> Unit,
@@ -2745,6 +3159,19 @@ fun OptionsPanel(
                 "Show Tabs Panel" // Display the number of open tabs
             ) {
                 toggleIsTabsPanelVisible()
+            },
+            OptionItem(
+                if (browserSettings.isSharpMode) R.drawable.ic_rounded_corner else R.drawable.ic_sharp_corner,
+                "Toggle Sharp Corners"
+            ) {
+                updateBrowserSettings(browserSettings.copy(isSharpMode = !browserSettings.isSharpMode))
+            },
+
+            OptionItem(
+                R.drawable.ic_download, // You'll need a download icon
+                "Show Downloads"
+            ) {
+                toggleIsDownloadPanelVisible()
             },
 
             OptionItem(R.drawable.ic_bug, "logBrowserSettings") {
@@ -2771,16 +3198,30 @@ fun OptionsPanel(
 
     AnimatedVisibility(
         visible = isOptionsPanelVisible,
-        enter = expandVertically(tween(browserSettings.animationSpeed)) + fadeIn(
+        enter = expandVertically(
             tween(
-                browserSettings.animationSpeed
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeIn(
+            tween(
+                animationSpeedForLayer(1, browserSettings.animationSpeed)
             )
         ),
-        exit = shrinkVertically(tween(browserSettings.animationSpeed)) + fadeOut(
+        exit = shrinkVertically(
             tween(
-                browserSettings.animationSpeed
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
             )
-        ),
+        ) + fadeOut(
+            tween(
+                animationSpeedForLayer(1, browserSettings.animationSpeed)
+            )
+        )
     ) {
         Box(
             modifier = Modifier
@@ -2930,10 +3371,17 @@ fun PromptPanel(
     AnimatedVisibility(
 //        modifier = modifier,
         visible = isPromptPanelVisible,
-        enter = fadeIn(tween(browserSettings.animationSpeed)),
-        exit = shrinkVertically(tween(browserSettings.animationSpeed)) + fadeOut(
+        enter = fadeIn(tween(animationSpeedForLayer(1, browserSettings.animationSpeed))),
+        exit = shrinkVertically(
             tween(
-                browserSettings.animationSpeed
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeOut(
+            tween(
+                animationSpeedForLayer(1, browserSettings.animationSpeed)
             )
         )
     ) {
@@ -3212,14 +3660,28 @@ fun NavigationPanel(
 ) {
     AnimatedVisibility(
         visible = isNavPanelVisible,
-        enter = expandVertically(tween(browserSettings.animationSpeed)) + fadeIn(
+        enter = expandVertically(
             tween(
-                browserSettings.animationSpeed
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeIn(
+            tween(
+                animationSpeedForLayer(1, browserSettings.animationSpeed)
             )
         ),
-        exit = shrinkVertically(tween(browserSettings.animationSpeed)) + fadeOut(
+        exit = shrinkVertically(
             tween(
-                browserSettings.animationSpeed
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeOut(
+            tween(
+                animationSpeedForLayer(1, browserSettings.animationSpeed)
             )
         )
     ) {
@@ -3395,7 +3857,34 @@ fun TabsPanel(
 
 
 
-    AnimatedVisibility(visible = isTabsPanelVisible) {
+    AnimatedVisibility(
+        visible = isTabsPanelVisible,
+        enter = expandVertically(
+            tween(
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeIn(
+            tween(
+                animationSpeedForLayer(1, browserSettings.animationSpeed)
+            )
+        ),
+        exit = shrinkVertically(
+            tween(
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeOut(
+            tween(
+                animationSpeedForLayer(1, browserSettings.animationSpeed)
+            )
+        )
+
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3468,7 +3957,6 @@ fun TabsPanel(
 
 @Composable
 fun TabItem(
-    modifier: Modifier = Modifier,
     faviconUrl: String,
     title: String,
     isActive: Boolean,
@@ -3477,7 +3965,7 @@ fun TabItem(
 ) {
     Box(
 
-        modifier = modifier
+        modifier = Modifier
             .padding(browserSettings.paddingDp.dp)
             .clip(
                 RoundedCornerShape(
@@ -3490,7 +3978,7 @@ fun TabItem(
             )
     ) {
         Row(
-            modifier = modifier
+            modifier = Modifier
                 // Make the entire item clickable
                 .clickable(onClick = onClick)
                 .height(
@@ -3509,49 +3997,54 @@ fun TabItem(
                         ).dp
                     )
                 )
-                .background(if (isActive) Color.Black.copy(alpha = 0.5f) else Color.Black.copy(alpha = 0.2f)) // Different background for inactive
+                .background(if (isActive) Color.White.copy(alpha = 0.8f) else Color.White.copy(alpha = 0.4f)) // Different background for inactive
                 .padding(horizontal = browserSettings.paddingDp.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
-                modifier = modifier
+                modifier = Modifier
                     .padding(browserSettings.paddingDp.dp)
 
             ) {
                 Box(
-                    modifier = modifier
-                        .size(
-                            browserSettings.paddingDp.dp * 3
-                        )
-                        .clip(
-                            RoundedCornerShape(
-                                browserSettings.paddingDp  / 2
-                            )
-                        )
-                        .background(Color.White)
-
-
+                    modifier = Modifier
+                        .size(24.dp),
+//                        .clip(RoundedCornerShape(browserSettings.paddingDp.dp / 2)),
+//                        .background(Color.White.copy(alpha = 0.2f)),
+//                        .background(if (isActive) Color.White else Color.White.copy(alpha = 0.7f)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data(faviconUrl)
-                            .size(with(LocalDensity.current) { 24.dp.toPx().toInt() })
-                            .crossfade(true)
-                            .error(R.drawable.ic_language) // A generic globe icon
-                            .placeholder(R.drawable.ic_language) // Show while loading
-                            .build(),
+                    val imageSizePx = with(LocalDensity.current) {
+                        (24.dp * 3).roundToPx()
+                    }
+
+                    // 1. Build the same robust ImageRequest as before.
+                    val imageRequest = ImageRequest.Builder(LocalContext.current)
+                        .data(faviconUrl)
+                        .size(imageSizePx) // Explicitly set size
+                        .crossfade(true)
+                        .placeholder(R.drawable.ic_language)
+                        .error(R.drawable.ic_language)
+                        .build()
+
+                    // 2. Use the painter to handle loading and state.
+                    val painter = rememberAsyncImagePainter(model = imageRequest)
+
+                    // 3. Use the NATIVE Image composable for display. It's more stable.
+                    Image(
+                        painter = painter,
                         contentDescription = "Favicon",
-                        modifier = modifier
-                            .padding(browserSettings.paddingDp.dp / 8)
-
-
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+//                            .padding(3.dp)
                     )
                 }
 
                 Spacer(Modifier.width(browserSettings.paddingDp.dp))
                 Text(
                     text = title,
-                    color = if (isActive) Color.White else Color.White.copy(alpha = 0.7f), // Dim the text for inactive
+                    color = if (isActive) Color.Black else Color.Black.copy(alpha = 0.7f), // Dim the text for inactive
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -3606,4 +4099,266 @@ fun NewTabButton(
         }
     }
 }
+
+
+@Composable
+fun DownloadPanel(
+    isDownloadPanelVisible: Boolean,
+    downloads: List<DownloadItem>,
+    browserSettings: BrowserSettings,
+    onDownloadClicked: (DownloadItem) -> Unit
+) {
+    AnimatedVisibility(
+        visible = isDownloadPanelVisible,
+        enter = expandVertically(
+            tween(
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeIn(
+            tween(animationSpeedForLayer(1, browserSettings.animationSpeed))
+        ),
+        exit = shrinkVertically(
+            tween(
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeOut(
+            tween(animationSpeedForLayer(1, browserSettings.animationSpeed))
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(browserSettings.paddingDp.dp)
+                .fillMaxWidth()
+                .heightIn(
+                    max = 300.dp,
+                    min = cornerRadiusForLayer(
+                        2,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp * 2
+                ) // Set a max height to prevent it from getting too tall
+                .clip(
+                    RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
+                )
+                .background(Color.Black.copy(0.3f))
+        ) {
+            if (downloads.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(browserSettings.paddingDp.dp)
+                        .background(Color.Transparent)
+                        .clip(
+                            RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp
+                            )
+                        )
+                        .height(
+                            cornerRadiusForLayer(
+                                3,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp * 2
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("No downloads yet.", color = Color.White.copy(alpha = 0.7f))
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .padding(browserSettings.paddingDp.dp)
+                        .clip(
+                            RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp
+                            )
+                        ),
+                    reverseLayout = true,
+                ) {
+                    items(downloads.size, key = { downloads[it].id }) { index ->
+                        DownloadRow(
+                            index = index,
+                            item = downloads[index],
+                            browserSettings = browserSettings,
+                            onClick = { onDownloadClicked(downloads[index]) }
+                        )
+//                        Spacer(Modifier.height(browserSettings.paddingDp.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun DownloadRow(
+    index: Int,
+    item: DownloadItem,
+    browserSettings: BrowserSettings,
+    onClick: () -> Unit
+) {
+    // 1. The root is now a Box to allow layering.
+    // The clip and overall modifier are applied here.
+    Box(
+        modifier = Modifier
+            .padding(bottom = if (index != 0) browserSettings.paddingDp.dp else 0.dp)
+
+            .fillMaxWidth()
+
+            .height(
+                cornerRadiusForLayer(
+                    3,
+                    browserSettings.deviceCornerRadius,
+                    browserSettings.paddingDp
+                ).dp * 2
+            )
+
+            .clip(
+                RoundedCornerShape(
+                    cornerRadiusForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp
+                )
+            )
+            .clickable(enabled = item.status == DownloadStatus.SUCCESSFUL) {
+                onClick()
+            }
+            .background(Color.Black.copy(alpha = 0.5f))
+
+
+    ) {
+        // --- LAYER 1: The Progress Background ---
+
+
+        AnimatedVisibility(
+            visible = item.status == DownloadStatus.RUNNING,
+            enter = fadeIn(animationSpec = tween(300)),
+            exit = fadeOut(animationSpec = tween(300))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    // This is the key: fillMaxWidth takes a fraction from 0.0 to 1.0.
+                    // We calculate this from the item's progress (0-100).
+                    .fillMaxWidth(fraction = item.progress / 100f)
+                    .background(Color.White.copy(alpha = 0.3f))
+                // A semi-transparent color for the progress
+            )
+        }
+
+        // --- LAYER 2: The Content Foreground ---
+
+        // Your original content column. It now sits on top of the progress indicator.
+        // It has a transparent background.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+
+                .padding(browserSettings.paddingDp.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .height(
+                        cornerRadiusForLayer(
+                            4,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp * 2
+                    )
+                    .padding(horizontal = browserSettings.paddingDp.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(Color.White.copy(0.7f))
+                ) {
+                    Icon(
+                        painter = painterResource(
+                            id =
+                                when (item.status) {
+                                    DownloadStatus.RUNNING -> R.drawable.ic_downloading
+                                    DownloadStatus.SUCCESSFUL -> R.drawable.ic_download_done
+                                    DownloadStatus.CANCELLED -> R.drawable.ic_file_download_off
+                                    else -> R.drawable.ic_download
+                                }
+                        ),
+                        contentDescription = "Download Icon",
+                        // Change the tint based on status for better visual feedback
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .padding(4.dp)
+
+                    )
+                }
+                Spacer(Modifier.width(browserSettings.paddingDp.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        item.filename,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    // A more descriptive status text
+                    val statusText = when (item.status) {
+                        DownloadStatus.RUNNING -> {
+                            val downloadedMb =
+                                String.format("%.1f", item.downloadedBytes / 1024f / 1024f)
+                            val totalMb = String.format("%.1f", item.totalBytes / 1024f / 1024f)
+                            val sizeInfo =
+                                if (item.totalBytes > 0) "$downloadedMb MB / $totalMb MB" else "Running..."
+
+                            val speedInfo =
+                                if (item.downloadSpeedBps > 0) formatSpeed(item.downloadSpeedBps) else ""
+                            val timeInfo =
+                                if (item.timeRemainingMs > 0) formatTimeRemaining(item.timeRemainingMs) else ""
+
+                            // Combine all parts, filtering out empty ones
+                            listOf(sizeInfo, speedInfo, timeInfo).filter { it.isNotBlank() }
+                                .joinToString(" - ")
+                        }
+
+                        else -> ""
+                    }
+                    if (statusText.isNotBlank()) {
+                        Text(
+                            statusText,
+                            color = Color.White.copy(alpha = 0.7f),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1
+                        )
+                    }
+
+                }
+            }
+        }
+    }
+}
+
+
 //endregion
