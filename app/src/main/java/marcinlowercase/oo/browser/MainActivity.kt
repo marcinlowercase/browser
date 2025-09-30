@@ -58,6 +58,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.horizontalScroll
@@ -203,8 +204,11 @@ class FaviconJavascriptInterface(
 
 //region Data Class
 
-private data class PollData(val timestampMs: Long, val bytesDownloaded: Long, val lastSpeedBps: Float = 0f)
-
+private data class PollData(
+    val timestampMs: Long,
+    val bytesDownloaded: Long,
+    val lastSpeedBps: Float = 0f
+)
 
 
 @Serializable
@@ -227,8 +231,8 @@ data class DownloadItem(
     var progress: Int = 0, // Progress from 0 to 100
     var totalBytes: Long = 0,
     var downloadedBytes: Long = 0,
-    @Transient var downloadSpeedBps: Float = 0f, // Bytes per second
-    @Transient var timeRemainingMs: Long = 0L    // Milliseconds
+    @kotlinx.serialization.Transient var downloadSpeedBps: Float = 0f, // Bytes per second
+    @kotlinx.serialization.Transient var timeRemainingMs: Long = 0L    // Milliseconds
 )
 
 
@@ -1214,8 +1218,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
                 desktopModeWidth = sharedPrefs.getInt("desktop_mode_width", 820),
                 isSharpMode = sharedPrefs.getBoolean("is_sharp_mode", false),
-                topSharpEdge = sharedPrefs.getFloat("top_sharp_edge", 65.90476f),
-                bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", 65.90476f),
+//                topSharpEdge = sharedPrefs.getFloat("top_sharp_edge", 65.90476f),
+//                bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", 65.90476f),
+                topSharpEdge = sharedPrefs.getFloat("top_sharp_edge", pixel_9_corner_radius),
+                bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", pixel_9_corner_radius),
             )
         )
     }
@@ -1309,11 +1315,16 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     Log.i("cutoutTop", "$cutoutTop")
 
     val webViewTopPadding by animateDpAsState(
-        targetValue = if (browserSettings.isSharpMode) browserSettings.topSharpEdge.dp else cutoutTop,
+        targetValue = if (browserSettings.isSharpMode) (
+                if (cutoutTop >= browserSettings.deviceCornerRadius.dp) cutoutTop else browserSettings.deviceCornerRadius.dp
+                ) else cutoutTop,
         label = "WebView Top Padding Animation"
     )
     val webViewBottomPadding by animateDpAsState(
-        targetValue = if (browserSettings.isSharpMode) browserSettings.bottomSharpEdge.dp else cutoutBottom,
+        targetValue = if (browserSettings.isSharpMode) (
+                if (cutoutBottom >= browserSettings.deviceCornerRadius.dp) cutoutBottom else browserSettings.deviceCornerRadius.dp
+
+                ) else cutoutBottom,
         label = "WebView Top Padding Animation"
     )
 
@@ -1571,36 +1582,72 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         }
     }
 
-    val handleDownloadClick = { item: DownloadItem ->
-        // Check for the POSITIVE case first
-        if (item.status == DownloadStatus.SUCCESSFUL) {
-            // All the logic to open the downloads folder goes INSIDE the 'if' block.
-            val intent = Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+    val handleOpenDownloadsFolder = {
+        val intent = Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            val genericFileManagerIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                val downloadsUri = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                setDataAndType(downloadsUri, "*/*")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-
             try {
-                context.startActivity(intent)
+                context.startActivity(genericFileManagerIntent)
             } catch (_: ActivityNotFoundException) {
-                // Fallback for rare devices
-                val genericFileManagerIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                    val downloadsUri = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
-                    setDataAndType(downloadsUri, "*/*")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                Toast.makeText(context, "Could not find a file manager app.", Toast.LENGTH_LONG)
+                    .show()
+            }
+        }
+    }
+    // --- NEW: Handler to delete a specific file ---
+    val handleDeleteFile = { item: DownloadItem ->
+        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        downloadManager.remove(item.id) // Deletes physical file and from DownloadManager DB
+        downloads.remove(item) // Removes from our UI list
+        downloadTracker.saveDownloads(downloads) // Saves the change
+        Toast.makeText(context, "${item.filename} deleted.", Toast.LENGTH_SHORT).show()
+    }
+
+    // --- NEW: Handler to clear the list (but not the files) ---
+    val handleClearAll = {
+        downloads.clear() // Clears our UI list
+        downloadTracker.saveDownloads(downloads) // Saves the empty list
+        Toast.makeText(context, "Download list cleared.", Toast.LENGTH_SHORT).show()
+    }
+
+    val handleOpenFile = { item: DownloadItem ->
+        if (item.status == DownloadStatus.SUCCESSFUL) {
+            val downloadManager =
+                context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val fileUri = downloadManager.getUriForDownloadedFile(item.id)
+
+            if (fileUri != null) {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(fileUri, item.mimeType)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 try {
-                    context.startActivity(genericFileManagerIntent)
+                    context.startActivity(intent)
                 } catch (_: ActivityNotFoundException) {
-                    Toast.makeText(context, "Could not find a file manager app.", Toast.LENGTH_LONG)
-                        .show()
+                    Toast.makeText(
+                        context,
+                        "No app found to open this file type.",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
+            } else {
+                Toast.makeText(context, "File not found or has been deleted.", Toast.LENGTH_LONG)
+                    .show()
             }
         } else {
-            // If the download is NOT successful, just show the toast.
-            // The lambda finishes naturally after this, no 'return' needed.
             Toast.makeText(context, "Download has not completed.", Toast.LENGTH_SHORT).show()
         }
     }
+
+
 
     val lastPollData = remember { mutableMapOf<Long, PollData>() }
 
@@ -1616,7 +1663,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         // This loop runs for the entire lifecycle of the screen
         while (true) {
             // Find downloads that need monitoring IN THIS CURRENT ITERATION
-            val activeDownloads = downloads.filter { it.status == DownloadStatus.RUNNING || it.status == DownloadStatus.PENDING }
+            val activeDownloads =
+                downloads.filter { it.status == DownloadStatus.RUNNING || it.status == DownloadStatus.PENDING }
 
             if (activeDownloads.isEmpty()) {
                 // If there's nothing to do, clear the tracker and just wait.
@@ -1636,11 +1684,16 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
                             val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-                            val downloadedBytesIndex = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
-                            val totalBytesIndex = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                            val downloadedBytesIndex =
+                                cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                            val totalBytesIndex =
+                                cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
 
                             if (statusIndex == -1 || downloadedBytesIndex == -1 || totalBytesIndex == -1) {
-                                Log.e("DownloadPolling", "A required DownloadManager column is missing.")
+                                Log.e(
+                                    "DownloadPolling",
+                                    "A required DownloadManager column is missing."
+                                )
                                 return@use
                             }
 
@@ -1667,7 +1720,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                             etrMs = ((bytesRemaining / speedBps) * 1000).toLong()
                                         }
                                         // Update the tracker with the new data
-                                        lastPollData[item.id] = PollData(currentTimeMs, downloadedBytes, speedBps)
+                                        lastPollData[item.id] =
+                                            PollData(currentTimeMs, downloadedBytes, speedBps)
                                     }
                                 } else {
                                     // NO CHANGE in bytes. Keep displaying the last known good speed.
@@ -1692,7 +1746,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                 DownloadManager.STATUS_FAILED -> DownloadStatus.FAILED
                                 else -> item.status
                             }
-                            val progress = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt() else 0
+                            val progress =
+                                if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt() else 0
                             val itemIndex = downloads.indexOfFirst { it.id == item.id }
                             Log.i("DownloadPolling", "Item index: $itemIndex")
                             Log.i("DownloadPolling", "speedBps: $speedBps")
@@ -2346,7 +2401,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             }
 
             BottomPanel(
-                onDownloadClicked = handleDownloadClick,
+                onDownloadRowClicked = handleOpenFile,
+                onDeleteClicked = handleDeleteFile,
+                onOpenFolderClicked = handleOpenDownloadsFolder,
+                onClearAllClicked = handleClearAll,
                 downloads = downloads,
                 isDownloadPanelVisible = isDownloadPanelVisible,
                 toggleIsDownloadPanelVisible = { isDownloadPanelVisible = !isDownloadPanelVisible },
@@ -2550,7 +2608,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 @Composable
 fun BottomPanel(
-    onDownloadClicked: (DownloadItem) -> Unit,
+    onDownloadRowClicked: (DownloadItem) -> Unit,
+    onDeleteClicked: (DownloadItem) -> Unit,
+    onOpenFolderClicked: () -> Unit,
+    onClearAllClicked: () -> Unit,
     isDownloadPanelVisible: Boolean,
     downloads: List<DownloadItem>,
     toggleIsDownloadPanelVisible: () -> Unit,
@@ -2623,8 +2684,24 @@ fun BottomPanel(
         Column(
             modifier = Modifier
                 .padding(browserSettings.paddingDp.dp)
+
+
+                .clip(
+                   RoundedCornerShape(
+                       cornerRadiusForLayer(
+                           1,
+                           browserSettings.deviceCornerRadius,
+                           browserSettings.paddingDp
+                       ).dp
+                   )
+                )
+
                 .background(
-                    Color.Black.copy(alpha = 0.5f),
+                    Color.Black,
+                )
+                .border(
+                    color = Color.White,
+                    width = 1.dp,
                     shape = RoundedCornerShape(
                         cornerRadiusForLayer(
                             1,
@@ -2633,7 +2710,9 @@ fun BottomPanel(
                         ).dp
                     )
                 )
+
         ) {
+
             NavigationPanel(
                 isNavPanelVisible = isNavPanelVisible,
                 browserSettings = browserSettings,
@@ -2641,10 +2720,20 @@ fun BottomPanel(
                 canGoBack = canGoBack, // Make sure to pass these down from BrowserScreen
                 canGoForward = canGoForward // And this one too
             )
+            DownloadPanel(
+                isDownloadPanelVisible = isDownloadPanelVisible,
+                downloads = downloads,
+                browserSettings = browserSettings,
+                onDownloadRowClicked = onDownloadRowClicked,
+                onDeleteClicked = onDeleteClicked,
+                onOpenFolderClicked = onOpenFolderClicked,
+                onClearAllClicked = onClearAllClicked
+            )
             PromptPanel(
+                isUrlBarVisible = isUrlBarVisible,
                 activeWebView = activeWebView,
                 browserSettings = browserSettings,
-//                modifier = modifier,
+                //                modifier = modifier,
                 isPromptPanelVisible = isPromptPanelVisible,
                 onDismiss = onDismiss,
                 state = state,
@@ -2653,6 +2742,7 @@ fun BottomPanel(
                 )
 
             PermissionPanel(
+                isUrlBarVisible = isUrlBarVisible,
                 isPermissionPanelVisible = isPermissionPanelVisible,
                 browserSettings = browserSettings,
                 request = pendingPermissionRequest,
@@ -2669,17 +2759,9 @@ fun BottomPanel(
                     // with an empty map (signifying denial) and clear the request.
                     pendingPermissionRequest?.onResult?.invoke(emptyMap())
                     setPendingPermissionRequest(null)
-//                    pendingPermissionRequest = null
+                    //                    pendingPermissionRequest = null
                 }
             )
-
-            DownloadPanel(
-                isDownloadPanelVisible = isDownloadPanelVisible,
-                downloads = downloads,
-                browserSettings = browserSettings,
-                onDownloadClicked = onDownloadClicked
-            )
-
             TabsPanel(
                 isTabsPanelVisible = isTabsPanelVisible,
                 tabs = tabs,
@@ -2751,10 +2833,22 @@ fun BottomPanel(
                                     browserSettings.paddingDp
                                 ).dp * 2
                             )
+                            .padding(browserSettings.paddingDp.dp)
                             .onSizeChanged { size ->
                                 setTextFieldHeightPx(size.height)
                             }
                             .fillMaxWidth()
+//                            .border(
+//                                color = Color.White,
+//                                width = 2.dp,
+//                                shape = RoundedCornerShape(
+//                                    cornerRadiusForLayer(
+//                                        1,
+//                                        browserSettings.deviceCornerRadius,
+//                                        browserSettings.paddingDp
+//                                    ).dp
+//                                )
+//                            )
                             .focusRequester(focusRequester)
                             //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
                             .onFocusChanged {
@@ -2858,16 +2952,16 @@ fun BottomPanel(
                         ),
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = Color.Black, // Background when focused
-                            unfocusedContainerColor = Color.Black.copy(0.8f), // Background when unfocused
+                            unfocusedContainerColor = Color.Black, // Background when unfocused
                             cursorColor = Color.White,
                             disabledContainerColor = Color.White, // Background when disabled
                             errorContainerColor = Color.Red, // Background when in error state.
-                            focusedIndicatorColor = Color.White.copy(0.95f),      // Outline color when focused
-                            unfocusedIndicatorColor = Color.White.copy(0.8f),    // Outline color when unfocused
+                            focusedIndicatorColor = Color.White,      // Outline color when focused
+                            unfocusedIndicatorColor = Color.White,    // Outline color when unfocused
                             disabledIndicatorColor = Color.White, // Outline color when disabled
                             errorIndicatorColor = Color.Red,          // Outline color on error
                             focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White.copy(0.8f),
+                            unfocusedTextColor = Color.White,
                         )
                     )
 
@@ -2955,7 +3049,7 @@ fun BottomPanel(
                                                     )
                                                     previousAction = newAction
                                                 }
-//                                                    activeNavAction = newAction
+                                                //                                                    activeNavAction = newAction
                                                 setActiveNavAction(newAction)
                                             }
 
@@ -2983,17 +3077,17 @@ fun BottomPanel(
                                         }
                                     }
 
-//                                        // Gesture is fully over
-//                                        if (longPressJob.isActive) {
-//                                            longPressJob.cancel()
-//                                            // This was a tap
-//                                            focusRequester.requestFocus()
-//                                        }
+                                    //                                        // Gesture is fully over
+                                    //                                        if (longPressJob.isActive) {
+                                    //                                            longPressJob.cancel()
+                                    //                                            // This was a tap
+                                    //                                            focusRequester.requestFocus()
+                                    //                                        }
 
                                     // Reset the UI state
-//                                        isNavPanelVisible = false
+                                    //                                        isNavPanelVisible = false
                                     setIsNavPanelVisible(false)
-//                                        activeNavAction = GestureNavAction.NONE
+                                    //                                        activeNavAction = GestureNavAction.NONE
                                     setActiveNavAction(GestureNavAction.NONE)
                                 }
                             }
@@ -3023,6 +3117,7 @@ fun BottomPanel(
 
 @Composable
 fun PermissionPanel(
+    isUrlBarVisible: Boolean,
     browserSettings: BrowserSettings,
     // The pending request, which also controls visibility. Null means hidden.
     request: CustomPermissionRequest?,
@@ -3059,7 +3154,13 @@ fun PermissionPanel(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(browserSettings.paddingDp.dp)
+                .padding(horizontal = browserSettings.paddingDp.dp)
+                .padding(
+                    bottom = if (!isUrlBarVisible) browserSettings.paddingDp.dp else 0.dp,
+                    top = browserSettings.paddingDp.dp,
+                )
+
+
                 .background(
                     color = Color.Black.copy(0.3f),
                     shape = RoundedCornerShape(
@@ -3090,11 +3191,24 @@ fun PermissionPanel(
                                 browserSettings.deviceCornerRadius,
                                 browserSettings.paddingDp
                             ).dp * 2
-                        ),
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = Color.White,
+                            shape = RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    2,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp
+                            )
+                        )
+                    ,
 
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = Color.Transparent
                     ),
+
                 ) {
                     Icon(
                         painter = painterResource(id = currentRequest.iconResDeny), // You can make this icon generic too
@@ -3225,7 +3339,8 @@ fun OptionsPanel(
     ) {
         Box(
             modifier = Modifier
-                .padding(browserSettings.paddingDp.dp)
+                .padding(horizontal = browserSettings.paddingDp.dp)
+                .padding(bottom = browserSettings.paddingDp.dp)
                 .fillMaxWidth()
                 .clip(
                     RoundedCornerShape(
@@ -3361,6 +3476,7 @@ fun LoadingOverlay(isLoading: Boolean, modifier: Modifier = Modifier, colorSchem
 
 @Composable
 fun PromptPanel(
+    isUrlBarVisible: Boolean,
     activeWebView: CustomWebView?,
     browserSettings: BrowserSettings,
     isPromptPanelVisible: Boolean,
@@ -3391,7 +3507,9 @@ fun PromptPanel(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(browserSettings.paddingDp.dp)
+                .padding(horizontal = browserSettings.paddingDp.dp)
+                .padding(top = browserSettings.paddingDp.dp,
+                    bottom = if(isUrlBarVisible) 0.dp else browserSettings.paddingDp.dp)
         ) {
 
             Row(
@@ -3399,8 +3517,21 @@ fun PromptPanel(
                     .fillMaxWidth()
                     .padding(bottom = browserSettings.paddingDp.dp)
                     .padding(horizontal = browserSettings.paddingDp.dp * 3)
+                    .clip(
+                        RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
+                    )
                     .background(
-                        Color.Black,
+                        Color.Black
+                    )
+                    .border(
+                        1.dp,
+                        Color.White,
                         shape = RoundedCornerShape(
                             cornerRadiusForLayer(
                                 2,
@@ -3409,6 +3540,7 @@ fun PromptPanel(
                             ).dp
                         )
                     ),
+
                 verticalAlignment = Alignment.CenterVertically // Keeps text aligned nicely
             ) {
                 // "from" Text - Fixed Size
@@ -3445,6 +3577,17 @@ fun PromptPanel(
                     .fillMaxWidth()
                     .background(
                         Color.Black,
+                        shape = RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = Color.White,
                         shape = RoundedCornerShape(
                             cornerRadiusForLayer(
                                 2,
@@ -3558,7 +3701,7 @@ fun PromptPanel(
                         Button(
                             modifier = buttonModifier
                                 .border(
-                                    4.dp, Color.Black, shape = RoundedCornerShape(
+                                    1.dp, Color.White, shape = RoundedCornerShape(
                                         cornerRadiusForLayer(
                                             3,
                                             browserSettings.deviceCornerRadius,
@@ -3567,7 +3710,7 @@ fun PromptPanel(
                                     )
                                 ),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = Color.White.copy(alpha = 0.5f)
+                                containerColor = Color.Black
                             ),
                             shape = RoundedCornerShape(
                                 cornerRadiusForLayer(
@@ -3576,6 +3719,7 @@ fun PromptPanel(
                                     browserSettings.paddingDp,
                                 ).dp
                             ),
+
                             onClick = {
                                 activeWebView?.requestFocus()
                                 when (state) {
@@ -3589,6 +3733,7 @@ fun PromptPanel(
                             ) {
                             Icon(
                                 painter = painterResource(id = R.drawable.ic_close),
+                                tint = Color.White,
                                 contentDescription = "Dismiss",
                             )
                         }
@@ -3687,7 +3832,8 @@ fun NavigationPanel(
     ) {
         Box(
             modifier = Modifier
-                .padding(browserSettings.paddingDp.dp)
+                .padding(horizontal = browserSettings.paddingDp.dp)
+                .padding(top = browserSettings.paddingDp.dp)
         ) {
             Column(
                 modifier = modifier
@@ -3888,7 +4034,9 @@ fun TabsPanel(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(browserSettings.paddingDp.dp)
+                .padding(top= browserSettings.paddingDp.dp)
+                .padding(horizontal = browserSettings.paddingDp.dp)
+
                 .clip(
                     RoundedCornerShape(
                         cornerRadiusForLayer(
@@ -3997,7 +4145,7 @@ fun TabItem(
                         ).dp
                     )
                 )
-                .background(if (isActive) Color.White.copy(alpha = 0.8f) else Color.White.copy(alpha = 0.4f)) // Different background for inactive
+                .background(if (isActive) Color.White else Color.White.copy(alpha = 0.5f)) // Different background for inactive
                 .padding(horizontal = browserSettings.paddingDp.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -4106,7 +4254,10 @@ fun DownloadPanel(
     isDownloadPanelVisible: Boolean,
     downloads: List<DownloadItem>,
     browserSettings: BrowserSettings,
-    onDownloadClicked: (DownloadItem) -> Unit
+    onDownloadRowClicked: (DownloadItem) -> Unit, // Renamed for clarity
+    onDeleteClicked: (DownloadItem) -> Unit,      // New callback for single delete
+    onOpenFolderClicked: () -> Unit,              // New callback for folder button
+    onClearAllClicked: () -> Unit                 // New callback for clear all button
 ) {
     AnimatedVisibility(
         visible = isDownloadPanelVisible,
@@ -4133,15 +4284,14 @@ fun DownloadPanel(
     ) {
         Column(
             modifier = Modifier
-                .padding(browserSettings.paddingDp.dp)
+                .padding(horizontal = browserSettings.paddingDp.dp)
+                .padding(top = browserSettings.paddingDp.dp)
+
                 .fillMaxWidth()
+
+
                 .heightIn(
-                    max = 300.dp,
-                    min = cornerRadiusForLayer(
-                        2,
-                        browserSettings.deviceCornerRadius,
-                        browserSettings.paddingDp
-                    ).dp * 2
+                    max = 300.dp
                 ) // Set a max height to prevent it from getting too tall
                 .clip(
                     RoundedCornerShape(
@@ -4178,12 +4328,14 @@ fun DownloadPanel(
                         ),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("No downloads yet.", color = Color.White.copy(alpha = 0.7f))
+                    Text("No downloads yet.", color = Color.White)
                 }
-            } else {
+
                 LazyColumn(
                     modifier = Modifier
+//                        .weight(1f)
                         .padding(browserSettings.paddingDp.dp)
+
                         .clip(
                             RoundedCornerShape(
                                 cornerRadiusForLayer(
@@ -4195,17 +4347,181 @@ fun DownloadPanel(
                         ),
                     reverseLayout = true,
                 ) {
+
+                    stickyHeader {
+                        // Download control button
+                        val buttonModifier = Modifier
+//                    .padding(browserSettings.paddingDp.dp)
+                            .weight(1f)
+                            .clip(
+                                RoundedCornerShape(
+                                    cornerRadiusForLayer(
+                                        3,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp
+                                )
+                            )
+                            .height(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp * 2
+                            )
+                            .background(Color.White)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = browserSettings.paddingDp.dp)
+                                .clip(
+                                    RoundedCornerShape(
+                                        cornerRadiusForLayer(
+                                            3,
+                                            browserSettings.deviceCornerRadius,
+                                            browserSettings.paddingDp
+                                        ).dp
+                                    )
+                                )
+                                .height(
+                                    cornerRadiusForLayer(
+                                        3,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp * 2
+                                )
+//                                .padding(bottom = browserSettings.paddingDp.dp),
+                        ) {
+                            //  Show Download Folder Button
+                            IconButton(
+                                onClick = onOpenFolderClicked,
+                                modifier = buttonModifier
+
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_folder), // You can make this icon generic too
+                                    contentDescription = "Download Folder",
+                                    tint = Color.Black
+                                )
+                            }
+//                            Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
+//                            IconButton(
+//                                onClick = onClearAllClicked,
+//                                modifier = buttonModifier
+//
+//                            ) {
+//                                Icon(
+//                                    painter = painterResource(id = R.drawable.ic_clear_all), // You can make this icon generic too
+//                                    contentDescription = "Download Folder",
+//                                    tint = Color.Black
+//                                )
+//                            }
+                        }
+                    }
+
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+//                        .weight(1f)
+                        .padding(browserSettings.paddingDp.dp)
+
+                        .clip(
+                            RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp
+                            )
+                        ),
+                    reverseLayout = true,
+                ) {
+
+                    stickyHeader {
+                        // Download control button
+                        val buttonModifier = Modifier
+//                    .padding(browserSettings.paddingDp.dp)
+                            .weight(1f)
+                            .clip(
+                                RoundedCornerShape(
+                                    cornerRadiusForLayer(
+                                        3,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp
+                                )
+                            )
+                            .height(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp * 2
+                            )
+                            .background(Color.White)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = browserSettings.paddingDp.dp)
+                                .clip(
+                                    RoundedCornerShape(
+                                        cornerRadiusForLayer(
+                                            3,
+                                            browserSettings.deviceCornerRadius,
+                                            browserSettings.paddingDp
+                                        ).dp
+                                    )
+                                )
+                                .height(
+                                    cornerRadiusForLayer(
+                                        3,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp * 2
+                                )
+//                                .padding(bottom = browserSettings.paddingDp.dp),
+                        ) {
+                            //  Show Download Folder Button
+                            IconButton(
+                                onClick = onOpenFolderClicked,
+                                modifier = buttonModifier
+
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_folder), // You can make this icon generic too
+                                    contentDescription = "Download Folder",
+                                    tint = Color.Black
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
+                            IconButton(
+                                onClick = onClearAllClicked,
+                                modifier = buttonModifier
+
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_clear_all), // You can make this icon generic too
+                                    contentDescription = "Download Folder",
+                                    tint = Color.Black
+                                )
+                            }
+                        }
+                    }
+
                     items(downloads.size, key = { downloads[it].id }) { index ->
                         DownloadRow(
                             index = index,
                             item = downloads[index],
                             browserSettings = browserSettings,
-                            onClick = { onDownloadClicked(downloads[index]) }
+                            onClick = { onDownloadRowClicked(downloads[index]) },
+                            onDeleteClicked = { onDeleteClicked(downloads[index]) }
                         )
 //                        Spacer(Modifier.height(browserSettings.paddingDp.dp))
                     }
                 }
             }
+
         }
     }
 }
@@ -4217,8 +4533,11 @@ fun DownloadRow(
     index: Int,
     item: DownloadItem,
     browserSettings: BrowserSettings,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDeleteClicked: () -> Unit
 ) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
     // 1. The root is now a Box to allow layering.
     // The clip and overall modifier are applied here.
     Box(
@@ -4248,10 +4567,37 @@ fun DownloadRow(
                 onClick()
             }
             .background(Color.Black.copy(alpha = 0.5f))
+            .border(
+                width = 1.dp,
+                color = Color.White,
+                shape = RoundedCornerShape(
+                    cornerRadiusForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp
+                )
+            )
+
+            .pointerInput(item.status) { // Re-read when status changes
+                detectTapGestures(
+                    onTap = {
+                        if (item.status == DownloadStatus.SUCCESSFUL) {
+                            onClick()
+                        }
+                    },
+                    onLongPress = {
+                        showDeleteConfirm = true // Show the delete confirmation
+                    }
+                )
+            }
 
 
     ) {
         // --- LAYER 1: The Progress Background ---
+
+
+
 
 
         AnimatedVisibility(
@@ -4279,6 +4625,7 @@ fun DownloadRow(
                 .fillMaxWidth()
 
                 .padding(browserSettings.paddingDp.dp)
+
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -4295,7 +4642,7 @@ fun DownloadRow(
                 Box(
                     modifier = Modifier
                         .clip(CircleShape)
-                        .background(Color.White.copy(0.7f))
+                        .background(Color.White)
                 ) {
                     Icon(
                         painter = painterResource(
@@ -4309,7 +4656,7 @@ fun DownloadRow(
                         ),
                         contentDescription = "Download Icon",
                         // Change the tint based on status for better visual feedback
-                        tint = Color.White,
+                        tint = Color.Black,
                         modifier = Modifier
                             .size(24.dp)
                             .padding(4.dp)
@@ -4356,6 +4703,41 @@ fun DownloadRow(
                     }
 
                 }
+            }
+
+
+        }
+
+        // --- LAYER 3: The Delete Confirmation Overlay ---
+        AnimatedVisibility(
+            visible = showDeleteConfirm,
+            enter = fadeIn(animationSpec = tween(200)),
+            exit = fadeOut(animationSpec = tween(200))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Red.copy(alpha = 0.8f))
+                    // 3. This pointerInput is ONLY on the delete overlay.
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {
+                                onDeleteClicked()
+                                showDeleteConfirm = false // Hide after deleting
+                            },
+                            onLongPress = {
+                                showDeleteConfirm = false // Long press to cancel/hide
+                            }
+                        )
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_delete_forever),
+                    contentDescription = "Confirm Delete",
+                    tint = Color.White,
+                    modifier = Modifier.size(32.dp)
+                )
             }
         }
     }
