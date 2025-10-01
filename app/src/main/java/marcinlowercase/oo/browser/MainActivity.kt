@@ -78,6 +78,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -145,11 +146,13 @@ const val default_url = "https://oo3.deno.dev/i"
 
 //region Global Functions
 
+
 @SuppressLint("ModifierFactoryExtensionFunction")
 fun buttonModifierForLayer(
     layer: Int,
     deviceCornerRadius: Float = 0f,
-    padding: Float = 0f
+    padding: Float = 0f,
+    white: Boolean = true
 ): Modifier {
     return Modifier
         .clip(
@@ -168,7 +171,18 @@ fun buttonModifierForLayer(
                 padding
             ).dp * 2
         )
-        .background(Color.White)
+        .background(if (white) Color.White else Color.Transparent)
+        .border(
+            width = 1.dp,
+            color = if (white) Color.Transparent else Color.White,
+            shape = RoundedCornerShape(
+                cornerRadiusForLayer(
+                    layer,
+                    deviceCornerRadius,
+                    padding
+                ).dp
+            )
+        )
 }
 
 fun formatSpeed(bytesPerSecond: Float): String {
@@ -235,6 +249,27 @@ class FaviconJavascriptInterface(
 //endregion
 
 //region Data Class
+
+data class PanelVisibilityState(
+    val options: Boolean,
+    val tabs: Boolean,
+    val downloads: Boolean,
+    val tabData: Boolean,
+    val nav: Boolean
+)
+
+private enum class TabDataPanelView {
+    MAIN,
+    HISTORY,
+    PERMISSIONS
+}
+
+data class ConfirmationDialogState(
+    val message: String,
+    val onConfirm: () -> Unit,
+    val onCancel: () -> Unit
+)
+
 @Serializable
 data class SiteSettings(
     val domain: String,
@@ -737,6 +772,8 @@ class WebViewManager(private val context: Context) {
     fun setWebViewClients(
         webView: CustomWebView,
         tab: Tab,
+        siteSettingsManager: SiteSettingsManager,
+        siteSettings: Map<String, SiteSettings>,
         onFaviconChanged: (Long, String) -> Unit,
         onJsAlert: (String) -> Unit,
         onJsConfirm: (String, (Boolean) -> Unit) -> Unit,
@@ -842,6 +879,18 @@ class WebViewManager(private val context: Context) {
             ) {
                 if (origin == null || callback == null) return
 
+                val domain = siteSettingsManager.getDomain(origin)
+                val locationPermission = Manifest.permission.ACCESS_FINE_LOCATION
+                val decision = siteSettings[domain]?.permissionDecisions?.get(locationPermission)
+
+                if (decision != null) {
+                    Log.d("PermissionCheck", "Found saved location decision for $domain: $decision")
+                    // Invoke the callback immediately and skip the UI prompt
+                    callback.invoke(origin, decision, false)
+                    return // Stop further processing
+                }
+
+
                 // Create a new generic permission request for this specific geolocation prompt.
                 val newRequest = CustomPermissionRequest(
                     origin = origin,
@@ -945,6 +994,26 @@ class WebViewManager(private val context: Context) {
                     return
                 }
 
+
+                val domain = siteSettingsManager.getDomain(request.origin.toString())
+                if (domain != null && requestedAndroidPermissions.isNotEmpty()) {
+                    val firstPermission =
+                        requestedAndroidPermissions.first() // Assuming one permission per request for simplicity
+                    val decision = siteSettings[domain]?.permissionDecisions?.get(firstPermission)
+
+                    if (decision == true) {
+                        Log.d(
+                            "PermissionCheck",
+                            "Found saved ALLOW decision for $domain, granting."
+                        )
+                        request.grant(request.resources)
+                        return // Stop further processing
+                    } else if (decision == false) {
+                        Log.d("PermissionCheck", "Found saved DENY decision for $domain, denying.")
+                        request.deny()
+                        return // Stop further processing
+                    }
+                }
 
                 // Create the custom request
                 val newRequest = CustomPermissionRequest(
@@ -1303,6 +1372,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         )
     }
 
+    var savedPanelState by remember { mutableStateOf<PanelVisibilityState?>(null) }
+
 
     val tabManager = remember { TabManager(context) }
     val tabs = remember {
@@ -1457,11 +1528,27 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
     databaseCurrentIndexHolder = tabs[activeTabIndex.intValue].historyState?.currentIndex ?: 0
 
+    val savePermissionDecision = { domain: String, permissions: Map<String, Boolean> ->
+        val currentSettings = siteSettings.getOrPut(domain) { SiteSettings(domain = domain) }
+        currentSettings.permissionDecisions.putAll(permissions)
+        siteSettings[domain] = currentSettings // Trigger state update
+        siteSettingsManager.saveSettings(siteSettings)
+        Log.d("PermissionSave", "Saved decisions for $domain: $permissions")
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
         onResult = { permissions ->
             // When the system dialog returns a result, trigger the onResult
             // callback that we stored in our pendingPermissionRequest.
+
+            pendingPermissionRequest?.let { request ->
+                siteSettingsManager.getDomain(request.origin)?.let { domain ->
+                    savePermissionDecision(domain, permissions)
+
+                }
+            }
+
             pendingPermissionRequest?.onResult?.invoke(permissions)
 
             // Clear the request to hide the panel.
@@ -1493,9 +1580,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             }
         }
     }
-    LaunchedEffect(currentInspectingTab) {
-        Log.i("UpdateTab", "New tab id : $currentInspectingTab")
-    }
+    var confirmationState by remember { mutableStateOf<ConfirmationDialogState?>(null) }
+    var confirmationDisplayState by remember { mutableStateOf<ConfirmationDialogState?>(null) } // Add this line
 
 
 //    var inspectingTabId by remember { mutableStateOf<Long?>(null) }
@@ -1507,6 +1593,20 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
     //region Functions
 
+    fun confirmationPopup(message: String, onConfirm: () -> Unit, onCancel: () -> Unit = {}) {
+        confirmationState = ConfirmationDialogState(
+            message = message,
+            onConfirm = {
+                onConfirm()
+                confirmationState = null // Automatically dismiss after action
+            },
+            onCancel = {
+                onCancel()
+                confirmationState = null // Automatically dismiss after action
+            }
+        )
+        confirmationDisplayState = confirmationState
+    }
 
     val handleHistoryNavigation = { tabToNavigate: Tab, historyIndex: Int ->
         val tabIndexInMainList = tabs.indexOf(tabToNavigate)
@@ -1555,90 +1655,135 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
     val handlePermissionToggle = { domain: String?, permission: String, isGranted: Boolean ->
 
+        Log.i("PermissionToggle", "$domain $permission $isGranted")
+
         if (domain != null) {
-            val newSettings = siteSettings[domain]?.apply {
-                permissionDecisions[permission] = isGranted
+            // 1. Get the current settings for the domain, or create a new one if it doesn't exist.
+            val currentSettings = siteSettings[domain] ?: SiteSettings(domain = domain)
+
+            // 2. Create a new, updated map of permissions.
+            val updatedPermissions = currentSettings.permissionDecisions.toMutableMap().apply {
+                this[permission] = isGranted
             }
-            if (newSettings != null) {
-                // Update the state to trigger recomposition of the panel
-                siteSettings[domain] =
-                    newSettings.copy() // Create a copy to ensure state change is detected
-                siteSettingsManager.saveSettings(siteSettings)
-            }
+
+            // 3. Create a new SiteSettings object using copy() with the updated map.
+            val newSettings = currentSettings.copy(permissionDecisions = updatedPermissions)
+
+            // 4. Update the state map. This is the crucial step for triggering recomposition.
+            siteSettings[domain] = newSettings
+
+            // 5. Save the entire map to persistent storage.
+            siteSettingsManager.saveSettings(siteSettings)
+
+
+
+
+            confirmationPopup(
+                message = "refresh?",
+                onConfirm = {
+                    activeWebView?.reload()
+                    isUrlBarVisible = false
+                },
+                onCancel = {
+                    // Do nothing, the popup will just dismiss.
+                }
+            )
+
         }
+
     }
 
     val handleCloseInspectedTab = {
         val tabToClose = currentInspectingTab
         if (tabToClose != null && tabs.indexOf(tabToClose) > -1) {
-            val indexToClose = tabs.indexOf(tabToClose)
-            Log.i("CloseTab", "$indexToClose")
+            confirmationPopup(
+                message = "close tab?",
+                onConfirm = {
+                    val indexToClose = tabs.indexOf(tabToClose)
+                    Log.i("CloseTab", "$indexToClose")
 
-            if (tabs.size > 1) {
-                val tabToRemoveIndex = indexToClose
+                    if (tabs.size > 1) {
+                        val tabToRemoveIndex = indexToClose
 
-                val tabToRemove = tabToClose
-                webViewManager.destroyWebView(tabToRemove)
-                tabs.removeAt(tabToRemoveIndex)
+                        val tabToRemove = tabToClose
+                        webViewManager.destroyWebView(tabToRemove)
+                        tabs.removeAt(tabToRemoveIndex)
 
-                // Determine the next active tab
-                if (tabToRemoveIndex == activeTabIndex.intValue) {
-                    val nextTabIndex = if (tabToRemoveIndex >= tabs.size) {
-                        tabs.lastIndex
-                    } else {
-                        tabToRemoveIndex
-                    }
+                        // Determine the next active tab
+                        if (tabToRemoveIndex == activeTabIndex.intValue) {
+                            val nextTabIndex = if (tabToRemoveIndex >= tabs.size) {
+                                tabs.lastIndex
+                            } else {
+                                tabToRemoveIndex
+                            }
 
 
-                    tabs[nextTabIndex].state = TabState.ACTIVE
-                    inspectingTabId = tabs[nextTabIndex].id
-                    activeTabIndex.intValue = nextTabIndex
+                            tabs[nextTabIndex].state = TabState.ACTIVE
+                            inspectingTabId = tabs[nextTabIndex].id
+                            activeTabIndex.intValue = nextTabIndex
 
 //                    val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
 //                    textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
 //
 //                    activeWebView?.loadUrl(urlToLoad)
-                } else
-                    if (tabToRemoveIndex < activeTabIndex.intValue) {
-                        activeTabIndex.intValue = activeTabIndex.intValue - 1
-                    }
+                        } else
+                            if (tabToRemoveIndex < activeTabIndex.intValue) {
+                                activeTabIndex.intValue = activeTabIndex.intValue - 1
+                            }
 
 
 //                val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
 //                activeWebView?.loadUrl(urlToLoad)
 //                textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
-                saveTrigger++
-            } else {
+                        saveTrigger++
+                    } else {
 
-                // 1. Remove the last tab from the list.
-                tabs.clear()
+                        // 1. Remove the last tab from the list.
+                        tabs.clear()
 
-                // 2. Save the now-empty tab list.
-                tabManager.clearAllTabs()
+                        // 2. Save the now-empty tab list.
+                        tabManager.clearAllTabs()
 
 
-                // 3. Finish the activity to close the app.
-                activity?.finishAndRemoveTask()
+                        // 3. Finish the activity to close the app.
+                        activity?.finishAndRemoveTask()
 
-                exitProcess(0)
+                        exitProcess(0)
 
-            }
+                    }
+                }
+            )
         }
     }
 
     val handleClearInspectedTabData = {
-        val inspectingTab = currentInspectingTab
-        if (inspectingTab?.state != TabState.FROZEN) {
-            // We need to find the specific WebView instance for this tab
-            val webView = webViewManager.getWebView(inspectingTab!!)
+       confirmationPopup(
+           message = "clear tab data?",
+           onConfirm = {
+               val inspectingTab = currentInspectingTab
+               if (inspectingTab != null) {
+                   val domain = siteSettingsManager.getDomain(inspectingTab.currentUrl)
+                   if (domain != null) {
+                       // 1. Remove the settings for this domain from the state map
+                       siteSettings.remove(domain)
+                       // 2. Save the updated map to persistent storage
+                       siteSettingsManager.saveSettings(siteSettings)
+                       Log.d("ClearData", "Cleared all saved permissions for domain: $domain")
+                   }
 
-            CookieManager.getInstance().removeAllCookies(null)
-            CookieManager.getInstance().flush()
-            WebStorage.getInstance().deleteAllData()
-            webView.clearCache(true)
-            webView.reload()
+                   if (inspectingTab.state != TabState.FROZEN) {
+                       val webView = webViewManager.getWebView(inspectingTab)
+                       CookieManager.getInstance().removeAllCookies(null)
+                       CookieManager.getInstance().flush()
+                       WebStorage.getInstance().deleteAllData()
+                       webView.clearCache(true)
+                       webView.reload()
+                   }
 
-        }
+                   isTabDataPanelVisible = false
+               }
+           }
+       )
     }
 
     /**
@@ -2016,12 +2161,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     LaunchedEffect(inspectingTabId) {
         if (inspectingTabId == null) {
             isTabDataPanelVisible = false
-            Log.e("UpdateTab", "Inspecting tab is null.")
-        } else {
-            Log.e("UpdateTab", "Inspecting update: $inspectingTabId")
-
         }
     }
+
     LaunchedEffect(activeWebView) {
         activeWebView?.let { webView ->
 
@@ -2039,6 +2181,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             webViewManager.setWebViewClients(
                 webView = webView,
                 tab = tab, // Pass the active tab
+                siteSettingsManager = siteSettingsManager,
+                siteSettings = siteSettings,
                 onFaviconChanged = { tabId, faviconUrl ->
                     // Find the index of the tab that fired this event.
                     val tabIndex = tabs.indexOfFirst { it.id == tabId }
@@ -2376,8 +2520,14 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         isPromptPanelVisible = jsDialogState != null
     }
 
-    LaunchedEffect(isUrlBarVisible, isPermissionPanelVisible, isPromptPanelVisible) {
-        isBottomPanelVisible = isUrlBarVisible || isPermissionPanelVisible || isPromptPanelVisible
+    LaunchedEffect(
+        isUrlBarVisible,
+        isPermissionPanelVisible,
+        isPromptPanelVisible,
+        confirmationState
+    ) {
+        isBottomPanelVisible =
+            isUrlBarVisible || isPermissionPanelVisible || isPromptPanelVisible || (confirmationState != null)
 //        Log.i("VisibleState", "isBottomPanelVisible: $isBottomPanelVisible")
     }
     LaunchedEffect(isTabsPanelVisible) {
@@ -2649,6 +2799,27 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             }
 
             BottomPanel(
+                setIsOptionsPanelVisible = { isOptionsPanelVisible = it },
+                setIsTabsPanelVisible = { isTabsPanelVisible = it },
+                setIsDownloadPanelVisible = { isDownloadPanelVisible = it },
+                setIsTabDataPanelVisible = { isTabDataPanelVisible = it },
+                savedPanelState = savedPanelState,
+                setSavedPanelState = { savedPanelState = it },
+                confirmationState = confirmationState,
+                confirmationDisplayState = confirmationDisplayState,
+                onPermissionDeny = {
+                    pendingPermissionRequest?.let { request ->
+                        // --- SAVE THE DENIAL (NEW) ---
+                        siteSettingsManager.getDomain(request.origin)?.let { domain ->
+                            val deniedPermissions =
+                                request.permissionsToRequest.associateWith { false }
+                            savePermissionDecision(domain, deniedPermissions)
+                        }
+                        // --- END OF NEW LOGIC ---
+                        request.onResult.invoke(emptyMap())
+                    }
+                    pendingPermissionRequest = null
+                },
                 tabsPanelLock = tabsPanelLock,
                 updateInspectingTab = { tab ->
                     if (tab.id != 0.toLong()) inspectingTabId = tab.id else {
@@ -2674,7 +2845,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 onClearAllClicked = handleClearAll,
                 downloads = downloads,
                 isDownloadPanelVisible = isDownloadPanelVisible,
-                toggleIsDownloadPanelVisible = { isDownloadPanelVisible = !isDownloadPanelVisible },
                 activeWebView = activeWebView,
                 isUrlOverlayBoxVisible = isUrlOverlayBoxVisible,
                 setIsUrlOverlayBoxVisible = { isUrlOverlayBoxVisible = it },
@@ -2740,7 +2910,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 keyboardController = keyboardController,
                 toggleOptionsPanel = { isOptionsPanelVisible = it },
                 changeTextFieldValue = { textFieldValue = it },
-                setPendingPermissionRequest = { pendingPermissionRequest = it },
                 onNewUrl = { newUrl ->
                     activeWebView?.loadUrl(newUrl)
 //                            }
@@ -2878,6 +3047,16 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 @Composable
 fun BottomPanel(
+    setIsOptionsPanelVisible: (Boolean) -> Unit,
+    setIsTabsPanelVisible: (Boolean) -> Unit,
+    setIsDownloadPanelVisible: (Boolean) -> Unit,
+    setIsTabDataPanelVisible: (Boolean) -> Unit,
+    savedPanelState: PanelVisibilityState?,
+    setSavedPanelState: (PanelVisibilityState?) -> Unit,
+    confirmationDisplayState: ConfirmationDialogState?, // Add this
+
+    confirmationState: ConfirmationDialogState?,
+    onPermissionDeny: () -> Unit,
     tabsPanelLock: Boolean,
     updateInspectingTab: (Tab) -> Unit,
     isTabDataPanelVisible: Boolean,
@@ -2896,7 +3075,6 @@ fun BottomPanel(
     onClearAllClicked: () -> Unit,
     isDownloadPanelVisible: Boolean,
     downloads: List<DownloadItem>,
-    toggleIsDownloadPanelVisible: () -> Unit,
 
     activeWebView: CustomWebView?,
     isUrlOverlayBoxVisible: Boolean,
@@ -2939,9 +3117,7 @@ fun BottomPanel(
     onNewUrl: (String) -> Unit = {},
     setTextFieldHeightPx: (Int) -> Unit = {},
     setIsFocusOnTextField: (Boolean) -> Unit = {},
-    setPendingPermissionRequest: (CustomPermissionRequest?) -> Unit = {},
-
-    ) {
+) {
     AnimatedVisibility(
         modifier = modifier,
         visible = isBottomPanelVisible,
@@ -3023,6 +3199,39 @@ fun BottomPanel(
 
                 )
 
+
+
+
+
+
+            TabDataPanel(
+
+                isTabDataPanelVisible = isTabDataPanelVisible,
+                inspectingTab = inspectingTab,
+                onDismiss = onTabDataPanelDismiss,
+                browserSettings = browserSettings,
+                siteSettings = siteSettings,
+                onPermissionToggle = handlePermissionToggle,
+                onClearSiteData = handleClearInspectedTabData,
+                onCloseTab = handleCloseInspectedTab,
+                onHistoryItemClicked = handleHistoryNavigation
+            )
+
+
+            TabsPanel(
+                inspectingTab = inspectingTab,
+
+                isTabsPanelVisible = isTabsPanelVisible,
+                tabs = tabs,
+                activeTabIndex = activeTabIndex.value,
+                browserSettings = browserSettings,
+                onTabSelected = onTabSelected,
+                onNewTabClicked = onNewTabClicked,
+                hapticFeedback = hapticFeedback,
+                onTabLongPressed = onTabLongPressed,
+                updateInspectingTab = updateInspectingTab,
+            )
+
             PermissionPanel(
                 isUrlBarVisible = isUrlBarVisible,
                 isPermissionPanelVisible = isPermissionPanelVisible,
@@ -3039,40 +3248,16 @@ fun BottomPanel(
                 onDeny = {
                     // When user clicks deny, immediately invoke the stored onResult callback
                     // with an empty map (signifying denial) and clear the request.
-                    pendingPermissionRequest?.onResult?.invoke(emptyMap())
-                    setPendingPermissionRequest(null)
-                    //                    pendingPermissionRequest = null
+                    onPermissionDeny()
                 }
             )
 
-
-            TabDataPanel(
-
-                isTabDataPanelVisible = isTabDataPanelVisible,
-                inspectingTab = inspectingTab,
-                onDismiss = onTabDataPanelDismiss,
+            ConfirmationPanel(
+                isUrlBarVisible = isUrlBarVisible,
                 browserSettings = browserSettings,
-                siteSettings = siteSettings,
-                onPermissionToggle = handlePermissionToggle,
-                onClearSiteData = handleClearInspectedTabData,
-                onCloseTab = handleCloseInspectedTab,
-                onHistoryItemClicked = handleHistoryNavigation
+                state = confirmationDisplayState, // Use the display state here
+                isConfirmationPanelVisible = confirmationState != null // Visibility is controlled by the primary state
             )
-
-            TabsPanel(
-                inspectingTab = inspectingTab,
-
-                isTabsPanelVisible = isTabsPanelVisible,
-                tabs = tabs,
-                activeTabIndex = activeTabIndex.value,
-                browserSettings = browserSettings,
-                onTabSelected = onTabSelected,
-                onNewTabClicked = onNewTabClicked,
-                hapticFeedback = hapticFeedback,
-                onTabLongPressed = onTabLongPressed,
-                updateInspectingTab = updateInspectingTab,
-            )
-
 
             // URL BAR
             AnimatedVisibility(
@@ -3158,11 +3343,36 @@ fun BottomPanel(
                                 setIsFocusOnTextField(it.isFocused)
                                 if (it.isFocused) {
 
+
+                                    setSavedPanelState(
+                                        PanelVisibilityState(
+                                            options = isOptionsPanelVisible,
+                                            tabs = isTabsPanelVisible,
+                                            downloads = isDownloadPanelVisible,
+                                            tabData = isTabDataPanelVisible,
+                                            nav = isNavPanelVisible
+                                        )
+                                    )
+                                    setIsOptionsPanelVisible(false)
+                                    setIsTabsPanelVisible(false)
+                                    setIsDownloadPanelVisible(false)
+                                    setIsTabDataPanelVisible(false)
+                                    setIsNavPanelVisible(false)
+
                                     if (textFieldValue.text == resetUrl) {
 
                                         changeTextFieldValue(TextFieldValue("", TextRange(0)))
                                     }
                                 } else {
+
+                                    savedPanelState?.let { savedState ->
+                                        setIsOptionsPanelVisible(savedState.options)
+                                        setIsTabsPanelVisible(savedState.tabs)
+                                        setIsDownloadPanelVisible(savedState.downloads)
+                                        setIsTabDataPanelVisible(savedState.tabData)
+                                        setIsNavPanelVisible(savedState.nav)
+                                        setSavedPanelState(null) // Clear the saved state
+                                    }
 
                                     if (textFieldValue.text.isBlank()) {
                                         changeTextFieldValue(
@@ -3408,9 +3618,9 @@ fun BottomPanel(
                 browserSettings = browserSettings,
                 toggleIsTabsPanelVisible = toggleIsTabsPanelVisible,
                 tabs = tabs,
-                toggleIsDownloadPanelVisible = toggleIsDownloadPanelVisible,
                 tabsPanelLock = tabsPanelLock,
                 isDownloadPanelVisible = isDownloadPanelVisible,
+                setIsDownloadPanelVisible = setIsDownloadPanelVisible,
             )
         }
 
@@ -3551,7 +3761,7 @@ fun PermissionPanel(
 @Composable
 fun OptionsPanel(
     isImmersiveMode: Boolean,
-    toggleIsDownloadPanelVisible: () -> Unit,
+    setIsDownloadPanelVisible: (Boolean) -> Unit,
 
     isOptionsPanelVisible: Boolean = false,
     toggleOptionsPanel: (Boolean) -> Unit = {},
@@ -3594,7 +3804,7 @@ fun OptionsPanel(
                 "Show Downloads",
                 isDownloadPanelVisible
             ) {
-                toggleIsDownloadPanelVisible()
+                setIsDownloadPanelVisible(!isDownloadPanelVisible)
             },
 
             OptionItem(R.drawable.ic_bug, "logBrowserSettings", false) {
@@ -4752,8 +4962,9 @@ fun DownloadPanel(
                     modifier = buttonModifierForLayer(
                         3,
                         browserSettings.deviceCornerRadius,
-                        browserSettings.paddingDp
-                    ).weight(1f)
+                        browserSettings.paddingDp,
+
+                        ).weight(1f)
 
                 ) {
                     Icon(
@@ -5012,8 +5223,16 @@ fun TabDataPanel(
 ) {
 
     // 1. Local state to hold the tab being displayed.
-//    var displayTab by remember { mutableStateOf(inspectingTab) }
-    val displayTab = inspectingTab
+
+    var currentView by remember { mutableStateOf(TabDataPanelView.MAIN) }
+
+    // Effect to reset the view to MAIN when the panel is hidden
+    LaunchedEffect(isTabDataPanelVisible) {
+        if (!isTabDataPanelVisible) {
+            delay(300) // Wait for exit animation to finish before resetting state
+            currentView = TabDataPanelView.MAIN
+        }
+    }
 
     // 2. Effect to update the local state.
     // This ensures `displayTab` only gets updated with non-null values,
@@ -5071,118 +5290,215 @@ fun TabDataPanel(
                         )
                     )
             ) {
-                val tab = displayTab ?: return@Column
-                // --- PART 1: History List ---
+                val tab = inspectingTab ?: return@Column
 
-                val itemHeight = cornerRadiusForLayer(
-                    3,
-                    browserSettings.deviceCornerRadius,
-                    browserSettings.paddingDp
-                ).dp * 2 + browserSettings.paddingDp.dp
-
-                val lazyListState = rememberLazyListState()
-                val history = tab.historyState
-
-
-                LazyColumn(
-                    state = lazyListState,
+                Box(
                     modifier = Modifier
-                        .heightIn(max = itemHeight * 2.5f)
-                        .animateContentSize(animationSpec = tween(durationMillis = browserSettings.animationSpeed))
-                        .padding(
-                            top = browserSettings.paddingDp.dp
-                        )
-                        .padding(
-                            horizontal = browserSettings.paddingDp.dp
-                        )
-                        .clip(
-                            RoundedCornerShape(
-                                cornerRadiusForLayer(
-                                    3,
-                                    browserSettings.deviceCornerRadius,
-                                    browserSettings.paddingDp
-                                ).dp
-                            )
-                        )
+                        .fillMaxWidth()
+                        .animateContentSize() // Smoothly animates size changes
                 ) {
-                    val history = tab.historyState
-                    if (history != null) {
-                        items(history.items.size) { index ->
-                            val item = history.items[index]
 
-                            // --- REPLACE the old Box/Text with the new HistoryRow ---
-                            HistoryRow(
-                                item = item,
-                                isLast = index == history.items.size - 1,
-                                isCurrent = index == history.currentIndex,
-                                browserSettings = browserSettings,
-                                onClick = {
-                                    onHistoryItemClicked(tab, index)
-                                }
-                            )
-                        }
-                    }
-                }
-                LaunchedEffect(history?.currentIndex) {
-                    if (history != null && history.currentIndex in 0 until history.items.size) {
-                        // Animate scroll will smoothly bring the item into view.
-                        // It's efficient and won't scroll if the item is already visible.
-                        lazyListState.animateScrollToItem(index = history.currentIndex)
-                    }
-                }
+                    val maxLazyColumnHeight = (cornerRadiusForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp * 2 + browserSettings.paddingDp.dp) * 2.5f
 
-                // --- PART 2: Permissions and Actions ---
-                val domain =
-                    SiteSettingsManager(LocalContext.current).getDomain(tab.currentUrl)
-                val settings = if (domain != null) siteSettings[domain] else null
+                    val domain =
+                        SiteSettingsManager(LocalContext.current).getDomain(tab.currentUrl)
+                    val settings = if (domain != null) siteSettings[domain] else null
 
-                if (settings != null) {
-                    Text(
-                        "Permissions for $domain",
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(16.dp)
-                    )
-                    // Permissions List
-                    if (settings.permissionDecisions.isEmpty()) {
-                        Text(
-                            "No permissions requested yet.",
-                            color = Color.Gray,
-                            modifier = Modifier.padding(horizontal = 16.dp)
-                        )
-                    } else {
-                        settings.permissionDecisions.forEach { (permission, isGranted) ->
-                            Row(
+                    when (currentView) {
+                        TabDataPanelView.MAIN -> {
+                            Column(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(horizontal = browserSettings.paddingDp.dp)
+                                    .padding(top = browserSettings.paddingDp.dp),
+                                verticalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Text(
-                                    permission.substringAfterLast('.'),
-                                    color = Color.White,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Switch(
-                                    checked = isGranted,
-                                    onCheckedChange = { newGrantState ->
-                                        onPermissionToggle(domain, permission, newGrantState)
+                                // History Button
+                                IconButton(
+                                    onClick = { currentView = TabDataPanelView.HISTORY },
+                                    modifier = buttonModifierForLayer(
+                                        3,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp,
+                                        false
+                                    )
+                                        .fillMaxWidth()
+                                        .background(Color.Transparent)
+                                        .border(
+                                            width = 1.dp,
+                                            color = Color.White,
+                                            shape = RoundedCornerShape(
+                                                cornerRadiusForLayer(
+                                                    3,
+                                                    browserSettings.deviceCornerRadius,
+                                                    browserSettings.paddingDp
+                                                ).dp
+                                            )
+                                        )
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_history),
+                                        contentDescription = "History",
+                                        tint = Color.White
+                                    )
+                                }
+
+                                // Permissions Button
+
+                                if (settings != null && settings.permissionDecisions.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = { currentView = TabDataPanelView.PERMISSIONS },
+                                        modifier = buttonModifierForLayer(
+                                            3,
+                                            browserSettings.deviceCornerRadius,
+                                            browserSettings.paddingDp,
+                                            false
+                                        )
+                                            .fillMaxWidth()
+                                            .background(Color.Transparent)
+                                            .border(
+                                                width = 1.dp,
+                                                color = Color.White,
+                                                shape = RoundedCornerShape(
+                                                    cornerRadiusForLayer(
+                                                        3,
+                                                        browserSettings.deviceCornerRadius,
+                                                        browserSettings.paddingDp
+                                                    ).dp
+                                                )
+                                            )
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.ic_shield_toggle),
+                                            contentDescription = "Permissions",
+                                            tint = Color.White
+                                        )
                                     }
-                                )
+                                }
+
+                            }
+                        }
+
+                        TabDataPanelView.HISTORY -> {
+                            val lazyListState = rememberLazyListState()
+                            LazyColumn(
+                                state = lazyListState,
+                                modifier = Modifier
+                                    .heightIn(
+                                        max = maxLazyColumnHeight
+                                    )
+                                    .padding(
+                                        top = browserSettings.paddingDp.dp,
+                                        start = browserSettings.paddingDp.dp,
+                                        end = browserSettings.paddingDp.dp
+                                    )
+                                    .clip(
+                                        RoundedCornerShape(
+                                            cornerRadiusForLayer(
+                                                3,
+                                                browserSettings.deviceCornerRadius,
+                                                browserSettings.paddingDp
+                                            ).dp
+                                        )
+                                    )
+                            ) {
+                                val history = tab.historyState
+                                if (history != null) {
+                                    items(history.items.size) { index ->
+                                        val item = history.items[index]
+                                        HistoryRow(
+                                            item = item,
+                                            isLast = index == history.items.size - 1,
+                                            isCurrent = index == history.currentIndex,
+                                            browserSettings = browserSettings,
+                                            onClick = { onHistoryItemClicked(tab, index) }
+                                        )
+                                    }
+                                }
+                            }
+                            LaunchedEffect(tab.historyState?.currentIndex) {
+                                tab.historyState?.let {
+                                    if (it.currentIndex in 0 until it.items.size) {
+                                        lazyListState.animateScrollToItem(index = it.currentIndex)
+                                    }
+                                }
+                            }
+                        }
+
+                        TabDataPanelView.PERMISSIONS -> {
+                            val domain =
+                                SiteSettingsManager(LocalContext.current).getDomain(tab.currentUrl)
+                            val settings = if (domain != null) siteSettings[domain] else null
+
+                            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                                if (settings != null && settings.permissionDecisions.isNotEmpty()) {
+                                    settings.permissionDecisions.forEach { (permission, isGranted) ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                permission.substringAfterLast('.'),
+                                                color = Color.White,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Switch(
+                                                checked = isGranted,
+                                                onCheckedChange = {
+                                                    onPermissionToggle(
+                                                        domain,
+                                                        permission,
+                                                        it
+                                                    )
+                                                })
+                                        }
+                                    }
+                                } else {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("No permissions requested yet.", color = Color.Gray)
+                                    }
+                                }
                             }
                         }
                     }
-                    Spacer(Modifier.height(16.dp))
                 }
 
-                // Action Buttons
+                // This Row contains the action buttons at the bottom
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(browserSettings.paddingDp.dp),
                     horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
                 ) {
-                    // Show Clear Data button only if the tab is active
+                    IconButton(
+                        onClick = {
+                            if (currentView == TabDataPanelView.MAIN) {
+                                onDismiss()
+                            } else {
+                                currentView = TabDataPanelView.MAIN
+                            }
+                        },
+                        modifier = buttonModifierForLayer(
+                            3,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).weight(1f)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_arrow_back),
+                            contentDescription = "Back",
+                            tint = Color.Black
+                        )
+                    }
                     if (tab.state != TabState.FROZEN) {
                         IconButton(
                             onClick = onClearSiteData,
@@ -5194,11 +5510,12 @@ fun TabDataPanel(
                         ) {
                             Icon(
                                 painter = painterResource(id = R.drawable.ic_database_off),
-                                tint = Color.Black,
-                                contentDescription = "Clear Site Data"
+                                contentDescription = "Clear Site Data",
+                                tint = Color.Black
                             )
                         }
                     }
+
                     IconButton(
                         onClick = onCloseTab,
                         modifier = buttonModifierForLayer(
@@ -5206,15 +5523,157 @@ fun TabDataPanel(
                             browserSettings.deviceCornerRadius,
                             browserSettings.paddingDp
                         ).weight(1f)
-
                     ) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_tab_close),
-                            tint = Color.Black,
-                            contentDescription = "Close Tab"
+                            contentDescription = "Close Tab",
+                            tint = Color.Black
                         )
                     }
                 }
+//                // --- PART 1: History List ---
+//
+//                val itemHeight = cornerRadiusForLayer(
+//                    3,
+//                    browserSettings.deviceCornerRadius,
+//                    browserSettings.paddingDp
+//                ).dp * 2 + browserSettings.paddingDp.dp
+//
+//                val lazyListState = rememberLazyListState()
+//                val history = tab.historyState
+//
+//
+//                LazyColumn(
+//                    state = lazyListState,
+//                    modifier = Modifier
+//                        .heightIn(max = itemHeight * 2.5f)
+//                        .animateContentSize(animationSpec = tween(durationMillis = browserSettings.animationSpeed))
+//                        .padding(
+//                            top = browserSettings.paddingDp.dp
+//                        )
+//                        .padding(
+//                            horizontal = browserSettings.paddingDp.dp
+//                        )
+//                        .clip(
+//                            RoundedCornerShape(
+//                                cornerRadiusForLayer(
+//                                    3,
+//                                    browserSettings.deviceCornerRadius,
+//                                    browserSettings.paddingDp
+//                                ).dp
+//                            )
+//                        )
+//                ) {
+//                    val history = tab.historyState
+//                    if (history != null) {
+//                        items(history.items.size) { index ->
+//                            val item = history.items[index]
+//
+//                            // --- REPLACE the old Box/Text with the new HistoryRow ---
+//                            HistoryRow(
+//                                item = item,
+//                                isLast = index == history.items.size - 1,
+//                                isCurrent = index == history.currentIndex,
+//                                browserSettings = browserSettings,
+//                                onClick = {
+//                                    onHistoryItemClicked(tab, index)
+//                                }
+//                            )
+//                        }
+//                    }
+//                }
+//                LaunchedEffect(history?.currentIndex) {
+//                    if (history != null && history.currentIndex in 0 until history.items.size) {
+//                        // Animate scroll will smoothly bring the item into view.
+//                        // It's efficient and won't scroll if the item is already visible.
+//                        lazyListState.animateScrollToItem(index = history.currentIndex)
+//                    }
+//                }
+//
+//                // --- PART 2: Permissions and Actions ---
+//                val domain =
+//                    SiteSettingsManager(LocalContext.current).getDomain(tab.currentUrl)
+//                val settings = if (domain != null) siteSettings[domain] else null
+//
+//                if (settings != null) {
+//                    Text(
+//                        "Permissions for $domain",
+//                        color = Color.White,
+//                        style = MaterialTheme.typography.titleMedium,
+//                        modifier = Modifier.padding(16.dp)
+//                    )
+//                    // Permissions List
+//                    if (settings.permissionDecisions.isEmpty()) {
+//                        Text(
+//                            "No permissions requested yet.",
+//                            color = Color.Gray,
+//                            modifier = Modifier.padding(horizontal = 16.dp)
+//                        )
+//                    } else {
+//                        settings.permissionDecisions.forEach { (permission, isGranted) ->
+//                            Row(
+//                                modifier = Modifier
+//                                    .fillMaxWidth()
+//                                    .padding(horizontal = 16.dp),
+//                                verticalAlignment = Alignment.CenterVertically
+//                            ) {
+//                                Text(
+//                                    permission.substringAfterLast('.'),
+//                                    color = Color.White,
+//                                    modifier = Modifier.weight(1f)
+//                                )
+//                                Switch(
+//                                    checked = isGranted,
+//                                    onCheckedChange = { newGrantState ->
+//                                        onPermissionToggle(domain, permission, newGrantState)
+//                                    }
+//                                )
+//                            }
+//                        }
+//                    }
+//                    Spacer(Modifier.height(16.dp))
+//                }
+//
+//                // Action Buttons
+//                Row(
+//                    modifier = Modifier
+//                        .fillMaxWidth()
+//                        .padding(browserSettings.paddingDp.dp),
+//                    horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
+//                ) {
+//                    // Show Clear Data button only if the tab is active
+//                    if (tab.state != TabState.FROZEN) {
+//                        IconButton(
+//                            onClick = onClearSiteData,
+//                            modifier = buttonModifierForLayer(
+//                                3,
+//                                browserSettings.deviceCornerRadius,
+//                                browserSettings.paddingDp
+//                            ).weight(1f)
+//                        ) {
+//                            Icon(
+//                                painter = painterResource(id = R.drawable.ic_database_off),
+//                                tint = Color.Black,
+//                                contentDescription = "Clear Site Data"
+//                            )
+//                        }
+//                    }
+//                    IconButton(
+//                        onClick = onCloseTab,
+//                        modifier = buttonModifierForLayer(
+//                            3,
+//                            browserSettings.deviceCornerRadius,
+//                            browserSettings.paddingDp
+//                        ).weight(1f)
+//
+//                    ) {
+//                        Icon(
+//                            painter = painterResource(id = R.drawable.ic_tab_close),
+//                            tint = Color.Black,
+//                            contentDescription = "Close Tab"
+//                        )
+//                    }
+//                }
             }
         }
     }
@@ -5302,4 +5761,132 @@ fun HistoryRow(
     }
 }
 
+@Composable
+fun ConfirmationPanel(
+    isConfirmationPanelVisible: Boolean,
+    isUrlBarVisible: Boolean,
+    browserSettings: BrowserSettings,
+    state: ConfirmationDialogState?,
+) {
+    AnimatedVisibility(
+        visible = isConfirmationPanelVisible,
+        enter = expandVertically(tween(animationSpeedForLayer(1, browserSettings.animationSpeed))),
+        exit = shrinkVertically(tween(animationSpeedForLayer(1, browserSettings.animationSpeed))) +
+                fadeOut(tween(animationSpeedForLayer(1, browserSettings.animationSpeed)))
+    ) {
+
+        if (state == null) return@AnimatedVisibility
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = browserSettings.paddingDp.dp)
+                .padding(
+                    top = browserSettings.paddingDp.dp,
+                    bottom = if (isUrlBarVisible) 0.dp else browserSettings.paddingDp.dp
+                )
+                .background(
+                    Color.Black,
+                    shape = RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
+                )
+                .border(
+                    width = 1.dp,
+                    color = Color.White,
+                    shape = RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
+                )
+        ) {
+
+            Text(
+                text = state.message,
+                color = Color.White,
+                modifier = Modifier.padding(16.dp)
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(browserSettings.paddingDp.dp),
+                horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
+            ) {
+                // Cancel Button
+                Button(
+                    modifier = buttonModifierForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    )
+                        .weight(1f)
+                        .border(
+                            1.dp, Color.White, shape = RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp,
+                                ).dp
+                            )
+                        ),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Black),
+                    shape = RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            3,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp,
+                        ).dp
+                    ),
+                    onClick = state.onCancel
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_close),
+                        tint = Color.White,
+                        contentDescription = "Cancel",
+                    )
+                }
+
+                // Confirm Button
+                Button(
+                    modifier = buttonModifierForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    )
+                        .weight(1f)
+                        .background(
+                            Color.White, shape = RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp
+                            )
+                        ),
+                    shape = RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp,
+                        ).dp
+                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+                    onClick = state.onConfirm
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_check),
+                        contentDescription = "Confirm",
+                    )
+                }
+            }
+        }
+    }
+}
 //endregion
