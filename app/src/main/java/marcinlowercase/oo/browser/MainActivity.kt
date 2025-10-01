@@ -23,6 +23,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
@@ -30,6 +31,7 @@ import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
@@ -67,6 +69,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -102,6 +105,7 @@ import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -139,6 +143,27 @@ const val default_url = "https://oo3.deno.dev/i"
 //endregion
 
 //region Global Functions
+
+fun buttonModifierForLayer(layer: Int, deviceCornerRadius: Float = 0f, padding: Float = 0f): Modifier{
+    return Modifier
+        .clip(
+            RoundedCornerShape(
+                cornerRadiusForLayer(
+                    layer,
+                    deviceCornerRadius,
+                    padding
+                ).dp
+            )
+        )
+        .height(
+            cornerRadiusForLayer(
+                layer,
+                deviceCornerRadius,
+                padding
+            ).dp * 2
+        )
+        .background(Color.White)
+}
 fun formatSpeed(bytesPerSecond: Float): String {
     if (bytesPerSecond < 1024) return "%.0f B/s".format(bytesPerSecond)
     val kbps = bytesPerSecond / 1024
@@ -203,6 +228,43 @@ class FaviconJavascriptInterface(
 //endregion
 
 //region Data Class
+@Serializable
+data class SiteSettings(
+    val domain: String,
+    // Map of <PermissionConstant, isGranted> e.g., <"android.permission.CAMERA", true>
+    val permissionDecisions: MutableMap<String, Boolean> = mutableMapOf()
+)
+
+class SiteSettingsManager(context: Context) {
+    private val prefs = context.getSharedPreferences("BrowserSiteSettings", Context.MODE_PRIVATE)
+    private val json = Json { ignoreUnknownKeys = true }
+    private val settingsKey = "site_settings_map_json"
+
+    // We store all settings as a single Map<Domain, SiteSettings> serialized to JSON
+    fun saveSettings(settings: Map<String, SiteSettings>) {
+        val jsonString = json.encodeToString(settings)
+        prefs.edit { putString(settingsKey, jsonString) }
+    }
+
+    fun loadSettings(): MutableMap<String, SiteSettings> {
+        val jsonString = prefs.getString(settingsKey, null)
+        return if (jsonString != null) {
+            try {
+                json.decodeFromString(jsonString)
+            } catch (e: Exception) {
+                Log.e("SiteSettingsManager", "Failed to decode site settings", e)
+                mutableMapOf()
+            }
+        } else {
+            mutableMapOf()
+        }
+    }
+
+    // Helper to extract a domain from a URL (e.g., "https://www.google.com/search" -> "google.com")
+    fun getDomain(url: String?): String? {
+        return url?.toUri()?.host?.removePrefix("www.")
+    }
+}
 
 private data class PollData(
     val timestampMs: Long,
@@ -355,6 +417,12 @@ data class Tab(
     // A convenient property to get the current URL from our saved state
     val currentUrl: String?
         get() = historyState?.items?.getOrNull(historyState!!.currentIndex)?.url
+
+    companion object {
+        fun createEmpty(): Tab {
+            return Tab(id = 0)
+        }
+    }
 }
 
 class TabManager(context: Context) {
@@ -363,6 +431,7 @@ class TabManager(context: Context) {
 
     private val tabsKey = "tabs_list_json"
     private val activeTabIndexKey = "active_tab_index"
+
 
     fun saveTabs(tabs: List<Tab>, activeTabIndex: Int) {
         // Convert the list of tabs into a single JSON string
@@ -1254,6 +1323,14 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     var saveTrigger by remember { mutableIntStateOf(0) }
 
 
+    val siteSettingsManager = remember { SiteSettingsManager(context) }
+    val siteSettings = remember {
+        mutableStateMapOf<String, SiteSettings>().apply {
+            putAll(siteSettingsManager.loadSettings())
+        }
+    }
+
+
     var textFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(tabs[activeTabIndex.intValue].currentUrl ?: "", TextRange(0)))
     }
@@ -1275,13 +1352,14 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     var isPermissionPanelVisible by rememberSaveable { mutableStateOf(false) }
     var isBottomPanelVisible by rememberSaveable { mutableStateOf(true) }
     var isPromptPanelVisible by rememberSaveable { mutableStateOf(false) }
-    var isTabsPanelVisible by remember { mutableStateOf(false) }
+    var isTabsPanelVisible by remember { mutableStateOf(true) }
     var tabsPanelLock by remember { mutableStateOf(true) }
 
 
     var isNavPanelVisible by remember { mutableStateOf(false) }
     var activeNavAction by remember { mutableStateOf(GestureNavAction.REFRESH) }
 
+    var isTabDataPanelVisible by remember { mutableStateOf(false) }
 
     val hapticFeedback = LocalHapticFeedback.current
 
@@ -1395,11 +1473,154 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         remember { mutableStateListOf<DownloadItem>().apply { addAll(downloadTracker.loadDownloads()) } }
     var isDownloadPanelVisible by remember { mutableStateOf(false) }
 
+
+    var inspectingTabId by remember { mutableStateOf<Long?>(null) }
+
+    val currentInspectingTab by remember {
+        derivedStateOf {
+            // This will re-run whenever inspectingTabId or the tabs list changes.
+            inspectingTabId?.let { id ->
+                tabs.find { it.id == id }
+            }
+        }
+    }
+    LaunchedEffect(currentInspectingTab) {
+        Log.i("UpdateTab", "New tab id : $currentInspectingTab")
+    }
+
+
+//    var inspectingTabId by remember { mutableStateOf<Long?>(null) }
+
+
     //endregion
     // FUNCTIONS
 
 
     //region Functions
+
+
+    val handleHistoryNavigation = { tabToNavigate: Tab, historyIndex: Int ->
+        val tabIndexInMainList = tabs.indexOf(tabToNavigate)
+
+        // --- Use a positive case check ---
+        if (tabIndexInMainList != -1) {
+            val currentHistory = tabToNavigate.historyState
+
+            if (currentHistory != null && historyIndex in currentHistory.items.indices) {
+                // --- All checks passed, proceed with the logic ---
+
+                // 1. Update the history state of the target tab
+                val updatedHistory = currentHistory.copy(currentIndex = historyIndex)
+                val updatedTab = tabToNavigate.copy(historyState = updatedHistory)
+                tabs[tabIndexInMainList] = updatedTab
+                saveTrigger++
+
+                // 2. Make the target tab the active tab
+                if (activeTabIndex.intValue != tabIndexInMainList) {
+                    tabs[activeTabIndex.intValue].state = TabState.BACKGROUND
+                    activeTabIndex.intValue = tabIndexInMainList
+                    updatedTab.state = TabState.ACTIVE
+                }
+
+                // 3. Get the WebView instance and load the URL
+                val webView = webViewManager.getWebView(updatedTab)
+                val urlToLoad = updatedHistory.items[historyIndex].url
+                webView.loadUrl(urlToLoad)
+
+                // 4. Update the text field and close the panel
+                textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
+            }
+            // If the inner 'if' fails (bad history), nothing happens, which is correct.
+        }
+        // If the outer 'if' fails (tab not found), nothing happens, which is correct.
+
+
+    }
+
+
+    val handlePermissionToggle = { domain: String?, permission: String, isGranted: Boolean ->
+
+        if (domain != null) {
+            val newSettings = siteSettings[domain]?.apply {
+                permissionDecisions[permission] = isGranted
+            }
+            if (newSettings != null) {
+                // Update the state to trigger recomposition of the panel
+                siteSettings[domain] =
+                    newSettings.copy() // Create a copy to ensure state change is detected
+                siteSettingsManager.saveSettings(siteSettings)
+            }
+        }
+    }
+
+    val handleCloseInspectedTab = {
+        val tabToClose = currentInspectingTab
+        if (tabToClose != null && tabs.indexOf(tabToClose) > -1) {
+            val indexToClose = tabs.indexOf(tabToClose)
+
+            if (tabs.size > 1) {
+                val tabToRemoveIndex = indexToClose
+
+                val tabToRemove = tabToClose
+                webViewManager.destroyWebView(tabToRemove)
+                tabs.removeAt(tabToRemoveIndex)
+
+                // Determine the next active tab
+                if (indexToClose == activeTabIndex.intValue) {
+                    val nextTabIndex = if (tabToRemoveIndex >= tabs.size) {
+                        tabs.lastIndex
+                    } else {
+                        tabToRemoveIndex
+                    }
+
+
+
+
+                    tabs[nextTabIndex].state = TabState.ACTIVE
+                    inspectingTabId = tabs[nextTabIndex].id
+                } else if (indexToClose < activeTabIndex.intValue) {
+                    activeTabIndex.intValue = activeTabIndex.intValue - 1
+                }
+
+
+//                val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
+//                activeWebView?.loadUrl(urlToLoad)
+//                textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
+                saveTrigger++
+            } else {
+
+                // 1. Remove the last tab from the list.
+                tabs.clear()
+
+                // 2. Save the now-empty tab list.
+                tabManager.clearAllTabs()
+
+
+                // 3. Finish the activity to close the app.
+                activity?.finishAndRemoveTask()
+
+                exitProcess(0)
+
+            }
+        }
+
+
+    }
+
+    val handleClearInspectedTabData = {
+        val inspectingTab = currentInspectingTab
+        if (inspectingTab?.state != TabState.FROZEN) {
+            // We need to find the specific WebView instance for this tab
+            val webView = webViewManager.getWebView(inspectingTab!!)
+
+            CookieManager.getInstance().removeAllCookies(null)
+            CookieManager.getInstance().flush()
+            WebStorage.getInstance().deleteAllData()
+            webView.clearCache(true)
+
+            Toast.makeText(context, "Data cleared", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     /**
      * Generates a unique filename by checking against a list of existing downloads.
@@ -1455,7 +1676,12 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
         textFieldValue = TextFieldValue(url, TextRange(url.length))
         saveTrigger++
+
+        if (isTabDataPanelVisible) {
+            inspectingTabId = newTab.id
+        }
     }
+
 
     fun navigateWebView() {
         when (activeNavAction) {
@@ -1534,26 +1760,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
                     saveTrigger++
                 } else {
-// CREATE NEW DEFAULT TAB WHEN CLOSE THE LAST TAB
-//                    val newTab = Tab(
-//                        state = TabState.ACTIVE,
-//                        historyState = SerializableBackForwardList(
-//                            items = listOf(SerializableHistoryItem(url = browserSettings.defaultUrl, title = "oo")),
-//                            currentIndex = 0
-//                        )
-//                    )
-//
-//                    // 2. Replace the entire tabs list with just this new tab
-//                    tabs.clear()
-//                    tabs.add(newTab)
-//
-//                    // 3. Reset the active index to the start
-//                    activeTabIndex.intValue = 0
-//
-//                    // 4. Load the default URL and update UI
-//                    activeWebView.loadUrl(browserSettings.defaultUrl)
-//                    textFieldValue = TextFieldValue(browserSettings.defaultUrl, TextRange(browserSettings.defaultUrl.length))
-//                    saveTrigger++
 
                     // 1. Remove the last tab from the list.
                     tabs.clear()
@@ -1648,7 +1854,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
 
 
-
     val lastPollData = remember { mutableMapOf<Long, PollData>() }
 
 
@@ -1657,6 +1862,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
     // This effect now ONLY handles the very first restoration of state.
 
+
+    //region LaunchedEffect
     LaunchedEffect(Unit) {
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
@@ -1786,7 +1993,16 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
 
 
-    //region LaunchedEffect
+
+    LaunchedEffect(inspectingTabId) {
+        if (inspectingTabId == null) {
+            isTabDataPanelVisible = false
+            Log.e("UpdateTab", "Inspecting tab is null.")
+        } else {
+            Log.e("UpdateTab", "Inspecting update: $inspectingTabId")
+
+        }
+    }
     LaunchedEffect(activeWebView) {
         activeWebView?.let { webView ->
 
@@ -2401,6 +2617,24 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             }
 
             BottomPanel(
+                updateInspectingTab = { tab ->
+                    if (tab.id != 0.toLong())inspectingTabId = tab.id else {
+                        isTabDataPanelVisible = false
+                    }
+
+                },
+                isTabDataPanelVisible = isTabDataPanelVisible,
+                inspectingTab = currentInspectingTab,
+                handleCloseInspectedTab = handleCloseInspectedTab,
+                handleClearInspectedTabData = handleClearInspectedTabData,
+                handlePermissionToggle = handlePermissionToggle,
+                siteSettings = siteSettings,
+                onTabDataPanelDismiss = { isTabDataPanelVisible =false },
+
+                onTabLongPressed = { tab ->
+                    isTabDataPanelVisible = !isTabDataPanelVisible
+                    if (inspectingTabId == null) inspectingTabId = tab.id
+                },
                 onDownloadRowClicked = handleOpenFile,
                 onDeleteClicked = handleDeleteFile,
                 onOpenFolderClicked = handleOpenDownloadsFolder,
@@ -2430,6 +2664,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 //                        activeWebView?.loadUrl(urlToLoad)
                         textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
                         saveTrigger++
+
+                        inspectingTabId = tabs[newIndex].id
                     }
 
                 },
@@ -2477,6 +2713,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 //                            }
                 },
                 setIsFocusOnTextField = { isFocusOnTextField = it },
+                handleHistoryNavigation = handleHistoryNavigation,
 
 
                 )
@@ -2608,6 +2845,17 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 @Composable
 fun BottomPanel(
+    updateInspectingTab: (Tab) -> Unit,
+    isTabDataPanelVisible: Boolean,
+    inspectingTab: Tab?,
+    handleHistoryNavigation: (tab: Tab, index: Int) -> Unit,
+    handleCloseInspectedTab: () -> Unit,
+    handleClearInspectedTabData: () -> Unit,
+    handlePermissionToggle: (domain: String?, permission: String, isGranted: Boolean) -> Unit,
+    siteSettings: Map<String, SiteSettings>,
+    onTabDataPanelDismiss: () -> Unit,
+    onTabLongPressed: (Tab) -> Unit,
+
     onDownloadRowClicked: (DownloadItem) -> Unit,
     onDeleteClicked: (DownloadItem) -> Unit,
     onOpenFolderClicked: () -> Unit,
@@ -2687,13 +2935,13 @@ fun BottomPanel(
 
 
                 .clip(
-                   RoundedCornerShape(
-                       cornerRadiusForLayer(
-                           1,
-                           browserSettings.deviceCornerRadius,
-                           browserSettings.paddingDp
-                       ).dp
-                   )
+                    RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            1,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
                 )
 
                 .background(
@@ -2762,13 +3010,33 @@ fun BottomPanel(
                     //                    pendingPermissionRequest = null
                 }
             )
+
+
+            TabDataPanel(
+
+                isTabDataPanelVisible = isTabDataPanelVisible,
+                inspectingTab = inspectingTab,
+                onDismiss = onTabDataPanelDismiss,
+                browserSettings = browserSettings,
+                siteSettings = siteSettings,
+                onPermissionToggle = handlePermissionToggle,
+                onClearSiteData = handleClearInspectedTabData,
+                onCloseTab = handleCloseInspectedTab,
+                onHistoryItemClicked = handleHistoryNavigation
+            )
+
             TabsPanel(
+                inspectingTab = inspectingTab,
+
                 isTabsPanelVisible = isTabsPanelVisible,
                 tabs = tabs,
                 activeTabIndex = activeTabIndex.value,
                 browserSettings = browserSettings,
                 onTabSelected = onTabSelected,
                 onNewTabClicked = onNewTabClicked,
+                hapticFeedback = hapticFeedback,
+                onTabLongPressed = onTabLongPressed,
+                updateInspectingTab = updateInspectingTab,
             )
 
 
@@ -3202,14 +3470,13 @@ fun PermissionPanel(
                                     browserSettings.paddingDp
                                 ).dp
                             )
-                        )
-                    ,
+                        ),
 
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = Color.Transparent
                     ),
 
-                ) {
+                    ) {
                     Icon(
                         painter = painterResource(id = currentRequest.iconResDeny), // You can make this icon generic too
                         contentDescription = "Deny Permission",
@@ -3508,8 +3775,10 @@ fun PromptPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = browserSettings.paddingDp.dp)
-                .padding(top = browserSettings.paddingDp.dp,
-                    bottom = if(isUrlBarVisible) 0.dp else browserSettings.paddingDp.dp)
+                .padding(
+                    top = browserSettings.paddingDp.dp,
+                    bottom = if (isUrlBarVisible) 0.dp else browserSettings.paddingDp.dp
+                )
         ) {
 
             Row(
@@ -3686,20 +3955,11 @@ fun PromptPanel(
                     ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val buttonModifier = Modifier
-                        .height(
-                            cornerRadiusForLayer(
-                                3,
-                                browserSettings.deviceCornerRadius,
-                                browserSettings.paddingDp
-                            ).dp * 2
-                        )
-                        .weight(1f)
 
                     // Dismiss/Cancel Button (only for confirm/prompt)
                     if (promptComponentDisplayState is JsConfirm || promptComponentDisplayState is JsPrompt) {
                         Button(
-                            modifier = buttonModifier
+                            modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
                                 .border(
                                     1.dp, Color.White, shape = RoundedCornerShape(
                                         cornerRadiusForLayer(
@@ -3742,7 +4002,7 @@ fun PromptPanel(
 
                     // Confirm Button
                     Button(
-                        modifier = buttonModifier
+                        modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
                             .background(
                                 Color.White, shape = RoundedCornerShape(
                                     cornerRadiusForLayer(
@@ -3980,13 +4240,18 @@ fun NavigationItem(
 
 @Composable
 fun TabsPanel(
+    inspectingTab: Tab?,
+
     isTabsPanelVisible: Boolean,
     modifier: Modifier = Modifier,
     tabs: List<Tab>,
     activeTabIndex: Int,
     browserSettings: BrowserSettings,
     onTabSelected: (Int) -> Unit,
-    onNewTabClicked: (Int) -> Unit
+    onNewTabClicked: (Int) -> Unit,
+    onTabLongPressed: (Tab) -> Unit,
+    updateInspectingTab: (Tab) -> Unit,
+    hapticFeedback: HapticFeedback = LocalHapticFeedback.current
 ) {
     if (tabs.isEmpty()) return
 
@@ -3995,12 +4260,21 @@ fun TabsPanel(
 
     // This effect is still useful to sync the pager if a new tab is created
     LaunchedEffect(activeTabIndex, tabs.size) {
+        Log.d("UpdateTab", "${inspectingTab?.currentUrl}")
+
         if (pagerState.currentPage != activeTabIndex + 1) {
             pagerState.animateScrollToPage(activeTabIndex + 1)
         }
     }
 
 
+    LaunchedEffect(pagerState.currentPage) {
+        Log.e("UpdateTab", "Current Page ${pagerState.currentPage}")
+        if (pagerState.currentPage in 1..tabs.size) updateInspectingTab(tabs[pagerState.currentPage - 1])
+        else {
+            updateInspectingTab(Tab.createEmpty())
+        }
+    }
 
 
     AnimatedVisibility(
@@ -4034,7 +4308,7 @@ fun TabsPanel(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top= browserSettings.paddingDp.dp)
+                .padding(top = browserSettings.paddingDp.dp)
                 .padding(horizontal = browserSettings.paddingDp.dp)
 
                 .clip(
@@ -4046,7 +4320,6 @@ fun TabsPanel(
                         ).dp
                     )
                 )
-                .background(Color.Black.copy(0.3f))
         ) {
             HorizontalPager(
                 state = pagerState,
@@ -4056,6 +4329,7 @@ fun TabsPanel(
                 contentPadding = PaddingValues(horizontal = 32.dp),
                 pageSpacing = browserSettings.paddingDp.dp / 2
             ) { pageIndex ->
+
                 when (pageIndex) {
                     0 -> {
                         // This is the FIRST page: New Tab button on the left
@@ -4068,6 +4342,7 @@ fun TabsPanel(
                     in 1..tabs.size -> {
                         // This is a regular tab page. Map pageIndex back to tabIndex.
                         val tabIndex = pageIndex - 1
+
                         val tab = tabs[tabIndex]
 
                         val currentHistory = tab.historyState
@@ -4086,7 +4361,15 @@ fun TabsPanel(
                             title = title,
                             isActive = pagerState.currentPage == pageIndex,
                             browserSettings = browserSettings,
-                            onClick = { onTabSelected(tabIndex) }
+                            onClick = {
+
+                                onTabSelected(tabIndex)
+                            },
+                            hapticFeedback = hapticFeedback,
+                            onLongClick = {
+                                onTabLongPressed(tab)
+                                Log.e("UpdateTab", "$tabIndex")
+                            }
                         )
                     }
 
@@ -4109,7 +4392,9 @@ fun TabItem(
     title: String,
     isActive: Boolean,
     browserSettings: BrowserSettings,
-    onClick: () -> Unit // Add an onClick callback
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    hapticFeedback: HapticFeedback = LocalHapticFeedback.current
 ) {
     Box(
 
@@ -4128,7 +4413,16 @@ fun TabItem(
         Row(
             modifier = Modifier
                 // Make the entire item clickable
-                .clickable(onClick = onClick)
+//                .clickable(onClick = onClick)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { onClick() },
+                        onLongPress = {
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongClick()
+                        }
+                    )
+                }
                 .height(
                     cornerRadiusForLayer(
                         3,
@@ -4350,26 +4644,6 @@ fun DownloadPanel(
 
                     stickyHeader {
                         // Download control button
-                        val buttonModifier = Modifier
-//                    .padding(browserSettings.paddingDp.dp)
-                            .weight(1f)
-                            .clip(
-                                RoundedCornerShape(
-                                    cornerRadiusForLayer(
-                                        3,
-                                        browserSettings.deviceCornerRadius,
-                                        browserSettings.paddingDp
-                                    ).dp
-                                )
-                            )
-                            .height(
-                                cornerRadiusForLayer(
-                                    3,
-                                    browserSettings.deviceCornerRadius,
-                                    browserSettings.paddingDp
-                                ).dp * 2
-                            )
-                            .background(Color.White)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -4395,7 +4669,7 @@ fun DownloadPanel(
                             //  Show Download Folder Button
                             IconButton(
                                 onClick = onOpenFolderClicked,
-                                modifier = buttonModifier
+                                modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
 
                             ) {
                                 Icon(
@@ -4407,7 +4681,7 @@ fun DownloadPanel(
 //                            Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
 //                            IconButton(
 //                                onClick = onClearAllClicked,
-//                                modifier = buttonModifier
+//                                modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
 //
 //                            ) {
 //                                Icon(
@@ -4440,26 +4714,6 @@ fun DownloadPanel(
 
                     stickyHeader {
                         // Download control button
-                        val buttonModifier = Modifier
-//                    .padding(browserSettings.paddingDp.dp)
-                            .weight(1f)
-                            .clip(
-                                RoundedCornerShape(
-                                    cornerRadiusForLayer(
-                                        3,
-                                        browserSettings.deviceCornerRadius,
-                                        browserSettings.paddingDp
-                                    ).dp
-                                )
-                            )
-                            .height(
-                                cornerRadiusForLayer(
-                                    3,
-                                    browserSettings.deviceCornerRadius,
-                                    browserSettings.paddingDp
-                                ).dp * 2
-                            )
-                            .background(Color.White)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -4485,7 +4739,7 @@ fun DownloadPanel(
                             //  Show Download Folder Button
                             IconButton(
                                 onClick = onOpenFolderClicked,
-                                modifier = buttonModifier
+                                modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
 
                             ) {
                                 Icon(
@@ -4497,7 +4751,7 @@ fun DownloadPanel(
                             Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
                             IconButton(
                                 onClick = onClearAllClicked,
-                                modifier = buttonModifier
+                                modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
 
                             ) {
                                 Icon(
@@ -4595,9 +4849,6 @@ fun DownloadRow(
 
     ) {
         // --- LAYER 1: The Progress Background ---
-
-
-
 
 
         AnimatedVisibility(
@@ -4743,5 +4994,295 @@ fun DownloadRow(
     }
 }
 
+@Composable
+fun TabDataPanel(
+    isTabDataPanelVisible: Boolean,
+    inspectingTab: Tab?,
+    onDismiss: () -> Unit,
+    browserSettings: BrowserSettings,
+    siteSettings: Map<String, SiteSettings>,
+    onPermissionToggle: (domain: String?, permission: String, isGranted: Boolean) -> Unit,
+    onClearSiteData: () -> Unit,
+    onCloseTab: () -> Unit,
+    onHistoryItemClicked: (tab: Tab, index: Int) -> Unit
+) {
+
+    // 1. Local state to hold the tab being displayed.
+//    var displayTab by remember { mutableStateOf(inspectingTab) }
+    val displayTab = inspectingTab
+
+    // 2. Effect to update the local state.
+    // This ensures `displayTab` only gets updated with non-null values,
+    // holding onto the last valid tab during the exit animation.
+
+    // This AnimatedVisibility controls the entire panel's appearance
+    AnimatedVisibility(
+        visible = isTabDataPanelVisible,
+        enter = fadeIn(tween(browserSettings.animationSpeed)) + expandVertically(expandFrom = Alignment.Bottom),
+        exit = shrinkVertically(
+            tween(
+                animationSpeedForLayer(
+                    1,
+                    browserSettings.animationSpeed
+                )
+            )
+        ) + fadeOut(
+            tween(animationSpeedForLayer(1, browserSettings.animationSpeed))
+        )
+
+    ) {
+        // A Box to handle clicking outside to dismiss
+        Box(
+            modifier = Modifier
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            // This inner Column prevents the dismiss click from propagating
+            Column(
+                modifier = Modifier
+                    .clickable(enabled = false, onClick = {}) // Block clicks
+                    .padding(top = browserSettings.paddingDp.dp)
+                    .padding(horizontal = browserSettings.paddingDp.dp)
+                    .fillMaxWidth()
+                    .heightIn(max = 450.dp)
+                    .clip(
+                        RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
+                    )
+                    .background(Color.Black)
+                    .border(
+                        1.dp,
+                        Color.White,
+                        RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                2,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
+                    )
+            ) {
+                val tab = displayTab ?: return@Column
+                // --- PART 1: History List ---
+
+                val itemHeight = cornerRadiusForLayer(
+                    3,
+                    browserSettings.deviceCornerRadius,
+                    browserSettings.paddingDp
+                ).dp * 2 + browserSettings.paddingDp.dp
+
+                val lazyListState = rememberLazyListState()
+                val history = tab.historyState
+
+
+                LazyColumn(
+                    state = lazyListState,
+                    modifier = Modifier
+                        .heightIn(max = itemHeight * 3)
+                        .padding(
+                            top = browserSettings.paddingDp.dp
+                        )
+                        .padding(
+                            horizontal = browserSettings.paddingDp.dp
+                        )
+                        .clip(
+                            RoundedCornerShape(
+                                cornerRadiusForLayer(
+                                    3,
+                                    browserSettings.deviceCornerRadius,
+                                    browserSettings.paddingDp
+                                ).dp
+                            )
+                        )
+                ) {
+                    val history = tab.historyState
+                    if (history != null) {
+                        items(history.items.size) { index ->
+                            val item = history.items[index]
+
+                            // --- REPLACE the old Box/Text with the new HistoryRow ---
+                            HistoryRow(
+                                item = item,
+                                isCurrent = index == history.currentIndex,
+                                browserSettings = browserSettings,
+                                onClick = {
+                                    onHistoryItemClicked(tab, index)
+                                }
+                            )
+                        }
+                    }
+                }
+                LaunchedEffect(history?.currentIndex) {
+                    if (history != null && history.currentIndex in 0 until history.items.size) {
+                        // Animate scroll will smoothly bring the item into view.
+                        // It's efficient and won't scroll if the item is already visible.
+                        lazyListState.animateScrollToItem(index = history.currentIndex)
+                    }
+                }
+
+                // --- PART 2: Permissions and Actions ---
+                val domain =
+                    SiteSettingsManager(LocalContext.current).getDomain(tab.currentUrl)
+                val settings = if (domain != null) siteSettings[domain] else null
+
+                if (settings != null) {
+                    Text(
+                        "Permissions for $domain",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                    // Permissions List
+                    if (settings.permissionDecisions.isEmpty()) {
+                        Text(
+                            "No permissions requested yet.",
+                            color = Color.Gray,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    } else {
+                        settings.permissionDecisions.forEach { (permission, isGranted) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    permission.substringAfterLast('.'),
+                                    color = Color.White,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Switch(
+                                    checked = isGranted,
+                                    onCheckedChange = { newGrantState ->
+                                        onPermissionToggle(domain, permission, newGrantState)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+
+                // Action Buttons
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(browserSettings.paddingDp.dp),
+                    horizontalArrangement = Arrangement.spacedBy(browserSettings.paddingDp.dp)
+                ) {
+                    // Show Clear Data button only if the tab is active
+                    if (tab.state != TabState.FROZEN) {
+                        IconButton(
+                            onClick = onClearSiteData, modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_database_off),
+                                tint = Color.Black,
+                                contentDescription = "Clear Site Data"
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = onCloseTab, modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
+
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_tab_close),
+                            tint = Color.Black,
+                            contentDescription = "Close Tab"
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun HistoryRow(
+    item: SerializableHistoryItem,
+    isCurrent: Boolean,
+    browserSettings: BrowserSettings,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = browserSettings.paddingDp.dp)
+            .height(
+                cornerRadiusForLayer(
+                    3,
+                    browserSettings.deviceCornerRadius,
+                    browserSettings.paddingDp
+                ).dp * 2
+            )
+            .clip(
+                RoundedCornerShape(
+                    cornerRadiusForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp
+                )
+            )
+            .background(if (isCurrent) Color.White else Color.Transparent)
+            .border(
+                width = 1.dp,
+                color = if (isCurrent) Color.Transparent else Color.White,
+                shape = RoundedCornerShape(
+                    cornerRadiusForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).dp
+                )
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = browserSettings.paddingDp.dp * 2),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // --- Favicon ---
+        Box(
+            modifier = Modifier.size(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            val imageRequest = ImageRequest.Builder(LocalContext.current)
+                // Use the item's saved faviconUrl, or fall back to the Google service
+                .data(item.faviconUrl ?: getFaviconUrlFromGoogleServer(item.url))
+                .crossfade(true)
+                .placeholder(R.drawable.ic_language)
+                .error(R.drawable.ic_language)
+                .build()
+
+            val painter = rememberAsyncImagePainter(model = imageRequest)
+
+            Image(
+                painter = painter,
+                contentDescription = "Favicon for ${item.title}",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        Spacer(Modifier.width(browserSettings.paddingDp.dp))
+
+        // --- Title ---
+        Text(
+            text = item.title.ifBlank { item.url },
+            color = if (isCurrent) Color.Black else Color.White,
+            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
 
 //endregion
