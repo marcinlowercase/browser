@@ -1557,6 +1557,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         val tabToClose = currentInspectingTab
         if (tabToClose != null && tabs.indexOf(tabToClose) > -1) {
             val indexToClose = tabs.indexOf(tabToClose)
+            Log.i("CloseTab", "$indexToClose")
 
             if (tabs.size > 1) {
                 val tabToRemoveIndex = indexToClose
@@ -1566,7 +1567,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 tabs.removeAt(tabToRemoveIndex)
 
                 // Determine the next active tab
-                if (indexToClose == activeTabIndex.intValue) {
+                if (tabToRemoveIndex == activeTabIndex.intValue) {
                     val nextTabIndex = if (tabToRemoveIndex >= tabs.size) {
                         tabs.lastIndex
                     } else {
@@ -1574,11 +1575,16 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     }
 
 
-
-
                     tabs[nextTabIndex].state = TabState.ACTIVE
                     inspectingTabId = tabs[nextTabIndex].id
-                } else if (indexToClose < activeTabIndex.intValue) {
+                    activeTabIndex.intValue = nextTabIndex
+
+//                    val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
+//                    textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
+//
+//                    activeWebView?.loadUrl(urlToLoad)
+                } else
+                    if (tabToRemoveIndex < activeTabIndex.intValue) {
                     activeTabIndex.intValue = activeTabIndex.intValue - 1
                 }
 
@@ -1603,8 +1609,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
             }
         }
-
-
     }
 
     val handleClearInspectedTabData = {
