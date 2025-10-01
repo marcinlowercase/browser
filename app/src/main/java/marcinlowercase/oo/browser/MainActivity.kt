@@ -351,6 +351,7 @@ data class JsPrompt(
 data class OptionItem(
     val iconRes: Int, // The drawable resource ID for the icon
     val contentDescription: String,
+    val enabled: Boolean,
     val onClick: () -> Unit,
 )
 
@@ -2379,6 +2380,11 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         isBottomPanelVisible = isUrlBarVisible || isPermissionPanelVisible || isPromptPanelVisible
 //        Log.i("VisibleState", "isBottomPanelVisible: $isBottomPanelVisible")
     }
+    LaunchedEffect(isTabsPanelVisible) {
+        if (!isTabsPanelVisible) {
+            isTabDataPanelVisible = false
+        }
+    }
 
 
     LaunchedEffect(pendingPermissionRequest) {
@@ -2643,6 +2649,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             }
 
             BottomPanel(
+                tabsPanelLock = tabsPanelLock,
                 updateInspectingTab = { tab ->
                     if (tab.id != 0.toLong()) inspectingTabId = tab.id else {
                         isTabDataPanelVisible = false
@@ -2871,6 +2878,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 @Composable
 fun BottomPanel(
+    tabsPanelLock: Boolean,
     updateInspectingTab: (Tab) -> Unit,
     isTabDataPanelVisible: Boolean,
     inspectingTab: Tab?,
@@ -3400,7 +3408,9 @@ fun BottomPanel(
                 browserSettings = browserSettings,
                 toggleIsTabsPanelVisible = toggleIsTabsPanelVisible,
                 tabs = tabs,
-                toggleIsDownloadPanelVisible = toggleIsDownloadPanelVisible
+                toggleIsDownloadPanelVisible = toggleIsDownloadPanelVisible,
+                tabsPanelLock = tabsPanelLock,
+                isDownloadPanelVisible = isDownloadPanelVisible,
             )
         }
 
@@ -3549,48 +3559,54 @@ fun OptionsPanel(
     updateBrowserSettings: (BrowserSettings) -> Int,
     browserSettings: BrowserSettings,
     tabs: List<Tab>,
+    tabsPanelLock: Boolean,
+    isDownloadPanelVisible: Boolean,
 ) {
 
 
     // This remains the same
-    val allOptions = remember(browserSettings) {
+    val allOptions = remember(browserSettings, tabsPanelLock, isDownloadPanelVisible) {
         listOf(
             OptionItem(
                 if (browserSettings.isDesktopMode) R.drawable.ic_mobile else R.drawable.ic_desktop,
-                "Desktop layout"
+                "Desktop layout",
+                browserSettings.isDesktopMode
             ) {
                 updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
             },
             OptionItem(
                 R.drawable.ic_tabs, // You'll need an icon for this
-                "Show Tabs Panel" // Display the number of open tabs
+                "Show Tabs Panel", // Display the number of open tabs
+                tabsPanelLock
             ) {
                 toggleIsTabsPanelVisible()
             },
             OptionItem(
                 if (browserSettings.isSharpMode) R.drawable.ic_rounded_corner else R.drawable.ic_sharp_corner,
-                "Toggle Sharp Corners"
+                "Toggle Sharp Corners",
+                browserSettings.isSharpMode,
             ) {
                 updateBrowserSettings(browserSettings.copy(isSharpMode = !browserSettings.isSharpMode))
             },
 
             OptionItem(
                 R.drawable.ic_download, // You'll need a download icon
-                "Show Downloads"
+                "Show Downloads",
+                isDownloadPanelVisible
             ) {
                 toggleIsDownloadPanelVisible()
             },
 
-            OptionItem(R.drawable.ic_bug, "logBrowserSettings") {
+            OptionItem(R.drawable.ic_bug, "logBrowserSettings", false) {
                 Log.e("BROWSER SETTINGS", browserSettings.toString())
                 Log.e("isImmersiveMode", isImmersiveMode.toString())
                 Log.e("Tabs List", tabs.toString())
             },
-            OptionItem(R.drawable.ic_fullscreen, "Button 4") { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 5") { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 6") { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 7") { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 8") { /* ... */ }
+            OptionItem(R.drawable.ic_fullscreen, "Button 4", false) { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 5", false) { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 6", false) { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 7", false) { /* ... */ },
+            OptionItem(R.drawable.ic_fullscreen, "Button 8", false) { /* ... */ }
         )
     }
 
@@ -3702,7 +3718,7 @@ fun OptionsPanel(
                                     ).dp * 2
                                 )
                                 .background(
-                                    Color.Black.copy(alpha = 0.8f),
+                                    if (option.enabled) Color.White else Color.Black,
                                     shape = RoundedCornerShape(
                                         cornerRadiusForLayer(
                                             2,
@@ -3711,18 +3727,13 @@ fun OptionsPanel(
                                         ).dp
                                     )
                                 ),
-//                                .border(
-//                                    1.dp,
-//                                    colorScheme.backgroundColor,
-//                                    RoundedCornerShape(browserSettings.deviceCornerRadius.dp)
-//                                )
 
 
-                        ) {
+                            ) {
                             Icon(
                                 painter = painterResource(id = option.iconRes),
                                 contentDescription = option.contentDescription,
-                                tint = Color.White
+                                tint = if (option.enabled) Color.Black else Color.White
                             )
                         }
                     }
@@ -5093,7 +5104,6 @@ fun TabDataPanel(
                                 ).dp
                             )
                         )
-                        .background(Color.Yellow)
                 ) {
                     val history = tab.historyState
                     if (history != null) {
