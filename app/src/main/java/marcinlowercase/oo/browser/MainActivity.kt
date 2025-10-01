@@ -45,6 +45,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -144,7 +145,12 @@ const val default_url = "https://oo3.deno.dev/i"
 
 //region Global Functions
 
-fun buttonModifierForLayer(layer: Int, deviceCornerRadius: Float = 0f, padding: Float = 0f): Modifier{
+@SuppressLint("ModifierFactoryExtensionFunction")
+fun buttonModifierForLayer(
+    layer: Int,
+    deviceCornerRadius: Float = 0f,
+    padding: Float = 0f
+): Modifier {
     return Modifier
         .clip(
             RoundedCornerShape(
@@ -164,6 +170,7 @@ fun buttonModifierForLayer(layer: Int, deviceCornerRadius: Float = 0f, padding: 
         )
         .background(Color.White)
 }
+
 fun formatSpeed(bytesPerSecond: Float): String {
     if (bytesPerSecond < 1024) return "%.0f B/s".format(bytesPerSecond)
     val kbps = bytesPerSecond / 1024
@@ -1352,8 +1359,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     var isPermissionPanelVisible by rememberSaveable { mutableStateOf(false) }
     var isBottomPanelVisible by rememberSaveable { mutableStateOf(true) }
     var isPromptPanelVisible by rememberSaveable { mutableStateOf(false) }
-    var isTabsPanelVisible by remember { mutableStateOf(true) }
-    var tabsPanelLock by remember { mutableStateOf(true) }
+    var isTabsPanelVisible by remember { mutableStateOf(false) }
+    var tabsPanelLock by remember { mutableStateOf(false) }
 
 
     var isNavPanelVisible by remember { mutableStateOf(false) }
@@ -1364,6 +1371,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     val hapticFeedback = LocalHapticFeedback.current
 
     var isNavigateInProgress by rememberSaveable { mutableStateOf(false) }
+    var isNavigateInProgressWithTabDataPanel by rememberSaveable { mutableStateOf(false) }
 
 
     var isOptionsPanelVisible by rememberSaveable { mutableStateOf(false) }
@@ -1503,7 +1511,12 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         val tabIndexInMainList = tabs.indexOf(tabToNavigate)
 
         // --- Use a positive case check ---
-        if (tabIndexInMainList != -1) {
+        if (tabIndexInMainList != -1 && !isNavigateInProgressWithTabDataPanel && !isNavigateInProgress) {
+
+            isUrlBarVisible = false
+
+            isNavigateInProgressWithTabDataPanel = true
+            isNavigateInProgress = true
             val currentHistory = tabToNavigate.historyState
 
             if (currentHistory != null && historyIndex in currentHistory.items.indices) {
@@ -1529,6 +1542,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
                 // 4. Update the text field and close the panel
                 textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
+
             }
             // If the inner 'if' fails (bad history), nothing happens, which is correct.
         }
@@ -1585,8 +1599,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 //                    activeWebView?.loadUrl(urlToLoad)
                 } else
                     if (tabToRemoveIndex < activeTabIndex.intValue) {
-                    activeTabIndex.intValue = activeTabIndex.intValue - 1
-                }
+                        activeTabIndex.intValue = activeTabIndex.intValue - 1
+                    }
 
 
 //                val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
@@ -1621,8 +1635,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             CookieManager.getInstance().flush()
             WebStorage.getInstance().deleteAllData()
             webView.clearCache(true)
+            webView.reload()
 
-            Toast.makeText(context, "Data cleared", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1675,15 +1689,15 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
         val newWebView = webViewManager.getWebView(newTab)
         newWebView.loadUrl(url)
+        inspectingTabId = newTab.id
 
         activeTabIndex.intValue = insertAtIndex
+
 
         textFieldValue = TextFieldValue(url, TextRange(url.length))
         saveTrigger++
 
-        if (isTabDataPanelVisible) {
-            inspectingTabId = newTab.id
-        }
+
     }
 
 
@@ -2091,7 +2105,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     }
                     isLoading = true
                 },
-                onPageFinishedFun = { view, currentUrlString -> isLoading = false },
+                onPageFinishedFun = { view, currentUrlString ->
+                    isLoading = false
+                    isNavigateInProgressWithTabDataPanel = false
+                },
                 onDoUpdateVisitedHistoryFun = { view, url, isReload ->
                     Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
                     Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
@@ -2346,8 +2363,13 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         }
     }
     LaunchedEffect(isUrlBarVisible) {
-        if (!isUrlBarVisible) isOptionsPanelVisible = false
-        if (!tabsPanelLock) isTabsPanelVisible = isUrlBarVisible
+        if (!isUrlBarVisible) {
+            isOptionsPanelVisible = false
+            isTabDataPanelVisible = false
+            isTabsPanelVisible = false
+        } else {
+            if (tabsPanelLock) isTabsPanelVisible = true
+        }
     }
     LaunchedEffect(jsDialogState) {
         isPromptPanelVisible = jsDialogState != null
@@ -2622,7 +2644,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
             BottomPanel(
                 updateInspectingTab = { tab ->
-                    if (tab.id != 0.toLong())inspectingTabId = tab.id else {
+                    if (tab.id != 0.toLong()) inspectingTabId = tab.id else {
                         isTabDataPanelVisible = false
                     }
 
@@ -2633,7 +2655,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 handleClearInspectedTabData = handleClearInspectedTabData,
                 handlePermissionToggle = handlePermissionToggle,
                 siteSettings = siteSettings,
-                onTabDataPanelDismiss = { isTabDataPanelVisible =false },
+                onTabDataPanelDismiss = { isTabDataPanelVisible = false },
 
                 onTabLongPressed = { tab ->
                     isTabDataPanelVisible = !isTabDataPanelVisible
@@ -3963,7 +3985,12 @@ fun PromptPanel(
                     // Dismiss/Cancel Button (only for confirm/prompt)
                     if (promptComponentDisplayState is JsConfirm || promptComponentDisplayState is JsPrompt) {
                         Button(
-                            modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
+                            modifier = buttonModifierForLayer(
+                                3,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            )
+                                .weight(1f)
                                 .border(
                                     1.dp, Color.White, shape = RoundedCornerShape(
                                         cornerRadiusForLayer(
@@ -4006,7 +4033,12 @@ fun PromptPanel(
 
                     // Confirm Button
                     Button(
-                        modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
+                        modifier = buttonModifierForLayer(
+                            3,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        )
+                            .weight(1f)
                             .background(
                                 Color.White, shape = RoundedCornerShape(
                                     cornerRadiusForLayer(
@@ -4600,13 +4632,24 @@ fun DownloadPanel(
                         ).dp
                     )
                 )
-                .background(Color.Black.copy(0.3f))
+                .border(
+                    width = 1.dp,
+                    color = Color.White,
+                    shape = RoundedCornerShape(
+                        cornerRadiusForLayer(
+                            2,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp
+                    )
+                )
         ) {
             if (downloads.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(browserSettings.paddingDp.dp)
+                        .padding(horizontal = browserSettings.paddingDp.dp)
+                        .padding(top = browserSettings.paddingDp.dp)
                         .background(Color.Transparent)
                         .clip(
                             RoundedCornerShape(
@@ -4629,80 +4672,20 @@ fun DownloadPanel(
                     Text("No downloads yet.", color = Color.White)
                 }
 
-                LazyColumn(
-                    modifier = Modifier
-//                        .weight(1f)
-                        .padding(browserSettings.paddingDp.dp)
 
-                        .clip(
-                            RoundedCornerShape(
-                                cornerRadiusForLayer(
-                                    3,
-                                    browserSettings.deviceCornerRadius,
-                                    browserSettings.paddingDp
-                                ).dp
-                            )
-                        ),
-                    reverseLayout = true,
-                ) {
-
-                    stickyHeader {
-                        // Download control button
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = browserSettings.paddingDp.dp)
-                                .clip(
-                                    RoundedCornerShape(
-                                        cornerRadiusForLayer(
-                                            3,
-                                            browserSettings.deviceCornerRadius,
-                                            browserSettings.paddingDp
-                                        ).dp
-                                    )
-                                )
-                                .height(
-                                    cornerRadiusForLayer(
-                                        3,
-                                        browserSettings.deviceCornerRadius,
-                                        browserSettings.paddingDp
-                                    ).dp * 2
-                                )
-//                                .padding(bottom = browserSettings.paddingDp.dp),
-                        ) {
-                            //  Show Download Folder Button
-                            IconButton(
-                                onClick = onOpenFolderClicked,
-                                modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
-
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_folder), // You can make this icon generic too
-                                    contentDescription = "Download Folder",
-                                    tint = Color.Black
-                                )
-                            }
-//                            Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
-//                            IconButton(
-//                                onClick = onClearAllClicked,
-//                                modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
-//
-//                            ) {
-//                                Icon(
-//                                    painter = painterResource(id = R.drawable.ic_clear_all), // You can make this icon generic too
-//                                    contentDescription = "Download Folder",
-//                                    tint = Color.Black
-//                                )
-//                            }
-                        }
-                    }
-
-                }
             } else {
+                val itemHeight = cornerRadiusForLayer(
+                    3,
+                    browserSettings.deviceCornerRadius,
+                    browserSettings.paddingDp
+                ).dp * 2 + browserSettings.paddingDp.dp
                 LazyColumn(
                     modifier = Modifier
 //                        .weight(1f)
-                        .padding(browserSettings.paddingDp.dp)
+                        .heightIn(max = itemHeight * 2.5f)
+
+                        .padding(top = browserSettings.paddingDp.dp)
+                        .padding(horizontal = browserSettings.paddingDp.dp)
 
                         .clip(
                             RoundedCornerShape(
@@ -4716,56 +4699,6 @@ fun DownloadPanel(
                     reverseLayout = true,
                 ) {
 
-                    stickyHeader {
-                        // Download control button
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = browserSettings.paddingDp.dp)
-                                .clip(
-                                    RoundedCornerShape(
-                                        cornerRadiusForLayer(
-                                            3,
-                                            browserSettings.deviceCornerRadius,
-                                            browserSettings.paddingDp
-                                        ).dp
-                                    )
-                                )
-                                .height(
-                                    cornerRadiusForLayer(
-                                        3,
-                                        browserSettings.deviceCornerRadius,
-                                        browserSettings.paddingDp
-                                    ).dp * 2
-                                )
-//                                .padding(bottom = browserSettings.paddingDp.dp),
-                        ) {
-                            //  Show Download Folder Button
-                            IconButton(
-                                onClick = onOpenFolderClicked,
-                                modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
-
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_folder), // You can make this icon generic too
-                                    contentDescription = "Download Folder",
-                                    tint = Color.Black
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
-                            IconButton(
-                                onClick = onClearAllClicked,
-                                modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
-
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_clear_all), // You can make this icon generic too
-                                    contentDescription = "Download Folder",
-                                    tint = Color.Black
-                                )
-                            }
-                        }
-                    }
 
                     items(downloads.size, key = { downloads[it].id }) { index ->
                         DownloadRow(
@@ -4777,6 +4710,62 @@ fun DownloadPanel(
                         )
 //                        Spacer(Modifier.height(browserSettings.paddingDp.dp))
                     }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(browserSettings.paddingDp.dp)
+                    .clip(
+                        RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                3,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
+                    )
+                    .height(
+                        cornerRadiusForLayer(
+                            3,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp * 2
+                    )
+//                                .padding(bottom = browserSettings.paddingDp.dp),
+            ) {
+                //  Show Download Folder Button
+                IconButton(
+                    onClick = onOpenFolderClicked,
+                    modifier = buttonModifierForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).weight(1f)
+
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_folder), // You can make this icon generic too
+                        contentDescription = "Download Folder",
+                        tint = Color.Black
+                    )
+                }
+                if (downloads.isNotEmpty()) Spacer(modifier = Modifier.width(browserSettings.paddingDp.dp))
+                if (downloads.isNotEmpty()) IconButton(
+                    onClick = onClearAllClicked,
+                    modifier = buttonModifierForLayer(
+                        3,
+                        browserSettings.deviceCornerRadius,
+                        browserSettings.paddingDp
+                    ).weight(1f)
+
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_clear_all), // You can make this icon generic too
+                        contentDescription = "Download Folder",
+                        tint = Color.Black
+                    )
                 }
             }
 
@@ -5087,7 +5076,8 @@ fun TabDataPanel(
                 LazyColumn(
                     state = lazyListState,
                     modifier = Modifier
-                        .heightIn(max = itemHeight * 3)
+                        .heightIn(max = itemHeight * 2.5f)
+                        .animateContentSize(animationSpec = tween(durationMillis = browserSettings.animationSpeed))
                         .padding(
                             top = browserSettings.paddingDp.dp
                         )
@@ -5103,6 +5093,7 @@ fun TabDataPanel(
                                 ).dp
                             )
                         )
+                        .background(Color.Yellow)
                 ) {
                     val history = tab.historyState
                     if (history != null) {
@@ -5112,6 +5103,7 @@ fun TabDataPanel(
                             // --- REPLACE the old Box/Text with the new HistoryRow ---
                             HistoryRow(
                                 item = item,
+                                isLast = index == history.items.size - 1,
                                 isCurrent = index == history.currentIndex,
                                 browserSettings = browserSettings,
                                 onClick = {
@@ -5183,7 +5175,12 @@ fun TabDataPanel(
                     // Show Clear Data button only if the tab is active
                     if (tab.state != TabState.FROZEN) {
                         IconButton(
-                            onClick = onClearSiteData, modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
+                            onClick = onClearSiteData,
+                            modifier = buttonModifierForLayer(
+                                3,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).weight(1f)
                         ) {
                             Icon(
                                 painter = painterResource(id = R.drawable.ic_database_off),
@@ -5193,7 +5190,12 @@ fun TabDataPanel(
                         }
                     }
                     IconButton(
-                        onClick = onCloseTab, modifier = buttonModifierForLayer(3, browserSettings.deviceCornerRadius,browserSettings.paddingDp). weight(1f)
+                        onClick = onCloseTab,
+                        modifier = buttonModifierForLayer(
+                            3,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).weight(1f)
 
                     ) {
                         Icon(
@@ -5212,6 +5214,7 @@ fun TabDataPanel(
 @Composable
 fun HistoryRow(
     item: SerializableHistoryItem,
+    isLast: Boolean,
     isCurrent: Boolean,
     browserSettings: BrowserSettings,
     onClick: () -> Unit
@@ -5219,7 +5222,7 @@ fun HistoryRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = browserSettings.paddingDp.dp)
+            .padding(bottom = if (!isLast) browserSettings.paddingDp.dp else 0.dp)
             .height(
                 cornerRadiusForLayer(
                     3,
