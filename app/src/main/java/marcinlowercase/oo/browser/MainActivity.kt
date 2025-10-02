@@ -3141,7 +3141,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            painter = painterResource(R.drawable.ic_expand_circle_up),
+                            painter = painterResource(if (isCursorPadVisible) R.drawable.ic_trackpad_input else R.drawable.ic_language),
                             contentDescription = "Back",
                             tint = Color.White
                         )
