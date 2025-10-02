@@ -47,6 +47,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -1348,7 +1349,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 //                bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", 65.90476f),
                 topSharpEdge = sharedPrefs.getFloat("top_sharp_edge", pixel_9_corner_radius),
                 bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", pixel_9_corner_radius),
-                cursorContainerSize = sharedPrefs.getFloat("cursor_container_size", pixel_9_corner_radius),
+                cursorContainerSize = sharedPrefs.getFloat(
+                    "cursor_container_size",
+                    pixel_9_corner_radius
+                ),
                 cursorPointerSize = sharedPrefs.getFloat("cursor_pointer_size", 5f),
             )
         )
@@ -2526,7 +2530,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
 
 
-    suspend fun triggleBlinkEffect() {
+    suspend fun triggerBlinkEffect() {
         squareAlpha.snapTo(0.7f)
 
         // b. Wait a moment so the user can see it before it blinks.
@@ -2552,7 +2556,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             // -- The URL bar has just been hidden. Start the "show and blink" sequence. --
 
             // a. Instantly appear with 0.6 opacity.
-            triggleBlinkEffect()
+            triggerBlinkEffect()
 
             // d. After blinking, fade out completely.
         } else {
@@ -2968,12 +2972,18 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         .fillMaxSize(),
                 ) {
 
+                    val squareBoxSmallHeight =
+                        cornerRadiusForLayer(
+                            1,
+                            browserSettings.deviceCornerRadius,
+                            browserSettings.paddingDp
+                        ).dp * 2
 
                     Box(
                         modifier = Modifier
                             .align(squareAlignment)
 
-                            .animateContentSize(animationSpec = tween(durationMillis = browserSettings.animationSpeed))
+                            .animateContentSize(animationSpec = snap(0))
 
                             .then(
                                 if (isCursorPadVisible) {
@@ -2986,13 +2996,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                 } else {
                                     Modifier
                                         .height(
-                                            cornerRadiusForLayer(
-                                                1,
-                                                browserSettings.deviceCornerRadius,
-                                                browserSettings.paddingDp
-                                            ).dp * 2
+                                            squareBoxSmallHeight
                                         )
-                                        .fillMaxWidth(0.45f)
+                                        .width(screenSizeDp.width.dp * 0.45f)
                                 }
                             )
                             .graphicsLayer {
@@ -3007,6 +3013,24 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                                         isCursorPadVisible = true
                                         squareAlpha.snapTo(1f)
+
+
+                                        val initialCursorX =
+                                            if (squareAlignment == Alignment.BottomEnd) (
+                                                    screenSize.width - ((screenSize.width * 0.45f) + browserSettings.paddingDp.dp.toPx()) + down.position.x
+                                            )
+                                            else browserSettings.paddingDp.dp.toPx() + down.position.x
+
+
+                                        val initialCursorY = screenSize.height - (squareBoxSmallHeight.toPx() - browserSettings.paddingDp.dp.toPx()) + down.position.y - ((screenSize.height - cutoutTop.toPx())/2)
+
+
+
+                                        cursorPointerPosition =
+                                            Offset(initialCursorX, initialCursorY)
+
+
+
                                     }
 
                                     val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
@@ -3105,7 +3129,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                             if (longPressJob.isActive) {
                                                 longPressJob.cancel()
                                                 coroutineScope.launch {
-                                                    triggleBlinkEffect()
+                                                    triggerBlinkEffect()
                                                 }
                                             }
                                         }
@@ -6026,7 +6050,7 @@ fun CursorPointer(
         exit = fadeOut(tween(100))
     ) {
         val cursorContainerSize = browserSettings.cursorContainerSize.dp
-        val pointerSize = cursorContainerSize /2
+        val pointerSize = cursorContainerSize / 2
         Box(
             modifier = Modifier
                 .offset {
