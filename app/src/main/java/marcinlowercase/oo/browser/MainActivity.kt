@@ -412,6 +412,7 @@ data class BrowserSettings(
     val bottomSharpEdge: Float,
     val cursorContainerSize: Float,
     val cursorPointerSize: Float,
+    val cursorTrackingSpeed: Float,
 )
 
 enum class GestureNavAction {
@@ -1354,7 +1355,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     pixel_9_corner_radius
                 ),
                 cursorPointerSize = sharedPrefs.getFloat("cursor_pointer_size", 5f),
-            )
+                cursorTrackingSpeed = sharedPrefs.getFloat("cursor_tracking_speed", 1.5f),
+                )
         )
     }
 
@@ -2656,6 +2658,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             putFloat("bottom_sharp_edge", browserSettings.bottomSharpEdge)
             putFloat("cursor_container_size", browserSettings.cursorContainerSize)
             putFloat("cursor_pointer_size", browserSettings.cursorPointerSize)
+            putFloat("cursor_tracking_speed", browserSettings.cursorTrackingSpeed)
 
 
         }
@@ -3018,17 +3021,17 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                         val initialCursorX =
                                             if (squareAlignment == Alignment.BottomEnd) (
                                                     screenSize.width - ((screenSize.width * 0.45f) + browserSettings.paddingDp.dp.toPx()) + down.position.x
-                                            )
+                                                    )
                                             else browserSettings.paddingDp.dp.toPx() + down.position.x
 
 
-                                        val initialCursorY = screenSize.height - (squareBoxSmallHeight.toPx() - browserSettings.paddingDp.dp.toPx()) + down.position.y - ((screenSize.height - cutoutTop.toPx())/2)
+                                        val initialCursorY =
+                                            screenSize.height - (squareBoxSmallHeight.toPx() - browserSettings.paddingDp.dp.toPx()) + down.position.y - ((screenSize.height - cutoutTop.toPx()) / 2)
 
 
 
                                         cursorPointerPosition =
                                             Offset(initialCursorX, initialCursorY)
-
 
 
                                     }
@@ -3045,26 +3048,21 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                         if (drag != null) {
                                             drag(drag.id) { change ->
                                                 change.consume()
-                                                val fingerPosition = change.position
 
-                                                // --- MAP FINGER TO CURSOR ---
-                                                val newCursorX = fingerPosition.x
-                                                // Translate the Y position from the bottom half to the top half
 
-                                                Log.e(
-                                                    "BackSquare",
-                                                    "screenSize Height : ${screenSize.height}"
-                                                )
-                                                Log.e(
-                                                    "BackSquare",
-                                                    "fingerPosition.y  : ${fingerPosition.y}"
-                                                )
+                                                val changeSpaceX =
+                                                    (change.position.x - change.previousPosition.x) * browserSettings.cursorTrackingSpeed
+                                                val changeSpaceY =
+                                                    (change.position.y - change.previousPosition.y) * browserSettings.cursorTrackingSpeed
 
-                                                // 2. Map this relative position to the top half of the screen and clamp it
-                                                val newCursorY = fingerPosition.y + cutoutTop.toPx()
+                                                val newCursorX =
+                                                    cursorPointerPosition.x + changeSpaceX
 
+                                                val newCursorY =
+                                                    (cursorPointerPosition.y + changeSpaceY)
                                                 cursorPointerPosition =
                                                     Offset(newCursorX, newCursorY)
+
                                             }
                                         }
                                         // --- MOVED STATE RESET LOGIC INSIDE THIS BLOCK ---
