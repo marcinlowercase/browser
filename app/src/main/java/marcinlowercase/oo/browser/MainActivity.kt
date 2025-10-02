@@ -46,13 +46,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -112,7 +113,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.edit
@@ -1576,10 +1579,13 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
     var isCursorPadVisible by remember { mutableStateOf(false) } // 1. Add new state for expansion
-    var cursorPointerPosition by remember { mutableStateOf(Offset.Zero) }
+    var isCursorMode by remember { mutableStateOf(false) }
+    val cursorPointerPosition = remember { mutableStateOf(Offset.Zero) }
     val density = LocalDensity.current
-    var screenSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
-    var screenSizeDp by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var screenSize by remember { mutableStateOf(IntSize.Zero) }
+    var screenSizeDp by remember { mutableStateOf(IntSize.Zero) }
+
+
 
     //endregion
     // FUNCTIONS
@@ -2022,6 +2028,14 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
     //region LaunchedEffect
+
+    LaunchedEffect(isCursorMode) {
+
+
+        isCursorPadVisible = isCursorMode
+        Log.e("isCursorMode","isCursorMode: $isCursorMode")
+        Log.e("isCursorMode","isCursorPadVisible: $isCursorPadVisible")
+    }
 
     LaunchedEffect(Unit) {
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -2803,12 +2817,30 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
             CursorPointer(
-                isVisible = isCursorPadVisible,
-                position = cursorPointerPosition,
+                isCursorPadVisible = isCursorPadVisible,
+                position = cursorPointerPosition.value,
                 browserSettings = browserSettings,
             )
 
+            CursorPad(
+                isCursorPadVisible = isCursorPadVisible,
+                isCursorMode = isCursorMode,
+                setIsCursorPadVisible = { isCursorPadVisible = it },
+                browserSettings = browserSettings,
+                screenSizeDp = screenSizeDp,
+                cutoutTop = cutoutTop,
+                coroutineScope = coroutineScope,
+                activeWebView = activeWebView,
+                cursorPointerPosition = cursorPointerPosition,
+                setCursorPointerPosition = {cursorPointerPosition.value = it},
+                squareAlpha = squareAlpha
+
+            )
+
             BottomPanel(
+                isCursorPadVisible= isCursorPadVisible,
+                isCursorMode= isCursorMode,
+                setIsCursorMode = {isCursorMode = it},
                 setIsOptionsPanelVisible = { isOptionsPanelVisible = it },
                 setIsTabsPanelVisible = { isTabsPanelVisible = it },
                 setIsDownloadPanelVisible = { isDownloadPanelVisible = it },
@@ -2942,7 +2974,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     .onSizeChanged {
                         screenSize = it
                         with(density) {
-                            screenSizeDp = androidx.compose.ui.unit.IntSize(
+                            screenSizeDp = IntSize(
                                 it.width.toDp().value.roundToInt(),
                                 it.height.toDp().value.roundToInt()
                             )
@@ -2951,7 +2983,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             "BackSquare",
                             "Screen Size: ${screenSize.width}x${screenSize.height} px | ${screenSizeDp.width}x${screenSizeDp.height} dp"
                         )
-                    },
+                    }
+
+                ,
                 enter = fadeIn(
                     animationSpec = tween(
                         animationSpeedForLayer(
@@ -2970,9 +3004,13 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 )
             ) {
 
+
+
                 Box(
                     modifier = Modifier
-                        .fillMaxSize(),
+                        .fillMaxSize()
+
+                    ,
                 ) {
 
                     val squareBoxSmallHeight =
@@ -2986,24 +3024,26 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         modifier = Modifier
                             .align(squareAlignment)
 
-                            .animateContentSize(animationSpec = snap(0))
+                            .animateContentSize()
+                            .height(squareBoxSmallHeight)
+                            .width(screenSizeDp.width.dp * 0.45f)
 
-                            .then(
-                                if (isCursorPadVisible) {
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .height(
-                                            (screenSizeDp.height.dp - cutoutTop) / 2
-                                        )
-//                                        .fillMaxHeight(0.5f)
-                                } else {
-                                    Modifier
-                                        .height(
-                                            squareBoxSmallHeight
-                                        )
-                                        .width(screenSizeDp.width.dp * 0.45f)
-                                }
-                            )
+//                            .then(
+//                                if (isCursorPadVisible) {
+//                                    Modifier
+//                                        .fillMaxWidth()
+//                                        .height(
+//                                            (screenSizeDp.height.dp - cutoutTop) / 2
+//                                        )
+////                                        .fillMaxHeight(0.5f)
+//                                } else {
+//                                    Modifier
+//                                        .height(
+//                                            squareBoxSmallHeight
+//                                        )
+//                                        .width(screenSizeDp.width.dp * 0.45f)
+//                                }
+//                            )
                             .graphicsLayer {
                                 alpha = squareAlpha.value
                             }
@@ -3015,8 +3055,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                         delay(viewConfiguration.longPressTimeoutMillis)
                                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                                         isCursorPadVisible = true
-                                        squareAlpha.snapTo(1f)
-
+                                        squareAlpha.snapTo(0f)
 
                                         val initialCursorX =
                                             if (squareAlignment == Alignment.BottomEnd) (
@@ -3030,7 +3069,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
 
-                                        cursorPointerPosition =
+                                        cursorPointerPosition.value =
                                             Offset(initialCursorX, initialCursorY)
 
 
@@ -3056,11 +3095,11 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                                     (change.position.y - change.previousPosition.y) * browserSettings.cursorTrackingSpeed
 
                                                 val newCursorX =
-                                                    cursorPointerPosition.x + changeSpaceX
+                                                    cursorPointerPosition.value.x + changeSpaceX
 
                                                 val newCursorY =
-                                                    (cursorPointerPosition.y + changeSpaceY)
-                                                cursorPointerPosition =
+                                                    (cursorPointerPosition.value.y + changeSpaceY)
+                                                cursorPointerPosition.value =
                                                     Offset(newCursorX, newCursorY)
 
                                             }
@@ -3080,16 +3119,16 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                                 downTime,
                                                 downTime,
                                                 MotionEvent.ACTION_DOWN,
-                                                cursorPointerPosition.x,
-                                                cursorPointerPosition.y - cutoutTop.toPx(),
+                                                cursorPointerPosition.value.x,
+                                                cursorPointerPosition.value.y - cutoutTop.toPx(),
                                                 0
                                             )
                                             val upEvent = MotionEvent.obtain(
                                                 downTime,
                                                 downTime + 10,
                                                 MotionEvent.ACTION_UP,
-                                                cursorPointerPosition.x,
-                                                cursorPointerPosition.y - cutoutTop.toPx(),
+                                                cursorPointerPosition.value.x,
+                                                cursorPointerPosition.value.y - cutoutTop.toPx(),
                                                 0
                                             )
                                             webView.dispatchTouchEvent(downEvent)
@@ -3193,6 +3232,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 @Composable
 fun BottomPanel(
+    isCursorPadVisible: Boolean,
+    isCursorMode: Boolean,
+    setIsCursorMode : (Boolean) -> Unit,
     setIsOptionsPanelVisible: (Boolean) -> Unit,
     setIsTabsPanelVisible: (Boolean) -> Unit,
     setIsDownloadPanelVisible: (Boolean) -> Unit,
@@ -3767,6 +3809,9 @@ fun BottomPanel(
                 tabsPanelLock = tabsPanelLock,
                 isDownloadPanelVisible = isDownloadPanelVisible,
                 setIsDownloadPanelVisible = setIsDownloadPanelVisible,
+                isCursorPadVisible = isCursorPadVisible,
+                isCursorMode = isCursorMode,
+                setIsCursorMode = setIsCursorMode
             )
         }
 
@@ -3917,11 +3962,14 @@ fun OptionsPanel(
     tabs: List<Tab>,
     tabsPanelLock: Boolean,
     isDownloadPanelVisible: Boolean,
+    isCursorPadVisible: Boolean,
+    isCursorMode: Boolean,
+    setIsCursorMode : (Boolean) -> Unit,
 ) {
 
 
     // This remains the same
-    val allOptions = remember(browserSettings, tabsPanelLock, isDownloadPanelVisible) {
+    val allOptions = remember(browserSettings, tabsPanelLock, isDownloadPanelVisible, isCursorPadVisible) {
         listOf(
             OptionItem(
                 if (browserSettings.isDesktopMode) R.drawable.ic_mobile else R.drawable.ic_desktop,
@@ -3951,6 +3999,13 @@ fun OptionsPanel(
                 isDownloadPanelVisible
             ) {
                 setIsDownloadPanelVisible(!isDownloadPanelVisible)
+            },
+            OptionItem(
+                R.drawable.ic_mouse_cursor, // You'll need a download icon
+                "Show Cursor Pad",
+                isCursorPadVisible,
+            ) {
+                setIsCursorMode(!isCursorMode)
             },
 
             OptionItem(R.drawable.ic_bug, "logBrowserSettings", false) {
@@ -6038,14 +6093,16 @@ fun ConfirmationPanel(
 
 @Composable
 fun CursorPointer(
-    isVisible: Boolean,
+    isCursorPadVisible: Boolean,
     position: Offset,
     browserSettings: BrowserSettings
 ) {
     AnimatedVisibility(
-        visible = isVisible,
-        enter = fadeIn(tween(100)),
-        exit = fadeOut(tween(100))
+        visible = isCursorPadVisible,
+        enter = fadeIn(tween(browserSettings.animationSpeed)),
+        exit = fadeOut(tween(browserSettings.animationSpeed)),
+        modifier = Modifier
+            .background(Color.Yellow.copy(0.5f))
     ) {
         val cursorContainerSize = browserSettings.cursorContainerSize.dp
         val pointerSize = cursorContainerSize / 2
@@ -6069,6 +6126,211 @@ fun CursorPointer(
                     .align(Alignment.Center)
                     .size(browserSettings.cursorPointerSize.dp)
             )
+        }
+    }
+}
+
+@Composable
+fun CursorPad (
+    isCursorPadVisible: Boolean,
+    isCursorMode: Boolean,
+    setIsCursorPadVisible: (Boolean) -> Unit,
+    browserSettings : BrowserSettings,
+    screenSizeDp: IntSize,
+    cutoutTop: Dp,
+    coroutineScope: CoroutineScope,
+    activeWebView: CustomWebView?,
+    cursorPointerPosition: MutableState<Offset>,
+    setCursorPointerPosition: (Offset) -> Unit,
+    squareAlpha: Animatable<Float, AnimationVector1D>,
+
+
+    ) {
+    AnimatedVisibility(
+        modifier = Modifier
+            .fillMaxSize()
+        ,
+        visible = isCursorPadVisible,
+        enter = slideInVertically(
+            initialOffsetY = { it }, // Start from the bottom
+            animationSpec = tween(durationMillis = browserSettings.animationSpeed)
+        ) +fadeIn(tween(browserSettings.animationSpeed)),
+        exit = fadeOut(tween(browserSettings.animationSpeed))
+    ) {
+        Box (
+            modifier =
+                Modifier.fillMaxSize()
+
+        ){
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(
+                        (screenSizeDp.height.dp - cutoutTop) / 2
+                    )
+                    .align(Alignment.BottomCenter)
+
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+
+                            val longPressJob = coroutineScope.launch {
+                                delay(viewConfiguration.longPressTimeoutMillis)
+
+                            }
+
+                            val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                                if (longPressJob.isActive) {
+                                    longPressJob.cancel()
+                                }
+                                change.consume()
+                            }
+
+                            if (longPressJob.isCompleted && !longPressJob.isCancelled) {
+                                // --- LONG-PRESS PATH ---
+
+                            } else {
+                                // --- TAP OR SHORT-DRAG PATH ---
+                                if (drag != null) {
+                                    drag(drag.id) { change ->
+                                        change.consume()
+
+                                        Log.w("CursorPad", "Before: $cursorPointerPosition")
+
+
+
+                                        val changeSpaceX =
+                                            (change.position.x - change.previousPosition.x) * browserSettings.cursorTrackingSpeed
+                                        val changeSpaceY =
+                                            (change.position.y - change.previousPosition.y) * browserSettings.cursorTrackingSpeed
+
+                                        Log.w("CursorPad", "changeSpaceX: $changeSpaceX, changeSpaceY: $changeSpaceY")
+                                        val newCursorX =
+                                            cursorPointerPosition.value.x + changeSpaceX
+
+                                        val newCursorY =
+                                            (cursorPointerPosition.value.y + changeSpaceY)
+                                        setCursorPointerPosition(Offset(newCursorX, newCursorY))
+
+                                        Log.w("CursorPad", "After: $cursorPointerPosition")
+
+                                    }
+                                } else {
+                                    // TAP
+                                    if (longPressJob.isActive) {
+                                        longPressJob.cancel()
+                                        coroutineScope.launch {
+                                            activeWebView?.let { webView ->
+                                                Log.i(
+                                                    "BackSquare",
+                                                    "Click at cursor position: $cursorPointerPosition"
+                                                )
+                                                val downTime = System.currentTimeMillis()
+                                                val downEvent = MotionEvent.obtain(
+                                                    downTime,
+                                                    downTime,
+                                                    MotionEvent.ACTION_DOWN,
+                                                    cursorPointerPosition.value.x,
+                                                    cursorPointerPosition.value.y - cutoutTop.toPx(),
+                                                    0
+                                                )
+                                                val upEvent = MotionEvent.obtain(
+                                                    downTime,
+                                                    downTime + 10,
+                                                    MotionEvent.ACTION_UP,
+                                                    cursorPointerPosition.value.x,
+                                                    cursorPointerPosition.value.y - cutoutTop.toPx(),
+                                                    0
+                                                )
+                                                webView.dispatchTouchEvent(downEvent)
+                                                webView.dispatchTouchEvent(upEvent)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // --- MOVED STATE RESET LOGIC INSIDE THIS BLOCK ---
+                                // This code now ONLY runs after a long-press-drag has finished.
+
+//                                If (QuickCursorTrigger)
+                                if (!isCursorMode) {
+                                    setIsCursorPadVisible(false)
+
+                                    // --- SIMULATE CLICK AT CURSOR POSITION ---
+                                    activeWebView?.let { webView ->
+                                        Log.i(
+                                            "BackSquare",
+                                            "Click at cursor position: $cursorPointerPosition"
+                                        )
+                                        val downTime = System.currentTimeMillis()
+                                        val downEvent = MotionEvent.obtain(
+                                            downTime,
+                                            downTime,
+                                            MotionEvent.ACTION_DOWN,
+                                            cursorPointerPosition.value.x,
+                                            cursorPointerPosition.value.y - cutoutTop.toPx(),
+                                            0
+                                        )
+                                        val upEvent = MotionEvent.obtain(
+                                            downTime,
+                                            downTime + 10,
+                                            MotionEvent.ACTION_UP,
+                                            cursorPointerPosition.value.x,
+                                            cursorPointerPosition.value.y - cutoutTop.toPx(),
+                                            0
+                                        )
+                                        webView.dispatchTouchEvent(downEvent)
+                                        webView.dispatchTouchEvent(upEvent)
+                                    }
+
+                                    coroutineScope.launch {
+                                        squareAlpha.snapTo(0f) // Or animate if you prefer
+                                    }
+                                }
+
+
+                            }
+                        }
+                    }
+
+
+                    .padding(
+                        end = browserSettings.paddingDp.dp,
+                        start = browserSettings.paddingDp.dp, // Add start padding for when it's on the left
+                        bottom = browserSettings.paddingDp.dp
+                    )
+                    .clip(
+                        RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                1,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
+                    )
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .border(
+                        2.dp,
+                        Color.White.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(
+                            cornerRadiusForLayer(
+                                1,
+                                browserSettings.deviceCornerRadius,
+                                browserSettings.paddingDp
+                            ).dp
+                        )
+                    )
+
+
+                ,
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_trackpad_input),
+                    contentDescription = "Back",
+                    tint = Color.White
+                )
+            }
         }
     }
 }
