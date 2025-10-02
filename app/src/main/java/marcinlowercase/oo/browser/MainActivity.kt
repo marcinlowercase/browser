@@ -59,7 +59,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -89,6 +88,7 @@ import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
@@ -111,6 +111,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.edit
@@ -133,6 +134,8 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.system.exitProcess
 
 
@@ -406,6 +409,8 @@ data class BrowserSettings(
     val isSharpMode: Boolean,
     val topSharpEdge: Float,
     val bottomSharpEdge: Float,
+    val cursorContainerSize: Float,
+    val cursorPointerSize: Float,
 )
 
 enum class GestureNavAction {
@@ -1312,31 +1317,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-//@Composable
-//fun rememberHasDisplayCutout(): State<Boolean> {
-//    // These are fine, as LocalConfiguration and LocalDensity are ambient Composable properties
-//    val configuration = LocalConfiguration.current
-//    val density = LocalDensity.current
-//
-//    // Directly get the PaddingValues at the Composable level
-//    // WindowInsets.displayCutout here provides the current insets for the composition
-//    val displayCutoutPaddingValues =
-//        WindowInsets.displayCutout.asPaddingValues() // Pass density if needed, or rely on ambient if appropriate for the API version
-//
-//    // Now, derivedStateOf can read from displayCutoutPaddingValues
-//    // We also key remember on configuration and density to re-evaluate if they change,
-//    // and on displayCutoutPaddingValues itself to re-calculate if the insets change.
-//    val hasCutout = remember(configuration, density, displayCutoutPaddingValues) {
-//        derivedStateOf {
-//            // Check if any of the cutout inset dimensions are greater than zero.
-//            (displayCutoutPaddingValues.calculateTopPadding() > 0.dp ||
-//                    displayCutoutPaddingValues.calculateLeftPadding(LayoutDirection.Ltr) > 0.dp ||
-//                    displayCutoutPaddingValues.calculateRightPadding(LayoutDirection.Ltr) > 0.dp)
-//            // Bottom cutouts are rare, so often omitted from this specific check
-//        }
-//    }
-//    return hasCutout
-//}
 
 @Composable
 fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier) {
@@ -1368,6 +1348,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 //                bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", 65.90476f),
                 topSharpEdge = sharedPrefs.getFloat("top_sharp_edge", pixel_9_corner_radius),
                 bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", pixel_9_corner_radius),
+                cursorContainerSize = sharedPrefs.getFloat("cursor_container_size", pixel_9_corner_radius),
+                cursorPointerSize = sharedPrefs.getFloat("cursor_pointer_size", 5f),
             )
         )
     }
@@ -1584,8 +1566,14 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     var confirmationDisplayState by remember { mutableStateOf<ConfirmationDialogState?>(null) } // Add this line
 
 
-//    var inspectingTabId by remember { mutableStateOf<Long?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
+
+    var isCursorPadVisible by remember { mutableStateOf(false) } // 1. Add new state for expansion
+    var cursorPointerPosition by remember { mutableStateOf(Offset.Zero) }
+    val density = LocalDensity.current
+    var screenSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var screenSizeDp by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
 
     //endregion
     // FUNCTIONS
@@ -1757,33 +1745,33 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
 
     val handleClearInspectedTabData = {
-       confirmationPopup(
-           message = "clear tab data?",
-           onConfirm = {
-               val inspectingTab = currentInspectingTab
-               if (inspectingTab != null) {
-                   val domain = siteSettingsManager.getDomain(inspectingTab.currentUrl)
-                   if (domain != null) {
-                       // 1. Remove the settings for this domain from the state map
-                       siteSettings.remove(domain)
-                       // 2. Save the updated map to persistent storage
-                       siteSettingsManager.saveSettings(siteSettings)
-                       Log.d("ClearData", "Cleared all saved permissions for domain: $domain")
-                   }
+        confirmationPopup(
+            message = "clear tab data?",
+            onConfirm = {
+                val inspectingTab = currentInspectingTab
+                if (inspectingTab != null) {
+                    val domain = siteSettingsManager.getDomain(inspectingTab.currentUrl)
+                    if (domain != null) {
+                        // 1. Remove the settings for this domain from the state map
+                        siteSettings.remove(domain)
+                        // 2. Save the updated map to persistent storage
+                        siteSettingsManager.saveSettings(siteSettings)
+                        Log.d("ClearData", "Cleared all saved permissions for domain: $domain")
+                    }
 
-                   if (inspectingTab.state != TabState.FROZEN) {
-                       val webView = webViewManager.getWebView(inspectingTab)
-                       CookieManager.getInstance().removeAllCookies(null)
-                       CookieManager.getInstance().flush()
-                       WebStorage.getInstance().deleteAllData()
-                       webView.clearCache(true)
-                       webView.reload()
-                   }
+                    if (inspectingTab.state != TabState.FROZEN) {
+                        val webView = webViewManager.getWebView(inspectingTab)
+                        CookieManager.getInstance().removeAllCookies(null)
+                        CookieManager.getInstance().flush()
+                        WebStorage.getInstance().deleteAllData()
+                        webView.clearCache(true)
+                        webView.reload()
+                    }
 
-                   isTabDataPanelVisible = false
-               }
-           }
-       )
+                    isTabDataPanelVisible = false
+                }
+            }
+        )
     }
 
     /**
@@ -2028,6 +2016,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
     //region LaunchedEffect
+
     LaunchedEffect(Unit) {
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
@@ -2537,6 +2526,22 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
 
 
+    suspend fun triggleBlinkEffect() {
+        squareAlpha.snapTo(0.7f)
+
+        // b. Wait a moment so the user can see it before it blinks.
+        delay(400)
+
+        // c. Blink twice.
+        repeat(2) {
+            // Fade out
+            squareAlpha.animateTo(0f, animationSpec = tween(durationMillis = 300))
+            // Fade back in
+            squareAlpha.animateTo(0.7f, animationSpec = tween(durationMillis = 300))
+        }
+        squareAlpha.animateTo(0f, animationSpec = tween(durationMillis = 400))
+
+    }
     LaunchedEffect(pendingPermissionRequest) {
         Log.i("Permission Panel", "pendingPermissionRequest: $pendingPermissionRequest")
         isPermissionPanelVisible = pendingPermissionRequest != null
@@ -2547,21 +2552,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             // -- The URL bar has just been hidden. Start the "show and blink" sequence. --
 
             // a. Instantly appear with 0.6 opacity.
-            squareAlpha.snapTo(0.7f)
-
-            // b. Wait a moment so the user can see it before it blinks.
-            delay(400)
-
-            // c. Blink twice.
-            repeat(2) {
-                // Fade out
-                squareAlpha.animateTo(0f, animationSpec = tween(durationMillis = 300))
-                // Fade back in
-                squareAlpha.animateTo(0.7f, animationSpec = tween(durationMillis = 300))
-            }
+            triggleBlinkEffect()
 
             // d. After blinking, fade out completely.
-            squareAlpha.animateTo(0f, animationSpec = tween(durationMillis = 400))
         } else {
             // -- The URL bar is visible. Ensure the square is fully transparent. --
             squareAlpha.snapTo(0f)
@@ -2657,6 +2650,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             putBoolean("is_sharp_mode", browserSettings.isSharpMode)
             putFloat("top_sharp_edge", browserSettings.topSharpEdge)
             putFloat("bottom_sharp_edge", browserSettings.bottomSharpEdge)
+            putFloat("cursor_container_size", browserSettings.cursorContainerSize)
+            putFloat("cursor_pointer_size", browserSettings.cursorPointerSize)
+
 
         }
     }
@@ -2798,6 +2794,13 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 }
             }
 
+
+            CursorPointer(
+                isVisible = isCursorPadVisible,
+                position = cursorPointerPosition,
+                browserSettings = browserSettings,
+            )
+
             BottomPanel(
                 setIsOptionsPanelVisible = { isOptionsPanelVisible = it },
                 setIsTabsPanelVisible = { isTabsPanelVisible = it },
@@ -2921,10 +2924,27 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 )
 
 
+            LaunchedEffect(screenSize) {
+                Log.i("BackSquare", "Screen Size : $screenSize")
+            }
             // BackSquare
             AnimatedVisibility(
                 visible = !isBottomPanelVisible,
-                modifier = Modifier.align(squareAlignment), // Align to bottom-right corner
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onSizeChanged {
+                        screenSize = it
+                        with(density) {
+                            screenSizeDp = androidx.compose.ui.unit.IntSize(
+                                it.width.toDp().value.roundToInt(),
+                                it.height.toDp().value.roundToInt()
+                            )
+                        }
+                        Log.d(
+                            "BackSquare",
+                            "Screen Size: ${screenSize.width}x${screenSize.height} px | ${screenSizeDp.width}x${screenSizeDp.height} dp"
+                        )
+                    },
                 enter = fadeIn(
                     animationSpec = tween(
                         animationSpeedForLayer(
@@ -2945,83 +2965,187 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
                 Box(
                     modifier = Modifier
-                        .height(
-                            cornerRadiusForLayer(
-                                1,
-                                browserSettings.deviceCornerRadius,
-                                browserSettings.paddingDp
-                            ).dp * 2
-                        )
-                        .fillMaxWidth(0.45f)
-                        .graphicsLayer {
-                            alpha = squareAlpha.value
-                        }
-                        .pointerInput(Unit) {
-                            // 1. Get the CoroutineScope at the top level of pointerInput
-                            detectDragGestures(
-                                onDragStart = {
-                                    // This is called once the drag passes the touch slop
-                                },
-                                onDragEnd = {
-                                    // This is called when the user lifts their finger
-                                },
-                                onDrag = { change, dragAmount ->
-                                    // This is called for every movement during the drag
-                                    change.consume()
+                        .fillMaxSize(),
+                ) {
 
-                                    val (dx, dy) = dragAmount // Destructure for clarity (delta x, delta y)
 
-                                    // 2. Compare the horizontal and vertical movement
-                                    if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
-                                        // -- HORIZONTAL DRAG IS DOMINANT --
-                                        squareAlignment = if (dx < 0) { // Dragging left
-                                            Alignment.BottomStart
-                                        } else { // Dragging right
-                                            Alignment.BottomEnd
+                    Box(
+                        modifier = Modifier
+                            .align(squareAlignment)
+
+                            .animateContentSize(animationSpec = tween(durationMillis = browserSettings.animationSpeed))
+
+                            .then(
+                                if (isCursorPadVisible) {
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(
+                                            (screenSizeDp.height.dp - cutoutTop) / 2
+                                        )
+//                                        .fillMaxHeight(0.5f)
+                                } else {
+                                    Modifier
+                                        .height(
+                                            cornerRadiusForLayer(
+                                                1,
+                                                browserSettings.deviceCornerRadius,
+                                                browserSettings.paddingDp
+                                            ).dp * 2
+                                        )
+                                        .fillMaxWidth(0.45f)
+                                }
+                            )
+                            .graphicsLayer {
+                                alpha = squareAlpha.value
+                            }
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+
+                                    val longPressJob = coroutineScope.launch {
+                                        delay(viewConfiguration.longPressTimeoutMillis)
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        isCursorPadVisible = true
+                                        squareAlpha.snapTo(1f)
+                                    }
+
+                                    val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                                        if (longPressJob.isActive) {
+                                            longPressJob.cancel()
+                                        }
+                                        change.consume()
+                                    }
+
+                                    if (longPressJob.isCompleted && !longPressJob.isCancelled) {
+                                        // --- LONG-PRESS PATH ---
+                                        if (drag != null) {
+                                            drag(drag.id) { change ->
+                                                change.consume()
+                                                val fingerPosition = change.position
+
+                                                // --- MAP FINGER TO CURSOR ---
+                                                val newCursorX = fingerPosition.x
+                                                // Translate the Y position from the bottom half to the top half
+
+                                                Log.e(
+                                                    "BackSquare",
+                                                    "screenSize Height : ${screenSize.height}"
+                                                )
+                                                Log.e(
+                                                    "BackSquare",
+                                                    "fingerPosition.y  : ${fingerPosition.y}"
+                                                )
+
+                                                // 2. Map this relative position to the top half of the screen and clamp it
+                                                val newCursorY = fingerPosition.y + cutoutTop.toPx()
+
+                                                cursorPointerPosition =
+                                                    Offset(newCursorX, newCursorY)
+                                            }
+                                        }
+                                        // --- MOVED STATE RESET LOGIC INSIDE THIS BLOCK ---
+                                        // This code now ONLY runs after a long-press-drag has finished.
+                                        isCursorPadVisible = false
+
+                                        // --- SIMULATE CLICK AT CURSOR POSITION ---
+                                        activeWebView?.let { webView ->
+                                            Log.i(
+                                                "BackSquare",
+                                                "Click at cursor position: $cursorPointerPosition"
+                                            )
+                                            val downTime = System.currentTimeMillis()
+                                            val downEvent = MotionEvent.obtain(
+                                                downTime,
+                                                downTime,
+                                                MotionEvent.ACTION_DOWN,
+                                                cursorPointerPosition.x,
+                                                cursorPointerPosition.y - cutoutTop.toPx(),
+                                                0
+                                            )
+                                            val upEvent = MotionEvent.obtain(
+                                                downTime,
+                                                downTime + 10,
+                                                MotionEvent.ACTION_UP,
+                                                cursorPointerPosition.x,
+                                                cursorPointerPosition.y - cutoutTop.toPx(),
+                                                0
+                                            )
+                                            webView.dispatchTouchEvent(downEvent)
+                                            webView.dispatchTouchEvent(upEvent)
+                                        }
+
+                                        coroutineScope.launch {
+                                            squareAlpha.snapTo(0f) // Or animate if you prefer
                                         }
                                     } else {
-                                        // -- VERTICAL DRAG IS DOMINANT --
-                                        // We only need to trigger this once per gesture to show the bar
-                                        if (!isUrlBarVisible) {
-                                            isUrlBarVisible = true
+                                        // --- TAP OR SHORT-DRAG PATH ---
+                                        if (drag != null) {
+                                            // SHORT-DRAG
+                                            var horizontalDragAccumulator = 0f
+                                            var verticalDragAccumulator = 0f
+                                            drag(drag.id) { change ->
+                                                change.consume()
+                                                horizontalDragAccumulator += change.position.x - change.previousPosition.x
+                                                verticalDragAccumulator += change.position.y - change.previousPosition.y
+
+                                                if (abs(horizontalDragAccumulator) > abs(
+                                                        verticalDragAccumulator
+                                                    )
+                                                ) {
+                                                    squareAlignment =
+                                                        if (horizontalDragAccumulator < 0) Alignment.BottomStart else Alignment.BottomEnd
+                                                } else {
+                                                    if (!isUrlBarVisible) {
+                                                        isUrlBarVisible = true
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            // TAP
+                                            if (longPressJob.isActive) {
+                                                longPressJob.cancel()
+                                                coroutineScope.launch {
+                                                    triggleBlinkEffect()
+                                                }
+                                            }
                                         }
                                     }
                                 }
+                            }
+                            .padding(
+                                end = browserSettings.paddingDp.dp,
+                                start = browserSettings.paddingDp.dp, // Add start padding for when it's on the left
+                                bottom = browserSettings.paddingDp.dp
                             )
-                        }
-                        .padding(
-                            end = browserSettings.paddingDp.dp,
-                            start = browserSettings.paddingDp.dp, // Add start padding for when it's on the left
-                            bottom = browserSettings.paddingDp.dp
+                            .clip(
+                                RoundedCornerShape(
+                                    cornerRadiusForLayer(
+                                        1,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp
+                                )
+                            )
+                            .background(Color.Black.copy(alpha = 0.4f))
+                            .border(
+                                2.dp,
+                                Color.White.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(
+                                    cornerRadiusForLayer(
+                                        1,
+                                        browserSettings.deviceCornerRadius,
+                                        browserSettings.paddingDp
+                                    ).dp
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_expand_circle_up),
+                            contentDescription = "Back",
+                            tint = Color.White
                         )
-                        .clip(
-                            RoundedCornerShape(
-                                cornerRadiusForLayer(
-                                    1,
-                                    browserSettings.deviceCornerRadius,
-                                    browserSettings.paddingDp
-                                ).dp
-                            )
-                        )
-                        .background(Color.Black.copy(alpha = 0.4f))
-                        .border(
-                            2.dp,
-                            Color.White.copy(alpha = 0.5f),
-                            shape = RoundedCornerShape(
-                                cornerRadiusForLayer(
-                                    1,
-                                    browserSettings.deviceCornerRadius,
-                                    browserSettings.paddingDp
-                                ).dp
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_expand_circle_up),
-                        contentDescription = "Back",
-                        tint = Color.White
-                    )
+                    }
                 }
             }
 
@@ -5886,6 +6010,43 @@ fun ConfirmationPanel(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun CursorPointer(
+    isVisible: Boolean,
+    position: Offset,
+    browserSettings: BrowserSettings
+) {
+    AnimatedVisibility(
+        visible = isVisible,
+        enter = fadeIn(tween(100)),
+        exit = fadeOut(tween(100))
+    ) {
+        val cursorContainerSize = browserSettings.cursorContainerSize.dp
+        val pointerSize = cursorContainerSize /2
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        position.x.roundToInt() - pointerSize.toPx().toInt(), // Center the icon
+                        position.y.roundToInt() - pointerSize.toPx().toInt()
+                    )
+                }
+                .size(cursorContainerSize)
+                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                .border(2.dp, Color.White, CircleShape)
+        ) {
+            Icon(
+                painter = painterResource(id = R.drawable.ic_dot), // Ensure you have this drawable
+                contentDescription = "Quick Cursor",
+                tint = Color.White,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(browserSettings.cursorPointerSize.dp)
+            )
         }
     }
 }
