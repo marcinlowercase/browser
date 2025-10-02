@@ -1355,7 +1355,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     pixel_9_corner_radius
                 ),
                 cursorPointerSize = sharedPrefs.getFloat("cursor_pointer_size", 5f),
-                cursorTrackingSpeed = sharedPrefs.getFloat("cursor_tracking_speed", 1.5f),
+                cursorTrackingSpeed = sharedPrefs.getFloat("cursor_tracking_speed", 1.75f),
                 )
         )
     }
