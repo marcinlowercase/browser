@@ -65,6 +65,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -96,6 +97,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -1359,7 +1361,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 ),
                 cursorPointerSize = sharedPrefs.getFloat("cursor_pointer_size", 5f),
                 cursorTrackingSpeed = sharedPrefs.getFloat("cursor_tracking_speed", 1.75f),
-                )
+            )
         )
     }
 
@@ -1584,7 +1586,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     val density = LocalDensity.current
     var screenSize by remember { mutableStateOf(IntSize.Zero) }
     var screenSizeDp by remember { mutableStateOf(IntSize.Zero) }
-
 
 
     //endregion
@@ -2029,12 +2030,17 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
     //region LaunchedEffect
 
+
     LaunchedEffect(isCursorMode) {
 
 
         isCursorPadVisible = isCursorMode
-        Log.e("isCursorMode","isCursorMode: $isCursorMode")
-        Log.e("isCursorMode","isCursorPadVisible: $isCursorPadVisible")
+        if (isCursorMode) {
+            isUrlBarVisible = false
+
+        }
+        Log.e("isCursorMode", "isCursorMode: $isCursorMode")
+        Log.e("isCursorMode", "isCursorPadVisible: $isCursorPadVisible")
     }
 
     LaunchedEffect(Unit) {
@@ -2572,7 +2578,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             // -- The URL bar has just been hidden. Start the "show and blink" sequence. --
 
             // a. Instantly appear with 0.6 opacity.
-            triggerBlinkEffect()
+            if ( !isCursorMode)triggerBlinkEffect()
 
             // d. After blinking, fade out completely.
         } else {
@@ -2822,25 +2828,15 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 browserSettings = browserSettings,
             )
 
-            CursorPad(
-                isCursorPadVisible = isCursorPadVisible,
-                isCursorMode = isCursorMode,
-                setIsCursorPadVisible = { isCursorPadVisible = it },
-                browserSettings = browserSettings,
-                screenSizeDp = screenSizeDp,
-                cutoutTop = cutoutTop,
-                coroutineScope = coroutineScope,
-                activeWebView = activeWebView,
-                cursorPointerPosition = cursorPointerPosition,
-                setCursorPointerPosition = {cursorPointerPosition.value = it},
-                squareAlpha = squareAlpha
 
-            )
 
             BottomPanel(
-                isCursorPadVisible= isCursorPadVisible,
-                isCursorMode= isCursorMode,
-                setIsCursorMode = {isCursorMode = it},
+                isCursorPadVisible = isCursorPadVisible,
+                isCursorMode = isCursorMode,
+                setIsCursorMode = {
+                    isCursorMode = it
+
+                },
                 setIsOptionsPanelVisible = { isOptionsPanelVisible = it },
                 setIsTabsPanelVisible = { isTabsPanelVisible = it },
                 setIsDownloadPanelVisible = { isDownloadPanelVisible = it },
@@ -2983,9 +2979,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             "BackSquare",
                             "Screen Size: ${screenSize.width}x${screenSize.height} px | ${screenSizeDp.width}x${screenSizeDp.height} dp"
                         )
-                    }
-
-                ,
+                    },
                 enter = fadeIn(
                     animationSpec = tween(
                         animationSpeedForLayer(
@@ -3005,12 +2999,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             ) {
 
 
-
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-
-                    ,
+                        .fillMaxSize(),
                 ) {
 
                     val squareBoxSmallHeight =
@@ -3027,28 +3018,12 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             .animateContentSize()
                             .height(squareBoxSmallHeight)
                             .width(screenSizeDp.width.dp * 0.45f)
-
-//                            .then(
-//                                if (isCursorPadVisible) {
-//                                    Modifier
-//                                        .fillMaxWidth()
-//                                        .height(
-//                                            (screenSizeDp.height.dp - cutoutTop) / 2
-//                                        )
-////                                        .fillMaxHeight(0.5f)
-//                                } else {
-//                                    Modifier
-//                                        .height(
-//                                            squareBoxSmallHeight
-//                                        )
-//                                        .width(screenSizeDp.width.dp * 0.45f)
-//                                }
-//                            )
                             .graphicsLayer {
                                 alpha = squareAlpha.value
                             }
-                            .pointerInput(Unit) {
-                                awaitEachGesture {
+                            .pointerInput(Unit, isCursorMode) {
+
+                                 if ( !isCursorMode) awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
 
                                     val longPressJob = coroutineScope.launch {
@@ -3094,13 +3069,24 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                                 val changeSpaceY =
                                                     (change.position.y - change.previousPosition.y) * browserSettings.cursorTrackingSpeed
 
-                                                val newCursorX =
+//                                                val newCursorX =
+//                                                    cursorPointerPosition.value.x + changeSpaceX
+//
+//                                                val newCursorY =
+//                                                    (cursorPointerPosition.value.y + changeSpaceY)
+//                                                cursorPointerPosition.value =
+//                                                    Offset(newCursorX, newCursorY)
+                                                var newX =
                                                     cursorPointerPosition.value.x + changeSpaceX
-
-                                                val newCursorY =
-                                                    (cursorPointerPosition.value.y + changeSpaceY)
-                                                cursorPointerPosition.value =
-                                                    Offset(newCursorX, newCursorY)
+                                                var newY =
+                                                    cursorPointerPosition.value.y + changeSpaceY
+                                                if (newX < 0) newX = 0f
+                                                if (newX > screenSize.width) newX =
+                                                    screenSize.width.toFloat()
+                                                if (newY < 0) newY = 0f
+                                                if (newY > screenSize.height) newY =
+                                                    screenSize.height.toFloat()
+                                                cursorPointerPosition.value = Offset(newX, newY)
 
                                             }
                                         }
@@ -3109,6 +3095,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                         isCursorPadVisible = false
 
                                         // --- SIMULATE CLICK AT CURSOR POSITION ---
+
+
                                         activeWebView?.let { webView ->
                                             Log.i(
                                                 "BackSquare",
@@ -3120,7 +3108,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                                 downTime,
                                                 MotionEvent.ACTION_DOWN,
                                                 cursorPointerPosition.value.x,
-                                                cursorPointerPosition.value.y - cutoutTop.toPx(),
+                                                cursorPointerPosition.value.y - webViewTopPadding.toPx(),
                                                 0
                                             )
                                             val upEvent = MotionEvent.obtain(
@@ -3128,7 +3116,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                                 downTime + 10,
                                                 MotionEvent.ACTION_UP,
                                                 cursorPointerPosition.value.x,
-                                                cursorPointerPosition.value.y - cutoutTop.toPx(),
+                                                cursorPointerPosition.value.y - webViewTopPadding.toPx(),
                                                 0
                                             )
                                             webView.dispatchTouchEvent(downEvent)
@@ -3136,7 +3124,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                         }
 
                                         coroutineScope.launch {
-                                            squareAlpha.snapTo(0f) // Or animate if you prefer
+                                            squareAlpha.snapTo(0f)
                                         }
                                     } else {
                                         // --- TAP OR SHORT-DRAG PATH ---
@@ -3210,6 +3198,24 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 }
             }
 
+            CursorPad(
+                screenSize = screenSize,
+                isCursorPadVisible = isCursorPadVisible,
+                isCursorMode = isCursorMode,
+                setIsCursorPadVisible = { isCursorMode = it },
+                browserSettings = browserSettings,
+                screenSizeDp = screenSizeDp,
+                coroutineScope = coroutineScope,
+                activeWebView = activeWebView,
+                cursorPointerPosition = cursorPointerPosition,
+                setCursorPointerPosition = { cursorPointerPosition.value = it },
+                squareAlpha = squareAlpha,
+                webViewTopPadding = webViewTopPadding,
+                hapticFeedback = hapticFeedback,
+                setIsUrlBarVisible = { isUrlBarVisible = it }
+
+            )
+
         }
 
         // This appears on top of everything when customView is not null.
@@ -3234,7 +3240,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 fun BottomPanel(
     isCursorPadVisible: Boolean,
     isCursorMode: Boolean,
-    setIsCursorMode : (Boolean) -> Unit,
+    setIsCursorMode: (Boolean) -> Unit,
     setIsOptionsPanelVisible: (Boolean) -> Unit,
     setIsTabsPanelVisible: (Boolean) -> Unit,
     setIsDownloadPanelVisible: (Boolean) -> Unit,
@@ -3964,62 +3970,66 @@ fun OptionsPanel(
     isDownloadPanelVisible: Boolean,
     isCursorPadVisible: Boolean,
     isCursorMode: Boolean,
-    setIsCursorMode : (Boolean) -> Unit,
+    setIsCursorMode: (Boolean) -> Unit,
 ) {
 
 
     // This remains the same
-    val allOptions = remember(browserSettings, tabsPanelLock, isDownloadPanelVisible, isCursorPadVisible) {
-        listOf(
-            OptionItem(
-                if (browserSettings.isDesktopMode) R.drawable.ic_mobile else R.drawable.ic_desktop,
-                "Desktop layout",
-                browserSettings.isDesktopMode
-            ) {
-                updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
-            },
-            OptionItem(
-                R.drawable.ic_tabs, // You'll need an icon for this
-                "Show Tabs Panel", // Display the number of open tabs
-                tabsPanelLock
-            ) {
-                toggleIsTabsPanelVisible()
-            },
-            OptionItem(
-                if (browserSettings.isSharpMode) R.drawable.ic_rounded_corner else R.drawable.ic_sharp_corner,
-                "Toggle Sharp Corners",
-                browserSettings.isSharpMode,
-            ) {
-                updateBrowserSettings(browserSettings.copy(isSharpMode = !browserSettings.isSharpMode))
-            },
+    val allOptions =
+        remember(browserSettings, tabsPanelLock, isDownloadPanelVisible, isCursorPadVisible) {
+            listOf(
+                OptionItem(
+                    R.drawable.ic_mouse_cursor, // You'll need a download icon
+                    "Show Cursor Pad",
+                    isCursorPadVisible,
+                ) {
+                    Log.e("isCursorMode", "isCursorMode: $isCursorMode")
 
-            OptionItem(
-                R.drawable.ic_download, // You'll need a download icon
-                "Show Downloads",
-                isDownloadPanelVisible
-            ) {
-                setIsDownloadPanelVisible(!isDownloadPanelVisible)
-            },
-            OptionItem(
-                R.drawable.ic_mouse_cursor, // You'll need a download icon
-                "Show Cursor Pad",
-                isCursorPadVisible,
-            ) {
-                setIsCursorMode(!isCursorMode)
-            },
+                    setIsCursorMode(!isCursorMode)
+                },
+                OptionItem(
+                    if (browserSettings.isDesktopMode) R.drawable.ic_mobile else R.drawable.ic_desktop,
+                    "Desktop layout",
+                    browserSettings.isDesktopMode
+                ) {
+                    updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
+                },
+                OptionItem(
+                    R.drawable.ic_tabs, // You'll need an icon for this
+                    "Show Tabs Panel", // Display the number of open tabs
+                    tabsPanelLock
+                ) {
+                    toggleIsTabsPanelVisible()
+                },
+                OptionItem(
+                    if (browserSettings.isSharpMode) R.drawable.ic_rounded_corner else R.drawable.ic_sharp_corner,
+                    "Toggle Sharp Corners",
+                    browserSettings.isSharpMode,
+                ) {
+                    updateBrowserSettings(browserSettings.copy(isSharpMode = !browserSettings.isSharpMode))
+                },
 
-            OptionItem(R.drawable.ic_bug, "logBrowserSettings", false) {
-                Log.e("BROWSER SETTINGS", browserSettings.toString())
-                Log.e("isImmersiveMode", isImmersiveMode.toString())
-                Log.e("Tabs List", tabs.toString())
-            },
-            OptionItem(R.drawable.ic_fullscreen, "Button 4", false) { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 5", false) { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 6", false) { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 7", false) { /* ... */ },
-            OptionItem(R.drawable.ic_fullscreen, "Button 8", false) { /* ... */ }
-        )
-    }
+                OptionItem(
+                    R.drawable.ic_download, // You'll need a download icon
+                    "Show Downloads",
+                    isDownloadPanelVisible
+                ) {
+                    setIsDownloadPanelVisible(!isDownloadPanelVisible)
+                },
+
+
+                OptionItem(R.drawable.ic_bug, "logBrowserSettings", false) {
+                    Log.e("BROWSER SETTINGS", browserSettings.toString())
+                    Log.e("isImmersiveMode", isImmersiveMode.toString())
+                    Log.e("Tabs List", tabs.toString())
+                },
+                OptionItem(R.drawable.ic_fullscreen, "Button 4", false) { /* ... */ },
+                OptionItem(R.drawable.ic_fullscreen, "Button 5", false) { /* ... */ },
+                OptionItem(R.drawable.ic_fullscreen, "Button 6", false) { /* ... */ },
+                OptionItem(R.drawable.ic_fullscreen, "Button 7", false) { /* ... */ },
+                OptionItem(R.drawable.ic_fullscreen, "Button 8", false) { /* ... */ }
+            )
+        }
 
 // --- NEW: Group the options into pages of 4 ---
     val optionPages = remember(allOptions) {
@@ -6102,7 +6112,6 @@ fun CursorPointer(
         enter = fadeIn(tween(browserSettings.animationSpeed)),
         exit = fadeOut(tween(browserSettings.animationSpeed)),
         modifier = Modifier
-            .background(Color.Yellow.copy(0.5f))
     ) {
         val cursorContainerSize = browserSettings.cursorContainerSize.dp
         val pointerSize = cursorContainerSize / 2
@@ -6131,168 +6140,279 @@ fun CursorPointer(
 }
 
 @Composable
-fun CursorPad (
+fun CursorPad(
     isCursorPadVisible: Boolean,
     isCursorMode: Boolean,
     setIsCursorPadVisible: (Boolean) -> Unit,
-    browserSettings : BrowserSettings,
+    browserSettings: BrowserSettings,
     screenSizeDp: IntSize,
-    cutoutTop: Dp,
+    screenSize: IntSize,
     coroutineScope: CoroutineScope,
     activeWebView: CustomWebView?,
     cursorPointerPosition: MutableState<Offset>,
     setCursorPointerPosition: (Offset) -> Unit,
     squareAlpha: Animatable<Float, AnimationVector1D>,
+    webViewTopPadding: Dp,
+    hapticFeedback: HapticFeedback,
+    setIsUrlBarVisible: (Boolean) -> Unit,
 
 
     ) {
     AnimatedVisibility(
         modifier = Modifier
-            .fillMaxSize()
-        ,
+            .fillMaxSize(),
         visible = isCursorPadVisible,
         enter = slideInVertically(
             initialOffsetY = { it }, // Start from the bottom
             animationSpec = tween(durationMillis = browserSettings.animationSpeed)
-        ) +fadeIn(tween(browserSettings.animationSpeed)),
+        ) + fadeIn(tween(browserSettings.animationSpeed)),
         exit = fadeOut(tween(browserSettings.animationSpeed))
     ) {
-        Box (
+        Box(
             modifier =
                 Modifier.fillMaxSize()
 
-        ){
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(
-                        (screenSizeDp.height.dp - cutoutTop) / 2
+                        (screenSizeDp.height.dp - webViewTopPadding) / 2
                     )
                     .align(Alignment.BottomCenter)
 
+//                    .pointerInput(Unit) {
+//                        awaitEachGesture {
+//                            val down = awaitFirstDown(requireUnconsumed = false)
+//
+//                            val longPressJob = coroutineScope.launch {
+//                                delay(viewConfiguration.longPressTimeoutMillis)
+//
+//                            }
+//
+//                            val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+//                                if (longPressJob.isActive) {
+//                                    longPressJob.cancel()
+//                                }
+//                                change.consume()
+//                            }
+//
+//                            if (longPressJob.isCompleted && !longPressJob.isCancelled) {
+//                                // --- LONG-PRESS PATH ---
+//
+//                            } else {
+//                                // --- TAP OR SHORT-DRAG PATH ---
+//                                if (drag != null) {
+//                                    drag(drag.id) { change ->
+//                                        change.consume()
+//
+////                                        Log.w("CursorPad", "Before: $cursorPointerPosition")
+//
+//
+//                                        val changeSpaceX =
+//                                            (change.position.x - change.previousPosition.x) * browserSettings.cursorTrackingSpeed
+//                                        val changeSpaceY =
+//                                            (change.position.y - change.previousPosition.y) * browserSettings.cursorTrackingSpeed
+//
+////                                        Log.w(
+////                                            "CursorPad",
+////                                            "changeSpaceX: $changeSpaceX, changeSpaceY: $changeSpaceY"
+////                                        )
+//                                        val newCursorX =
+//                                            cursorPointerPosition.value.x + changeSpaceX
+//
+//                                        val newCursorY =
+//                                            (cursorPointerPosition.value.y + changeSpaceY)
+//                                        setCursorPointerPosition(Offset(newCursorX, newCursorY))
+//
+////                                        Log.w("CursorPad", "After: $cursorPointerPosition")
+//
+//                                    }
+//                                } else {
+//                                    if (longPressJob.isActive) {
+//                                        longPressJob.cancel()
+//                                        coroutineScope.launch {
+//
+//                                            // Work but cannot click under the cursor pad
+//                                            // -> use for 2 finger capture?
+////                                            CursorAccessibilityService.instance?.performClick(
+////                                                cursorPointerPosition.value.x,
+////                                                cursorPointerPosition.value.y
+////                                            )
+//
+//                                            activeWebView?.let { webView ->
+//                                                Log.i(
+//                                                    "BackSquare",
+//                                                    "Click at cursor position: $cursorPointerPosition"
+//                                                )
+//                                                val downTime = System.currentTimeMillis()
+//                                                val downEvent = MotionEvent.obtain(
+//                                                    downTime,
+//                                                    downTime,
+//                                                    MotionEvent.ACTION_DOWN,
+//                                                    cursorPointerPosition.value.x,
+//                                                    cursorPointerPosition.value.y - webViewTopPadding.toPx(),
+//                                                    0
+//                                                )
+//                                                val upEvent = MotionEvent.obtain(
+//                                                    downTime,
+//                                                    downTime + 10,
+//                                                    MotionEvent.ACTION_UP,
+//                                                    cursorPointerPosition.value.x,
+//                                                    cursorPointerPosition.value.y - webViewTopPadding.toPx(),
+//                                                    0
+//                                                )
+//                                                webView.dispatchTouchEvent(downEvent)
+//                                                webView.dispatchTouchEvent(upEvent)
+//                                            }
+//                                        }
+//                                    }
+//
+//
+//                                }
+//
+//
+//                            }
+//                        }
+//                    }
                     .pointerInput(Unit) {
+                        // This is the correct "main loop". It handles one gesture at a time
+                        // and then automatically resets to wait for the next one.
                         awaitEachGesture {
+                            // 1. Wait for the first finger to touch down.
                             val down = awaitFirstDown(requireUnconsumed = false)
 
-                            val longPressJob = coroutineScope.launch {
-                                delay(viewConfiguration.longPressTimeoutMillis)
-
-                            }
-
+                            // 2. Wait for the user to start dragging.
                             val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
-                                if (longPressJob.isActive) {
-                                    longPressJob.cancel()
-                                }
                                 change.consume()
                             }
 
-                            if (longPressJob.isCompleted && !longPressJob.isCancelled) {
-                                // --- LONG-PRESS PATH ---
+                            // 3. If a drag was detected, enter the drag-handling logic.
+                            if (drag != null) {
+                                // This is the high-level function that consumes the rest of the drag gesture.
+                                // It will finish when the user lifts their finger.
+                                drag(drag.id) { change ->
+                                    change.consume()
 
-                            } else {
-                                // --- TAP OR SHORT-DRAG PATH ---
-                                if (drag != null) {
-                                    drag(drag.id) { change ->
-                                        change.consume()
-
-                                        Log.w("CursorPad", "Before: $cursorPointerPosition")
-
+                                    // Check for multiple fingers DURING the drag
+                                    val event = currentEvent // Get the current pointer event
 
 
-                                        val changeSpaceX =
-                                            (change.position.x - change.previousPosition.x) * browserSettings.cursorTrackingSpeed
-                                        val changeSpaceY =
-                                            (change.position.y - change.previousPosition.y) * browserSettings.cursorTrackingSpeed
+                                    Log.e("CursorPad", "Event changes size : ${event.changes.size}")
+                                    when (event.changes.size) {
+                                        1 -> {
+                                            // This is a single-finger drag, move the cursor
+                                            val changeDelta =
+                                                change.position - change.previousPosition
+                                            val changeSpaceX =
+                                                changeDelta.x * browserSettings.cursorTrackingSpeed
+                                            val changeSpaceY =
+                                                changeDelta.y * browserSettings.cursorTrackingSpeed
 
-                                        Log.w("CursorPad", "changeSpaceX: $changeSpaceX, changeSpaceY: $changeSpaceY")
-                                        val newCursorX =
-                                            cursorPointerPosition.value.x + changeSpaceX
 
-                                        val newCursorY =
-                                            (cursorPointerPosition.value.y + changeSpaceY)
-                                        setCursorPointerPosition(Offset(newCursorX, newCursorY))
 
-                                        Log.w("CursorPad", "After: $cursorPointerPosition")
+                                            Log.i("CursorPad", "changeSpaceX  ${changeSpaceX}")
 
-                                    }
-                                } else {
-                                    // TAP
-                                    if (longPressJob.isActive) {
-                                        longPressJob.cancel()
-                                        coroutineScope.launch {
-                                            activeWebView?.let { webView ->
-                                                Log.i(
-                                                    "BackSquare",
-                                                    "Click at cursor position: $cursorPointerPosition"
+                                            Log.i("CursorPad", "changeSpaceY  ${changeSpaceY}")
+
+                                            var newX = cursorPointerPosition.value.x + changeSpaceX
+                                            var newY = cursorPointerPosition.value.y + changeSpaceY
+                                            if (newX < 0) newX = 0f
+                                            if (newX > screenSize.width) newX =
+                                                screenSize.width.toFloat()
+                                            if (newY < 0) newY = 0f
+                                            if (newY > screenSize.height) newY =
+                                                screenSize.height.toFloat()
+                                            cursorPointerPosition.value = Offset(newX, newY)
+//                                            cursorPointerPosition.value += Offset(
+//                                                changeSpaceX,
+//                                                changeSpaceY
+//                                            )
+                                        }
+
+                                        2 -> {
+                                            Log.i("CursorPad", "Two fingers detected during drag")
+                                            // TODO: Add two-finger scroll logic here
+
+                                            val changeDelta =
+                                                change.position - change.previousPosition
+                                            var changeSpaceY = changeDelta.y
+
+
+                                            if (activeWebView != null) {
+
+                                                if (!activeWebView.canScrollVertically(1) && changeSpaceY < 0) changeSpaceY =
+                                                    0f
+                                                if (!activeWebView.canScrollVertically(-1) && changeSpaceY > 0) changeSpaceY =
+                                                    0f
+                                                Log.i("CursorPad", "changeSpaceY  ${changeSpaceY}")
+
+                                                // We negate the value for "natural" scrolling (fingers down -> content up).
+                                                activeWebView?.scrollBy(
+                                                    0,
+                                                    -changeSpaceY.roundToInt()
                                                 )
-                                                val downTime = System.currentTimeMillis()
-                                                val downEvent = MotionEvent.obtain(
-                                                    downTime,
-                                                    downTime,
-                                                    MotionEvent.ACTION_DOWN,
-                                                    cursorPointerPosition.value.x,
-                                                    cursorPointerPosition.value.y - cutoutTop.toPx(),
-                                                    0
-                                                )
-                                                val upEvent = MotionEvent.obtain(
-                                                    downTime,
-                                                    downTime + 10,
-                                                    MotionEvent.ACTION_UP,
-                                                    cursorPointerPosition.value.x,
-                                                    cursorPointerPosition.value.y - cutoutTop.toPx(),
-                                                    0
-                                                )
-                                                webView.dispatchTouchEvent(downEvent)
-                                                webView.dispatchTouchEvent(upEvent)
+                                            }
+
+
+                                            // 3. Consume the changes to prevent single-finger logic from also running.
+                                            event.changes.forEach { it.consume() }
+                                        }
+
+                                        3 -> {
+                                            Log.i("CursorPad", "3 fingers detected during drag")
+                                            val changeDelta =
+                                                change.position - change.previousPosition
+                                            var changeSpaceY = changeDelta.y
+
+                                            if (changeSpaceY < 0) {
+                                                setIsCursorPadVisible(false)
+                                                setIsUrlBarVisible(true)
                                             }
                                         }
                                     }
                                 }
+                            } else {
+                                Log.i("CursorPad", "TAP")
 
-                                // --- MOVED STATE RESET LOGIC INSIDE THIS BLOCK ---
-                                // This code now ONLY runs after a long-press-drag has finished.
+//                                 Work but cannot click under the cursor pad
+                                // -> use for 2 finger capture?
+//                                            CursorAccessibilityService.instance?.performClick(
+//                                                cursorPointerPosition.value.x,
+//                                                cursorPointerPosition.value.y
+//                                            )
 
-//                                If (QuickCursorTrigger)
-                                if (!isCursorMode) {
-                                    setIsCursorPadVisible(false)
-
-                                    // --- SIMULATE CLICK AT CURSOR POSITION ---
-                                    activeWebView?.let { webView ->
-                                        Log.i(
-                                            "BackSquare",
-                                            "Click at cursor position: $cursorPointerPosition"
-                                        )
-                                        val downTime = System.currentTimeMillis()
-                                        val downEvent = MotionEvent.obtain(
-                                            downTime,
-                                            downTime,
-                                            MotionEvent.ACTION_DOWN,
-                                            cursorPointerPosition.value.x,
-                                            cursorPointerPosition.value.y - cutoutTop.toPx(),
-                                            0
-                                        )
-                                        val upEvent = MotionEvent.obtain(
-                                            downTime,
-                                            downTime + 10,
-                                            MotionEvent.ACTION_UP,
-                                            cursorPointerPosition.value.x,
-                                            cursorPointerPosition.value.y - cutoutTop.toPx(),
-                                            0
-                                        )
-                                        webView.dispatchTouchEvent(downEvent)
-                                        webView.dispatchTouchEvent(upEvent)
-                                    }
-
-                                    coroutineScope.launch {
-                                        squareAlpha.snapTo(0f) // Or animate if you prefer
-                                    }
+                                activeWebView?.let { webView ->
+                                    Log.i(
+                                        "BackSquare",
+                                        "Click at cursor position: $cursorPointerPosition"
+                                    )
+                                    val downTime = System.currentTimeMillis()
+                                    val downEvent = MotionEvent.obtain(
+                                        downTime,
+                                        downTime,
+                                        MotionEvent.ACTION_DOWN,
+                                        cursorPointerPosition.value.x,
+                                        cursorPointerPosition.value.y - webViewTopPadding.toPx(),
+                                        0
+                                    )
+                                    val upEvent = MotionEvent.obtain(
+                                        downTime,
+                                        downTime + 10,
+                                        MotionEvent.ACTION_UP,
+                                        cursorPointerPosition.value.x,
+                                        cursorPointerPosition.value.y - webViewTopPadding.toPx(),
+                                        0
+                                    )
+                                    webView.dispatchTouchEvent(downEvent)
+                                    webView.dispatchTouchEvent(upEvent)
                                 }
-
-
                             }
+                            // 4. After the drag is over (finger lifted), this block finishes.
+                            // The `awaitEachGesture` loop will now start over from the top,
+                            // ready to `awaitFirstDown` for the next gesture.
                         }
                     }
-
 
                     .padding(
                         end = browserSettings.paddingDp.dp,
@@ -6319,10 +6439,7 @@ fun CursorPad (
                                 browserSettings.paddingDp
                             ).dp
                         )
-                    )
-
-
-                ,
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
