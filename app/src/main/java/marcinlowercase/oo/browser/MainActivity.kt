@@ -1657,6 +1657,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         label = "Cursor Pad Height Animation"
     )
 
+    val urlBarFocusRequester = remember { FocusRequester() } // <-- CREATE IT HERE
+
+
 
     //endregion
     // FUNCTIONS
@@ -3130,7 +3133,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
             BottomPanel(
-                isCursorPadVisible = isCursorPadVisible,
+                urlBarFocusRequester = urlBarFocusRequester,
+            isCursorPadVisible = isCursorPadVisible,
                 isCursorMode = isCursorMode,
                 setIsCursorMode = {
                     isCursorMode = it
@@ -3498,6 +3502,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             }
 
             CursorPad(
+                urlBarFocusRequester = urlBarFocusRequester,
                 screenSize = screenSize,
                 isCursorPadVisible = isCursorPadVisible,
                 setIsCursorPadVisible = { isCursorMode = it },
@@ -3535,6 +3540,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 @Composable
 fun BottomPanel(
+    urlBarFocusRequester: FocusRequester,
     isCursorPadVisible: Boolean,
     isCursorMode: Boolean,
     setIsCursorMode: (Boolean) -> Unit,
@@ -3789,7 +3795,6 @@ fun BottomPanel(
                                 })
                         }
                 ) {
-                    val focusRequester = remember { FocusRequester() }
 
                     OutlinedTextField(
                         modifier = Modifier
@@ -3816,7 +3821,7 @@ fun BottomPanel(
 //                                    ).dp
 //                                )
 //                            )
-                            .focusRequester(focusRequester)
+                            .focusRequester(urlBarFocusRequester)
                             //                            .padding(horizontal = browserSettings.paddingDp.dp, vertical = browserSettings.paddingDp.dp / 2)
                             .onFocusChanged {
                                 val resetUrl = tabs[activeTabIndex.value].currentUrl ?: ""
@@ -4063,7 +4068,7 @@ fun BottomPanel(
                                             if (longPressJob.isActive) {
                                                 longPressJob.cancel()
                                                 // This was a tap
-                                                focusRequester.requestFocus()
+                                                urlBarFocusRequester.requestFocus()
                                                 setIsUrlOverlayBoxVisible(false)
                                             }
                                         }
@@ -6427,6 +6432,7 @@ fun CursorPointer(
 
 @Composable
 fun CursorPad(
+    urlBarFocusRequester: FocusRequester,
     isLongPressDrag: MutableState<Boolean>,
     isCursorPadVisible: Boolean,
     setIsCursorPadVisible: (Boolean) -> Unit,
@@ -6468,101 +6474,6 @@ fun CursorPad(
                     .height( cursorPadHeight
                     )
                     .align(Alignment.BottomCenter)
-
-//                    .pointerInput(Unit) {
-//                        awaitEachGesture {
-//                            val down = awaitFirstDown(requireUnconsumed = false)
-//
-//                            val longPressJob = coroutineScope.launch {
-//                                delay(viewConfiguration.longPressTimeoutMillis)
-//
-//                            }
-//
-//                            val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
-//                                if (longPressJob.isActive) {
-//                                    longPressJob.cancel()
-//                                }
-//                                change.consume()
-//                            }
-//
-//                            if (longPressJob.isCompleted && !longPressJob.isCancelled) {
-//                                // --- LONG-PRESS PATH ---
-//
-//                            } else {
-//                                // --- TAP OR SHORT-DRAG PATH ---
-//                                if (drag != null) {
-//                                    drag(drag.id) { change ->
-//                                        change.consume()
-//
-////                                        Log.w("CursorPad", "Before: $cursorPointerPosition")
-//
-//
-//                                        val changeSpaceX =
-//                                            (change.position.x - change.previousPosition.x) * browserSettings.cursorTrackingSpeed
-//                                        val changeSpaceY =
-//                                            (change.position.y - change.previousPosition.y) * browserSettings.cursorTrackingSpeed
-//
-////                                        Log.w(
-////                                            "CursorPad",
-////                                            "changeSpaceX: $changeSpaceX, changeSpaceY: $changeSpaceY"
-////                                        )
-//                                        val newCursorX =
-//                                            cursorPointerPosition.value.x + changeSpaceX
-//
-//                                        val newCursorY =
-//                                            (cursorPointerPosition.value.y + changeSpaceY)
-//                                        setCursorPointerPosition(Offset(newCursorX, newCursorY))
-//
-////                                        Log.w("CursorPad", "After: $cursorPointerPosition")
-//
-//                                    }
-//                                } else {
-//                                    if (longPressJob.isActive) {
-//                                        longPressJob.cancel()
-//                                        coroutineScope.launch {
-//
-//                                            // Work but cannot click under the cursor pad
-//                                            // -> use for 2 finger capture?
-////                                            CursorAccessibilityService.instance?.performClick(
-////                                                cursorPointerPosition.value.x,
-////                                                cursorPointerPosition.value.y
-////                                            )
-//
-//                                            activeWebView?.let { webView ->
-//                                                Log.i(
-//                                                    "BackSquare",
-//                                                    "Click at cursor position: $cursorPointerPosition"
-//                                                )
-//                                                val downTime = System.currentTimeMillis()
-//                                                val downEvent = MotionEvent.obtain(
-//                                                    downTime,
-//                                                    downTime,
-//                                                    MotionEvent.ACTION_DOWN,
-//                                                    cursorPointerPosition.value.x,
-//                                                    cursorPointerPosition.value.y - webViewTopPadding.toPx(),
-//                                                    0
-//                                                )
-//                                                val upEvent = MotionEvent.obtain(
-//                                                    downTime,
-//                                                    downTime + 10,
-//                                                    MotionEvent.ACTION_UP,
-//                                                    cursorPointerPosition.value.x,
-//                                                    cursorPointerPosition.value.y - webViewTopPadding.toPx(),
-//                                                    0
-//                                                )
-//                                                webView.dispatchTouchEvent(downEvent)
-//                                                webView.dispatchTouchEvent(upEvent)
-//                                            }
-//                                        }
-//                                    }
-//
-//
-//                                }
-//
-//
-//                            }
-//                        }
-//                    }
                     .pointerInput(Unit) {
                         // This is the correct "main loop". It handles one gesture at a time
                         // and then automatically resets to wait for the next one.
@@ -6817,10 +6728,14 @@ fun CursorPad(
                                                 val changeDelta =
                                                     change.position - change.previousPosition
                                                 val changeSpaceY = changeDelta.y
-
+                                                setIsCursorPadVisible(false)
+                                                setIsUrlBarVisible(true)
                                                 if (changeSpaceY < 0) {
-                                                    setIsCursorPadVisible(false)
-                                                    setIsUrlBarVisible(true)
+                                                    urlBarFocusRequester.requestFocus()
+
+                                                    // get focus to the url bar
+                                                    // use focusRequester to get focus to the url bar
+
                                                 }
                                             }
                                         }
