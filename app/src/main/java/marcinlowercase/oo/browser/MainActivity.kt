@@ -1527,6 +1527,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     )
 
 
+
+
     var pendingPermissionRequest by remember {
         mutableStateOf<CustomPermissionRequest?>(null)
     }
@@ -1643,13 +1645,24 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         }
     )
 
+    val imeInsets = WindowInsets.ime.asPaddingValues()
+    // 2. Convert the bottom padding (keyboard height) to Dp.
+    val keyboardHeight = imeInsets.calculateBottomPadding()
+    // 3. Check if the keyboard is currently visible.
+    val isKeyboardVisible = keyboardHeight > 0.dp
+
+    val cursorPadHeight by animateDpAsState(
+        targetValue = if (isKeyboardVisible) ( (screenSizeDp.height.dp - webViewTopPadding) / 8
+                ) else (screenSizeDp.height.dp - webViewTopPadding) / 2,
+        label = "Cursor Pad Height Animation"
+    )
+
 
     //endregion
     // FUNCTIONS
 
 
     //region Functions
-
 
 
     fun confirmationPopup(message: String, onConfirm: () -> Unit, onCancel: () -> Unit = {}) {
@@ -2073,7 +2086,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     val handleDeleteFile = { item: DownloadItem ->
         if (item.isBlobDownload) {
             // It's a blob file we saved manually. Delete it from the filesystem.
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val downloadsDir =
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             val file = File(downloadsDir, item.filename)
             if (file.exists()) {
                 if (file.delete()) {
@@ -2086,7 +2100,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             }
         } else {
             // It's a standard download. Use the DownloadManager to remove it.
-            val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val downloadManager =
+                context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             downloadManager.remove(item.id)
         }
         downloads.remove(item) // Removes from our UI list
@@ -2106,7 +2121,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
             val fileUri: Uri? = if (item.isBlobDownload) {
                 // It's a blob file we saved manually. Use FileProvider.
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val downloadsDir =
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 val file = File(downloadsDir, item.filename)
                 if (file.exists()) {
                     FileProvider.getUriForFile(
@@ -2119,7 +2135,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 }
             } else {
                 // It's a standard download. Use the DownloadManager.
-                val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                val downloadManager =
+                    context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                 downloadManager.getUriForDownloadedFile(item.id)
             }
 
@@ -2396,6 +2413,38 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 onPageFinishedFun = { view, currentUrlString ->
                     isLoading = false
                     isNavigateInProgressWithTabDataPanel = false
+
+
+                    if (browserSettings.isDesktopMode) {
+                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
+                        val jsEnforceViewport = """
+            (function() {
+                function enforceDesktopViewport() {
+                    var meta = document.querySelector('meta[name=viewport]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.setAttribute('name', 'viewport');
+                        document.getElementsByTagName('head')[0].appendChild(meta);
+                    }
+                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
+                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
+                    }
+                }
+                enforceDesktopViewport();
+                var observer = new MutationObserver(function(mutations) {
+                    enforceDesktopViewport();
+                });
+                var head = document.getElementsByTagName('head')[0];
+                if (head) {
+                    observer.observe(head, { childList: true, subtree: true });
+                }
+            })();
+        """.trimIndent().replace("\n", "") // 2. Remove all newlines to create a single line.
+
+                        // 3. Evaluate the clean, single-line script.
+                        view.evaluateJavascript(jsEnforceViewport, null)
+                    }
+
                 },
                 onDoUpdateVisitedHistoryFun = { view, url, isReload ->
                     Log.i("doUpdateVisitedHistory", "<<<<<<<<<<<<<<<<")
@@ -2611,7 +2660,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
                     try {
                         val fileData = Base64.decode(base64Data, Base64.DEFAULT)
-                        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                        val downloadsDir =
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                         if (!downloadsDir.exists()) downloadsDir.mkdirs()
 
                         // 1. Generate a unique filename
@@ -2622,15 +2672,29 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         FileOutputStream(file).use { it.write(fileData) }
 
                         // 3. Notify the MediaStore
-                        MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), arrayOf(mimeType), null)
+                        MediaScannerConnection.scanFile(
+                            context,
+                            arrayOf(file.absolutePath),
+                            arrayOf(mimeType),
+                            null
+                        )
 
                         // 1. Build the intent and notification first
-                        val fileUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                        val fileUri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            file
+                        )
                         val openIntent = Intent(Intent.ACTION_VIEW).apply {
                             setDataAndType(fileUri, mimeType)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
-                        val pendingIntent = PendingIntent.getActivity(context, 0, openIntent, PendingIntent.FLAG_IMMUTABLE)
+                        val pendingIntent = PendingIntent.getActivity(
+                            context,
+                            0,
+                            openIntent,
+                            PendingIntent.FLAG_IMMUTABLE
+                        )
 
                         val notification = NotificationCompat.Builder(context, "download_channel")
                             .setSmallIcon(R.drawable.ic_download_done)
@@ -2644,19 +2708,29 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         // 2. Check for permission BEFORE calling .notify()
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             // For Android 13 and above
-                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                            if (ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.POST_NOTIFICATIONS
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
                                 // We have permission, so we can safely show the notification
-                                NotificationManagerCompat.from(context).notify(System.currentTimeMillis().toInt(), notification)
+                                NotificationManagerCompat.from(context)
+                                    .notify(System.currentTimeMillis().toInt(), notification)
                             } else {
                                 // We don't have permission, so we request it.
                                 // The notification will NOT be shown this time, but will work on the next download if granted.
                                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                                 // Optionally, show a toast to inform the user that the file was saved.
-                                Toast.makeText(context, "Downloaded: $finalFilename", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    context,
+                                    "Downloaded: $finalFilename",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         } else {
                             // For older versions, no permission is needed
-                            NotificationManagerCompat.from(context).notify(System.currentTimeMillis().toInt(), notification)
+                            NotificationManagerCompat.from(context)
+                                .notify(System.currentTimeMillis().toInt(), notification)
                         }
                         // 4. CRUCIAL: Create a DownloadItem and add it to your UI state list
                         val newDownload = DownloadItem(
@@ -2673,7 +2747,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         downloads.add(0, newDownload)
                         downloadTracker.saveDownloads(downloads) // Save the updated list
 
-                        Toast.makeText(context, "Downloaded: $finalFilename", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Downloaded: $finalFilename", Toast.LENGTH_LONG)
+                            .show()
 
                     } catch (e: Exception) {
                         Log.e("BlobDownloader", "Failed to save blob file from callback", e)
@@ -2700,7 +2775,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 reader.readAsDataURL(blob);
             })();
         """.trimIndent()
-
 
 
                         // Execute the JavaScript in the WebView
@@ -3428,7 +3502,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 isCursorPadVisible = isCursorPadVisible,
                 setIsCursorPadVisible = { isCursorMode = it },
                 browserSettings = browserSettings,
-                screenSizeDp = screenSizeDp,
                 coroutineScope = coroutineScope,
                 activeWebView = activeWebView,
                 cursorPointerPosition = cursorPointerPosition,
@@ -3436,8 +3509,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 hapticFeedback = hapticFeedback,
                 setIsUrlBarVisible = { isUrlBarVisible = it },
                 isLongPressDrag = isLongPressDrag,
+                cursorPadHeight = cursorPadHeight,
 
-            )
+                )
 
         }
 
@@ -3615,14 +3689,7 @@ fun BottomPanel(
                 promptComponentDisplayState = promptComponentDisplayState,
 
                 )
-
-
-
-
-
-
             TabDataPanel(
-
                 isTabDataPanelVisible = isTabDataPanelVisible,
                 inspectingTab = inspectingTab,
                 onDismiss = onTabDataPanelDismiss,
@@ -3633,8 +3700,6 @@ fun BottomPanel(
                 onCloseTab = handleCloseInspectedTab,
                 onHistoryItemClicked = handleHistoryNavigation
             )
-
-
             TabsPanel(
                 inspectingTab = inspectingTab,
 
@@ -3648,7 +3713,6 @@ fun BottomPanel(
                 onTabLongPressed = onTabLongPressed,
                 updateInspectingTab = updateInspectingTab,
             )
-
             PermissionPanel(
                 isUrlBarVisible = isUrlBarVisible,
                 isPermissionPanelVisible = isPermissionPanelVisible,
@@ -3668,7 +3732,6 @@ fun BottomPanel(
                     onPermissionDeny()
                 }
             )
-
             ConfirmationPanel(
                 isUrlBarVisible = isUrlBarVisible,
                 browserSettings = browserSettings,
@@ -6368,7 +6431,6 @@ fun CursorPad(
     isCursorPadVisible: Boolean,
     setIsCursorPadVisible: (Boolean) -> Unit,
     browserSettings: BrowserSettings,
-    screenSizeDp: IntSize,
     screenSize: IntSize,
     coroutineScope: CoroutineScope,
     activeWebView: CustomWebView?,
@@ -6376,6 +6438,7 @@ fun CursorPad(
     webViewTopPadding: Dp,
     hapticFeedback: HapticFeedback,
     setIsUrlBarVisible: (Boolean) -> Unit,
+    cursorPadHeight: Dp,
 
 
     ) {
@@ -6389,16 +6452,20 @@ fun CursorPad(
         ) + fadeIn(tween(browserSettings.animationSpeed)),
         exit = fadeOut(tween(browserSettings.animationSpeed))
     ) {
+
+
+
         Box(
             modifier =
                 Modifier.fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.ime)
+
 
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(
-                        (screenSizeDp.height.dp - webViewTopPadding) / 2
+                    .height( cursorPadHeight
                     )
                     .align(Alignment.BottomCenter)
 
@@ -6507,8 +6574,6 @@ fun CursorPad(
                             var longPressDownTime = System.currentTimeMillis()
 
 
-
-
                             val longPressJob = coroutineScope.launch {
                                 delay(viewConfiguration.longPressTimeoutMillis)
                                 hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -6573,8 +6638,10 @@ fun CursorPad(
 //
 //                                                Log.i("CursorPad", "changeSpaceY  $changeSpaceY")
 
-                                                var newX = cursorPointerPosition.value.x + changeSpaceX
-                                                var newY = cursorPointerPosition.value.y + changeSpaceY
+                                                var newX =
+                                                    cursorPointerPosition.value.x + changeSpaceX
+                                                var newY =
+                                                    cursorPointerPosition.value.y + changeSpaceY
                                                 if (newX < 0) newX = 0f
                                                 if (newX > screenSize.width) newX =
                                                     screenSize.width.toFloat()
@@ -6587,7 +6654,8 @@ fun CursorPad(
 
                                                 activeWebView?.let { webView ->
                                                     val moveEvent = MotionEvent.obtain(
-                                                        System.currentTimeMillis(), System.currentTimeMillis(),
+                                                        System.currentTimeMillis(),
+                                                        System.currentTimeMillis(),
                                                         MotionEvent.ACTION_MOVE,
                                                         cursorPointerPosition.value.x,
                                                         cursorPointerPosition.value.y - webViewTopPadding.toPx(),
@@ -6663,7 +6731,7 @@ fun CursorPad(
 
                                 }
 
-                            } else  {
+                            } else {
 
                                 Log.e("CursorPad", "TOUCH DETECTED")
                                 if (drag != null) {
@@ -6693,8 +6761,10 @@ fun CursorPad(
 
                                                 Log.i("CursorPad", "changeSpaceY  $changeSpaceY")
 
-                                                var newX = cursorPointerPosition.value.x + changeSpaceX
-                                                var newY = cursorPointerPosition.value.y + changeSpaceY
+                                                var newX =
+                                                    cursorPointerPosition.value.x + changeSpaceX
+                                                var newY =
+                                                    cursorPointerPosition.value.y + changeSpaceY
                                                 if (newX < 0) newX = 0f
                                                 if (newX > screenSize.width) newX =
                                                     screenSize.width.toFloat()
@@ -6709,7 +6779,10 @@ fun CursorPad(
                                             }
 
                                             2 -> {
-                                                Log.i("CursorPad", "Two fingers detected during drag")
+                                                Log.i(
+                                                    "CursorPad",
+                                                    "Two fingers detected during drag"
+                                                )
 
                                                 val changeDelta =
                                                     change.position - change.previousPosition
@@ -6722,7 +6795,10 @@ fun CursorPad(
                                                         0f
                                                     if (!activeWebView.canScrollVertically(-1) && changeSpaceY > 0) changeSpaceY =
                                                         0f
-                                                    Log.i("CursorPad", "changeSpaceY  $changeSpaceY")
+                                                    Log.i(
+                                                        "CursorPad",
+                                                        "changeSpaceY  $changeSpaceY"
+                                                    )
 
                                                     // We negate the value for "natural" scrolling (fingers down -> content up).
                                                     activeWebView.scrollBy(
