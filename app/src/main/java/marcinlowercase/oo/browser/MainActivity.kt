@@ -2924,16 +2924,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
 
 
-//    // This effect runs whenever the isDesktopMode flag changes.
-//    LaunchedEffect(browserSettings.isDesktopMode) {
-//        val newAgent = if (browserSettings.isDesktopMode) desktopUserAgent else mobileUserAgent
-//        if (activeWebView?.settings?.userAgentString != newAgent) {
-//            activeWebView?.settings?.userAgentString = newAgent
-//            // Reload the page to apply the new User Agent
-//            activeWebView?.reload()
-//        }
-//    }
-
     // This effect will re-launch whenever the animatedPadding value changes (i.e., every frame).
     LaunchedEffect(animatedPadding) {
         // We now have a hook that runs on every animation frame.
