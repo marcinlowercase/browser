@@ -2181,7 +2181,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
     LaunchedEffect(isCursorMode) {
 
-
         isCursorPadVisible = isCursorMode
         if (isCursorMode) {
             isUrlBarVisible = false
