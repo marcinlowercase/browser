@@ -14,6 +14,8 @@
     <uses-feature android:name="android.hardware.audio.low_latency" />
     <uses-feature android:name="android.hardware.audio.pro" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
 
 
     <queries>
@@ -61,7 +63,7 @@
 
 
         </activity>
-
+<!--not use yet-->
         <service
             android:name=".CursorAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
@@ -74,6 +76,16 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

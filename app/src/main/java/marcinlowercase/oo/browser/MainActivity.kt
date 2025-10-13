@@ -8,14 +8,21 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.DownloadManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
+import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.util.Base64
 import android.util.Log
 import android.util.Patterns
 import android.view.Gravity
@@ -46,7 +53,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -65,7 +71,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.drag
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -97,7 +102,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -120,6 +124,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.FileProvider
 import androidx.core.content.edit
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -140,6 +147,10 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import java.io.File
+import java.io.FileOutputStream
+import java.net.URLDecoder
+import java.util.regex.Pattern
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.system.exitProcess
@@ -154,6 +165,19 @@ const val default_url = "https://oo3.deno.dev/i"
 //endregion
 
 //region Global Functions
+
+
+fun createNotificationChannel(context: Context) {
+    val name = "downloads"
+    val descriptionText = "shows download progress and completion"
+    val importance = NotificationManager.IMPORTANCE_LOW
+    val channel = NotificationChannel("download_channel", name, importance).apply {
+        description = descriptionText
+    }
+    val notificationManager: NotificationManager =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    notificationManager.createNotificationChannel(channel)
+}
 
 
 @SuppressLint("ModifierFactoryExtensionFunction")
@@ -255,6 +279,18 @@ class FaviconJavascriptInterface(
         }
     }
 }
+
+class BlobDownloaderInterface(
+    // It now takes a callback function in its constructor
+    private val onBlobDataReceived: (base64Data: String, filename: String, mimeType: String) -> Unit
+) {
+    @Suppress("unused")
+    @JavascriptInterface
+    fun downloadBase64File(base64Data: String, filename: String, mimeType: String) {
+        // Instead of saving the file, it just calls the callback with the data.
+        onBlobDataReceived(base64Data, filename, mimeType)
+    }
+}
 //endregion
 
 //region Data Class
@@ -344,6 +380,7 @@ data class DownloadItem(
     var progress: Int = 0, // Progress from 0 to 100
     var totalBytes: Long = 0,
     var downloadedBytes: Long = 0,
+    val isBlobDownload: Boolean = false,
     @kotlinx.serialization.Transient var downloadSpeedBps: Float = 0f, // Bytes per second
     @kotlinx.serialization.Transient var timeRemainingMs: Long = 0L    // Milliseconds
 )
@@ -795,11 +832,20 @@ class WebViewManager(private val context: Context) {
         setOriginalOrientation: (Int) -> Unit,
         resetCustomView: () -> Unit,
         onDownloadRequested: (url: String, userAgent: String, contentDisposition: String, mimeType: String, contentLength: Long) -> Unit,
+        onBlobDownloadRequested: (base64: String, filename: String, mimeType: String) -> Unit,
         onPageStartedFun: (WebView, String?, Bitmap?) -> Unit,
         onPageFinishedFun: (WebView, String?) -> Unit,
         onDoUpdateVisitedHistoryFun: (WebView, String?, Boolean) -> Unit,
         onTitleReceived: (webView: WebView, url: String, title: String) -> Unit,
     ) {
+
+        webView.addJavascriptInterface(
+            BlobDownloaderInterface { base64Data, filename, mimeType ->
+                // This forwards the data to the callback we received from BrowserScreen
+                onBlobDownloadRequested(base64Data, filename, mimeType)
+            },
+            "BlobDownloader"
+        )
 
         webView.addJavascriptInterface(
             FaviconJavascriptInterface { faviconUrl ->
@@ -1278,7 +1324,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-
+        createNotificationChannel(this) // Call it here
         setContent {
             BrowserTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -1429,6 +1475,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
     var isNavPanelVisible by remember { mutableStateOf(false) }
+    val isLongPressDrag = remember { mutableStateOf(false) }
     var activeNavAction by remember { mutableStateOf(GestureNavAction.REFRESH) }
 
     var isTabDataPanelVisible by remember { mutableStateOf(false) }
@@ -1587,12 +1634,23 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     var screenSize by remember { mutableStateOf(IntSize.Zero) }
     var screenSizeDp by remember { mutableStateOf(IntSize.Zero) }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { isGranted ->
+            if (!isGranted) {
+                Toast.makeText(context, "Notification permission denied", Toast.LENGTH_SHORT).show()
+            }
+        }
+    )
+
 
     //endregion
     // FUNCTIONS
 
 
     //region Functions
+
+
 
     fun confirmationPopup(message: String, onConfirm: () -> Unit, onCancel: () -> Unit = {}) {
         confirmationState = ConfirmationDialogState(
@@ -1787,12 +1845,50 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         )
     }
 
+    fun getBestGuessFilename(url: String, contentDisposition: String?, mimeType: String?): String {
+        // 1. Try to parse the Content-Disposition header first.
+        if (contentDisposition != null) {
+            val pattern =
+                Pattern.compile("filename\\*?=['\"]?([^'\"\\s]+)['\"]?", Pattern.CASE_INSENSITIVE)
+            val matcher = pattern.matcher(contentDisposition)
+            if (matcher.find()) {
+                val filename = matcher.group(1)
+                if (filename != null) {
+                    try {
+                        // Decode the filename in case it's URL-encoded
+                        return URLDecoder.decode(filename, "UTF-8")
+                    } catch (e: Exception) {
+                        Log.e("DownloadManager", "Failed to decode filename", e)
+                    }
+                }
+            }
+        }
+
+        // 2. If that fails, try to get the filename from the URL path.
+        try {
+            val path = url.toUri().path
+            if (path != null) {
+                val lastSegment = path.substringAfterLast('/')
+                if (lastSegment.isNotBlank()) {
+                    return lastSegment
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("DownloadManager", "Failed to parse URL for filename", e)
+        }
+
+
+        // 3. As a last resort, use the original, less reliable method.
+        return URLUtil.guessFileName(url, contentDisposition, mimeType)
+    }
+
     /**
      * Generates a unique filename by checking against a list of existing downloads.
      * If "file.txt" exists, it will return "file (1).txt", then "file (2).txt", etc.
      */
     fun generateUniqueFilename(initialName: String, existingDownloads: List<DownloadItem>): String {
         val existingFilenames = existingDownloads.map { it.filename }.toSet()
+        Log.i("DownloadManager", "initialName: $initialName")
 
         if (!existingFilenames.contains(initialName)) {
             return initialName // The original name is already unique
@@ -1975,8 +2071,24 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
     // --- NEW: Handler to delete a specific file ---
     val handleDeleteFile = { item: DownloadItem ->
-        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        downloadManager.remove(item.id) // Deletes physical file and from DownloadManager DB
+        if (item.isBlobDownload) {
+            // It's a blob file we saved manually. Delete it from the filesystem.
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val file = File(downloadsDir, item.filename)
+            if (file.exists()) {
+                if (file.delete()) {
+                    // Also notify the MediaStore that the file is gone.
+                    MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), null, null)
+                    Log.d("DeleteFile", "Blob file deleted successfully.")
+                } else {
+                    Log.w("DeleteFile", "Failed to delete blob file.")
+                }
+            }
+        } else {
+            // It's a standard download. Use the DownloadManager to remove it.
+            val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            downloadManager.remove(item.id)
+        }
         downloads.remove(item) // Removes from our UI list
         downloadTracker.saveDownloads(downloads) // Saves the change
         Toast.makeText(context, "${item.filename} deleted.", Toast.LENGTH_SHORT).show()
@@ -1991,9 +2103,25 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
     val handleOpenFile = { item: DownloadItem ->
         if (item.status == DownloadStatus.SUCCESSFUL) {
-            val downloadManager =
-                context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val fileUri = downloadManager.getUriForDownloadedFile(item.id)
+
+            val fileUri: Uri? = if (item.isBlobDownload) {
+                // It's a blob file we saved manually. Use FileProvider.
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val file = File(downloadsDir, item.filename)
+                if (file.exists()) {
+                    FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider", // Must match authority in manifest
+                        file
+                    )
+                } else {
+                    null
+                }
+            } else {
+                // It's a standard download. Use the DownloadManager.
+                val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                downloadManager.getUriForDownloadedFile(item.id)
+            }
 
             if (fileUri != null) {
                 val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -2475,40 +2603,147 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
                 },
+
+                onBlobDownloadRequested = { base64Data, filename, mimeType ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+
+                    try {
+                        val fileData = Base64.decode(base64Data, Base64.DEFAULT)
+                        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                        if (!downloadsDir.exists()) downloadsDir.mkdirs()
+
+                        // 1. Generate a unique filename
+                        val finalFilename = generateUniqueFilename(filename, downloads)
+                        val file = File(downloadsDir, finalFilename)
+
+                        // 2. Save the file
+                        FileOutputStream(file).use { it.write(fileData) }
+
+                        // 3. Notify the MediaStore
+                        MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), arrayOf(mimeType), null)
+
+                        // 1. Build the intent and notification first
+                        val fileUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                        val openIntent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(fileUri, mimeType)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        val pendingIntent = PendingIntent.getActivity(context, 0, openIntent, PendingIntent.FLAG_IMMUTABLE)
+
+                        val notification = NotificationCompat.Builder(context, "download_channel")
+                            .setSmallIcon(R.drawable.ic_download_done)
+                            .setContentTitle(finalFilename)
+                            .setContentText("download complete")
+                            .setPriority(NotificationCompat.PRIORITY_LOW)
+                            .setContentIntent(pendingIntent)
+                            .setAutoCancel(true)
+                            .build()
+
+                        // 2. Check for permission BEFORE calling .notify()
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            // For Android 13 and above
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                                // We have permission, so we can safely show the notification
+                                NotificationManagerCompat.from(context).notify(System.currentTimeMillis().toInt(), notification)
+                            } else {
+                                // We don't have permission, so we request it.
+                                // The notification will NOT be shown this time, but will work on the next download if granted.
+                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                // Optionally, show a toast to inform the user that the file was saved.
+                                Toast.makeText(context, "Downloaded: $finalFilename", Toast.LENGTH_LONG).show()
+                            }
+                        } else {
+                            // For older versions, no permission is needed
+                            NotificationManagerCompat.from(context).notify(System.currentTimeMillis().toInt(), notification)
+                        }
+                        // 4. CRUCIAL: Create a DownloadItem and add it to your UI state list
+                        val newDownload = DownloadItem(
+                            id = System.currentTimeMillis(), // Use timestamp for ID as there's no DownloadManager ID
+                            url = "blob:...", // You can store a placeholder URL
+                            filename = finalFilename,
+                            mimeType = mimeType,
+                            status = DownloadStatus.SUCCESSFUL,// It's instantly successful
+                            isBlobDownload = true,
+                            progress = 100,
+                            totalBytes = fileData.size.toLong(),
+                            downloadedBytes = fileData.size.toLong()
+                        )
+                        downloads.add(0, newDownload)
+                        downloadTracker.saveDownloads(downloads) // Save the updated list
+
+                        Toast.makeText(context, "Downloaded: $finalFilename", Toast.LENGTH_LONG).show()
+
+                    } catch (e: Exception) {
+                        Log.e("BlobDownloader", "Failed to save blob file from callback", e)
+                        Toast.makeText(context, "Download failed", Toast.LENGTH_LONG).show()
+                    }
+                },
                 onDownloadRequested = { url, userAgent, contentDisposition, mimeType, contentLength ->
-                    val initialFilename = URLUtil.guessFileName(url, contentDisposition, mimeType)
 
-                    // 2. Generate a guaranteed unique filename using our helper
-                    val finalFilename = generateUniqueFilename(initialFilename, downloads)
+                    if (url.startsWith("blob:")) {
+                        val filename = getBestGuessFilename(url, contentDisposition, mimeType)
+
+                        // This JavaScript reads the blob, converts it to Base64, and calls our Kotlin interface.
+                        val js = """
+            javascript:
+            (async () => {
+                const response = await fetch('$url');
+                const blob = await response.blob();
+                const reader = new FileReader();
+                reader.onload = () => {
+                    // The result includes the Base64 prefix, so we remove it.
+                    const base64Data = reader.result.split(',')[1];
+                    BlobDownloader.downloadBase64File(base64Data, '$filename', '$mimeType');
+                };
+                reader.readAsDataURL(blob);
+            })();
+        """.trimIndent()
 
 
-                    Toast.makeText(context, "Downloading $finalFilename", Toast.LENGTH_SHORT).show()
 
-                    // 3. Use the final, unique filename for the DownloadManager request
-                    val request = DownloadManager.Request(url.toUri())
-                        .setTitle(finalFilename) // Use unique name
-                        .setDescription("Downloading...")
-                        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                        .setDestinationInExternalPublicDir(
-                            android.os.Environment.DIRECTORY_DOWNLOADS,
-                            finalFilename
-                        ) // Use unique name
-                        .addRequestHeader("User-Agent", userAgent)
+                        // Execute the JavaScript in the WebView
+                        webView.evaluateJavascript(js, null)
 
-                    val downloadManager =
-                        context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                    val downloadId = downloadManager.enqueue(request)
+                    } else {
+                        val initialFilename =
+                            getBestGuessFilename(url, contentDisposition, mimeType)
 
-                    // 4. Use the final, unique filename for our internal state object
-                    val newDownload = DownloadItem(
-                        id = downloadId,
-                        url = url,
-                        filename = finalFilename, // Use unique name
-                        mimeType = mimeType,
-                        status = DownloadStatus.PENDING
-                    )
-                    downloads.add(0, newDownload)
-                    downloadTracker.saveDownloads(downloads)
+                        // 2. Generate a guaranteed unique filename using our helper
+                        val finalFilename = generateUniqueFilename(initialFilename, downloads)
+
+
+//                        Toast.makeText(context, "Downloading $finalFilename", Toast.LENGTH_SHORT)
+//                            .show()
+
+                        // 3. Use the final, unique filename for the DownloadManager request
+                        val request = DownloadManager.Request(url.toUri())
+                            .setTitle(finalFilename) // Use unique name
+                            .setDescription("Downloading...")
+                            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                            .setDestinationInExternalPublicDir(
+                                Environment.DIRECTORY_DOWNLOADS,
+                                finalFilename
+                            ) // Use unique name
+                            .addRequestHeader("User-Agent", userAgent)
+
+                        val downloadManager =
+                            context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                        val downloadId = downloadManager.enqueue(request)
+
+                        // 4. Use the final, unique filename for our internal state object
+                        val newDownload = DownloadItem(
+                            id = downloadId,
+                            url = url,
+                            filename = finalFilename, // Use unique name
+                            mimeType = mimeType,
+                            status = DownloadStatus.PENDING
+                        )
+                        downloads.add(0, newDownload)
+                        downloadTracker.saveDownloads(downloads)
+                    }
+
                 },
             )
             webView.onWebViewTouch = {
@@ -2578,7 +2813,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             // -- The URL bar has just been hidden. Start the "show and blink" sequence. --
 
             // a. Instantly appear with 0.6 opacity.
-            if ( !isCursorMode)triggerBlinkEffect()
+            if (!isCursorMode) triggerBlinkEffect()
 
             // d. After blinking, fade out completely.
         } else {
@@ -3023,7 +3258,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             }
                             .pointerInput(Unit, isCursorMode) {
 
-                                 if ( !isCursorMode) awaitEachGesture {
+                                if (!isCursorMode) awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
 
                                     val longPressJob = coroutineScope.launch {
@@ -3201,18 +3436,16 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             CursorPad(
                 screenSize = screenSize,
                 isCursorPadVisible = isCursorPadVisible,
-                isCursorMode = isCursorMode,
                 setIsCursorPadVisible = { isCursorMode = it },
                 browserSettings = browserSettings,
                 screenSizeDp = screenSizeDp,
                 coroutineScope = coroutineScope,
                 activeWebView = activeWebView,
                 cursorPointerPosition = cursorPointerPosition,
-                setCursorPointerPosition = { cursorPointerPosition.value = it },
-                squareAlpha = squareAlpha,
                 webViewTopPadding = webViewTopPadding,
                 hapticFeedback = hapticFeedback,
-                setIsUrlBarVisible = { isUrlBarVisible = it }
+                setIsUrlBarVisible = { isUrlBarVisible = it },
+                isLongPressDrag = isLongPressDrag,
 
             )
 
@@ -6141,8 +6374,8 @@ fun CursorPointer(
 
 @Composable
 fun CursorPad(
+    isLongPressDrag: MutableState<Boolean>,
     isCursorPadVisible: Boolean,
-    isCursorMode: Boolean,
     setIsCursorPadVisible: (Boolean) -> Unit,
     browserSettings: BrowserSettings,
     screenSizeDp: IntSize,
@@ -6150,8 +6383,6 @@ fun CursorPad(
     coroutineScope: CoroutineScope,
     activeWebView: CustomWebView?,
     cursorPointerPosition: MutableState<Offset>,
-    setCursorPointerPosition: (Offset) -> Unit,
-    squareAlpha: Animatable<Float, AnimationVector1D>,
     webViewTopPadding: Dp,
     hapticFeedback: HapticFeedback,
     setIsUrlBarVisible: (Boolean) -> Unit,
@@ -6282,132 +6513,291 @@ fun CursorPad(
                             // 1. Wait for the first finger to touch down.
                             val down = awaitFirstDown(requireUnconsumed = false)
 
+
+                            var longPressDownTime = System.currentTimeMillis()
+
+
+
+
+                            val longPressJob = coroutineScope.launch {
+                                delay(viewConfiguration.longPressTimeoutMillis)
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+
+                                longPressDownTime = System.currentTimeMillis()
+
+                            }
+
+
                             // 2. Wait for the user to start dragging.
                             val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
                                 change.consume()
+                                if (longPressJob.isActive) {
+                                    longPressJob.cancel()
+                                }
                             }
 
-                            // 3. If a drag was detected, enter the drag-handling logic.
-                            if (drag != null) {
-                                // This is the high-level function that consumes the rest of the drag gesture.
-                                // It will finish when the user lifts their finger.
-                                drag(drag.id) { change ->
-                                    change.consume()
 
-                                    // Check for multiple fingers DURING the drag
-                                    val event = currentEvent // Get the current pointer event
+                            if (longPressJob.isCompleted && !longPressJob.isCancelled) {
 
-
-                                    Log.e("CursorPad", "Event changes size : ${event.changes.size}")
-                                    when (event.changes.size) {
-                                        1 -> {
-                                            // This is a single-finger drag, move the cursor
-                                            val changeDelta =
-                                                change.position - change.previousPosition
-                                            val changeSpaceX =
-                                                changeDelta.x * browserSettings.cursorTrackingSpeed
-                                            val changeSpaceY =
-                                                changeDelta.y * browserSettings.cursorTrackingSpeed
-
-
-
-                                            Log.i("CursorPad", "changeSpaceX  ${changeSpaceX}")
-
-                                            Log.i("CursorPad", "changeSpaceY  ${changeSpaceY}")
-
-                                            var newX = cursorPointerPosition.value.x + changeSpaceX
-                                            var newY = cursorPointerPosition.value.y + changeSpaceY
-                                            if (newX < 0) newX = 0f
-                                            if (newX > screenSize.width) newX =
-                                                screenSize.width.toFloat()
-                                            if (newY < 0) newY = 0f
-                                            if (newY > screenSize.height) newY =
-                                                screenSize.height.toFloat()
-                                            cursorPointerPosition.value = Offset(newX, newY)
-//                                            cursorPointerPosition.value += Offset(
-//                                                changeSpaceX,
-//                                                changeSpaceY
-//                                            )
-                                        }
-
-                                        2 -> {
-                                            Log.i("CursorPad", "Two fingers detected during drag")
-                                            // TODO: Add two-finger scroll logic here
-
-                                            val changeDelta =
-                                                change.position - change.previousPosition
-                                            var changeSpaceY = changeDelta.y
-
-
-                                            if (activeWebView != null) {
-
-                                                if (!activeWebView.canScrollVertically(1) && changeSpaceY < 0) changeSpaceY =
-                                                    0f
-                                                if (!activeWebView.canScrollVertically(-1) && changeSpaceY > 0) changeSpaceY =
-                                                    0f
-                                                Log.i("CursorPad", "changeSpaceY  ${changeSpaceY}")
-
-                                                // We negate the value for "natural" scrolling (fingers down -> content up).
-                                                activeWebView?.scrollBy(
-                                                    0,
-                                                    -changeSpaceY.roundToInt()
-                                                )
-                                            }
-
-
-                                            // 3. Consume the changes to prevent single-finger logic from also running.
-                                            event.changes.forEach { it.consume() }
-                                        }
-
-                                        3 -> {
-                                            Log.i("CursorPad", "3 fingers detected during drag")
-                                            val changeDelta =
-                                                change.position - change.previousPosition
-                                            var changeSpaceY = changeDelta.y
-
-                                            if (changeSpaceY < 0) {
-                                                setIsCursorPadVisible(false)
-                                                setIsUrlBarVisible(true)
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                Log.i("CursorPad", "TAP")
-
-//                                 Work but cannot click under the cursor pad
-                                // -> use for 2 finger capture?
-//                                            CursorAccessibilityService.instance?.performClick(
-//                                                cursorPointerPosition.value.x,
-//                                                cursorPointerPosition.value.y
-//                                            )
+                                Log.i("CursorLongPress", "Activated")
 
                                 activeWebView?.let { webView ->
-                                    Log.i(
-                                        "BackSquare",
-                                        "Click at cursor position: $cursorPointerPosition"
-                                    )
-                                    val downTime = System.currentTimeMillis()
-                                    val downEvent = MotionEvent.obtain(
-                                        downTime,
-                                        downTime,
+//                                    longPressDownTime = System.currentTimeMillis()
+                                    val longPressDownEvent = MotionEvent.obtain(
+                                        longPressDownTime,
+                                        longPressDownTime,
                                         MotionEvent.ACTION_DOWN,
                                         cursorPointerPosition.value.x,
                                         cursorPointerPosition.value.y - webViewTopPadding.toPx(),
                                         0
                                     )
+                                    webView.dispatchTouchEvent(longPressDownEvent)
+                                    Log.i("CursorLongPress", "Down")
+
+                                }
+                                if (drag != null) {
+                                    Log.i("CursorPad", "LONG PRESS Drag")
+
+                                    drag(drag.id) { change ->
+                                        change.consume()
+
+                                        isLongPressDrag.value = true
+                                        // Check for multiple fingers DURING the drag
+                                        val event = currentEvent // Get the current pointer event
+
+
+//                                        Log.e("CursorPad", "Event changes size : ${event.changes.size}")
+                                        when (event.changes.size) {
+                                            1 -> {
+                                                // This is a single-finger drag, move the cursor
+                                                val changeDelta =
+                                                    change.position - change.previousPosition
+                                                val changeSpaceX =
+                                                    changeDelta.x * browserSettings.cursorTrackingSpeed
+                                                val changeSpaceY =
+                                                    changeDelta.y * browserSettings.cursorTrackingSpeed
+
+//
+//
+//                                                Log.i("CursorPad", "changeSpaceX  $changeSpaceX")
+//
+//                                                Log.i("CursorPad", "changeSpaceY  $changeSpaceY")
+
+                                                var newX = cursorPointerPosition.value.x + changeSpaceX
+                                                var newY = cursorPointerPosition.value.y + changeSpaceY
+                                                if (newX < 0) newX = 0f
+                                                if (newX > screenSize.width) newX =
+                                                    screenSize.width.toFloat()
+                                                if (newY < 0) newY = 0f
+                                                if (newY > screenSize.height) newY =
+                                                    screenSize.height.toFloat()
+                                                cursorPointerPosition.value = Offset(newX, newY)
+
+
+
+                                                activeWebView?.let { webView ->
+                                                    val moveEvent = MotionEvent.obtain(
+                                                        System.currentTimeMillis(), System.currentTimeMillis(),
+                                                        MotionEvent.ACTION_MOVE,
+                                                        cursorPointerPosition.value.x,
+                                                        cursorPointerPosition.value.y - webViewTopPadding.toPx(),
+                                                        0
+                                                    )
+                                                    webView.dispatchTouchEvent(moveEvent)
+                                                    Log.i("CursorLongPress", "Move")
+
+                                                }
+
+//                                            cursorPointerPosition.value += Offset(
+//                                                changeSpaceX,
+//                                                changeSpaceY
+//                                            )
+                                            }
+
+//                                            2 -> {
+//                                                Log.i("CursorPad", "Two fingers detected during drag")
+//
+//                                                val changeDelta =
+//                                                    change.position - change.previousPosition
+//                                                var changeSpaceY = changeDelta.y
+//
+//
+//                                                if (activeWebView != null) {
+//
+//                                                    if (!activeWebView.canScrollVertically(1) && changeSpaceY < 0) changeSpaceY =
+//                                                        0f
+//                                                    if (!activeWebView.canScrollVertically(-1) && changeSpaceY > 0) changeSpaceY =
+//                                                        0f
+//                                                    Log.i("CursorPad", "changeSpaceY  $changeSpaceY")
+//
+//                                                    // We negate the value for "natural" scrolling (fingers down -> content up).
+//                                                    activeWebView.scrollBy(
+//                                                        0,
+//                                                        -changeSpaceY.roundToInt()
+//                                                    )
+//                                                }
+//
+//
+//                                                // 3. Consume the changes to prevent single-finger logic from also running.
+//                                                event.changes.forEach { it.consume() }
+//                                            }
+//
+//                                            3 -> {
+//                                                Log.i("CursorPad", "3 fingers detected during drag")
+//                                                val changeDelta =
+//                                                    change.position - change.previousPosition
+//                                                val changeSpaceY = changeDelta.y
+//
+//                                                if (changeSpaceY < 0) {
+//                                                    setIsCursorPadVisible(false)
+//                                                    setIsUrlBarVisible(true)
+//                                                }
+//                                            }
+                                        }
+                                    }
+                                }
+
+                                isLongPressDrag.value = false
+
+                                activeWebView?.let { webView ->
                                     val upEvent = MotionEvent.obtain(
-                                        downTime,
-                                        downTime + 10,
+                                        longPressDownTime,
+                                        System.currentTimeMillis(),
                                         MotionEvent.ACTION_UP,
                                         cursorPointerPosition.value.x,
                                         cursorPointerPosition.value.y - webViewTopPadding.toPx(),
                                         0
                                     )
-                                    webView.dispatchTouchEvent(downEvent)
                                     webView.dispatchTouchEvent(upEvent)
+                                    Log.i("CursorLongPress", "Up")
+
+                                }
+
+                            } else  {
+
+                                Log.e("CursorPad", "TOUCH DETECTED")
+                                if (drag != null) {
+                                    // This is the high-level function that consumes the rest of the drag gesture.
+                                    // It will finish when the user lifts their finger.
+                                    drag(drag.id) { change ->
+                                        change.consume()
+
+                                        // Check for multiple fingers DURING the drag
+                                        val event = currentEvent // Get the current pointer event
+
+
+//                                        Log.e("CursorPad", "Event changes size : ${event.changes.size}")
+                                        when (event.changes.size) {
+                                            1 -> {
+                                                // This is a single-finger drag, move the cursor
+                                                val changeDelta =
+                                                    change.position - change.previousPosition
+                                                val changeSpaceX =
+                                                    changeDelta.x * browserSettings.cursorTrackingSpeed
+                                                val changeSpaceY =
+                                                    changeDelta.y * browserSettings.cursorTrackingSpeed
+
+
+
+                                                Log.i("CursorPad", "changeSpaceX  $changeSpaceX")
+
+                                                Log.i("CursorPad", "changeSpaceY  $changeSpaceY")
+
+                                                var newX = cursorPointerPosition.value.x + changeSpaceX
+                                                var newY = cursorPointerPosition.value.y + changeSpaceY
+                                                if (newX < 0) newX = 0f
+                                                if (newX > screenSize.width) newX =
+                                                    screenSize.width.toFloat()
+                                                if (newY < 0) newY = 0f
+                                                if (newY > screenSize.height) newY =
+                                                    screenSize.height.toFloat()
+                                                cursorPointerPosition.value = Offset(newX, newY)
+//                                            cursorPointerPosition.value += Offset(
+//                                                changeSpaceX,
+//                                                changeSpaceY
+//                                            )
+                                            }
+
+                                            2 -> {
+                                                Log.i("CursorPad", "Two fingers detected during drag")
+
+                                                val changeDelta =
+                                                    change.position - change.previousPosition
+                                                var changeSpaceY = changeDelta.y
+
+
+                                                if (activeWebView != null) {
+
+                                                    if (!activeWebView.canScrollVertically(1) && changeSpaceY < 0) changeSpaceY =
+                                                        0f
+                                                    if (!activeWebView.canScrollVertically(-1) && changeSpaceY > 0) changeSpaceY =
+                                                        0f
+                                                    Log.i("CursorPad", "changeSpaceY  $changeSpaceY")
+
+                                                    // We negate the value for "natural" scrolling (fingers down -> content up).
+                                                    activeWebView.scrollBy(
+                                                        0,
+                                                        -changeSpaceY.roundToInt()
+                                                    )
+                                                }
+
+
+                                                // 3. Consume the changes to prevent single-finger logic from also running.
+                                                event.changes.forEach { it.consume() }
+                                            }
+
+                                            3 -> {
+                                                Log.i("CursorPad", "3 fingers detected during drag")
+                                                val changeDelta =
+                                                    change.position - change.previousPosition
+                                                val changeSpaceY = changeDelta.y
+
+                                                if (changeSpaceY < 0) {
+                                                    setIsCursorPadVisible(false)
+                                                    setIsUrlBarVisible(true)
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Log.i("CursorPad", "TAP")
+
+//                                 Work but cannot click under the cursor pad
+                                    // -> use for 2 finger capture?
+//                                            CursorAccessibilityService.instance?.performClick(
+//                                                cursorPointerPosition.value.x,
+//                                                cursorPointerPosition.value.y
+//                                            )
+
+                                    activeWebView?.let { webView ->
+                                        Log.i(
+                                            "BackSquare",
+                                            "Click at cursor position: $cursorPointerPosition"
+                                        )
+                                        val downTime = System.currentTimeMillis()
+                                        val downEvent = MotionEvent.obtain(
+                                            downTime,
+                                            downTime,
+                                            MotionEvent.ACTION_DOWN,
+                                            cursorPointerPosition.value.x,
+                                            cursorPointerPosition.value.y - webViewTopPadding.toPx(),
+                                            0
+                                        )
+                                        val upEvent = MotionEvent.obtain(
+                                            downTime,
+                                            downTime + 10,
+                                            MotionEvent.ACTION_UP,
+                                            cursorPointerPosition.value.x,
+                                            cursorPointerPosition.value.y - webViewTopPadding.toPx(),
+                                            0
+                                        )
+                                        webView.dispatchTouchEvent(downEvent)
+                                        webView.dispatchTouchEvent(upEvent)
+                                    }
                                 }
                             }
+                            // 3. If a drag was detected, enter the drag-handling logic.
+
                             // 4. After the drag is over (finger lifted), this block finishes.
                             // The `awaitEachGesture` loop will now start over from the top,
                             // ready to `awaitFirstDown` for the next gesture.
