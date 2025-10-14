@@ -131,7 +131,6 @@ import androidx.core.content.edit
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import marcinlowercase.oo.browser.ui.theme.BrowserTheme
 import java.net.URISyntaxException
@@ -162,9 +161,84 @@ var realtimePreviousIndexHolder = 0
 var pixel_9_corner_radius = 54.6f
 
 const val default_url = "https://oo3.deno.dev/i"
+//const val default_url = "http://192.168.1.195:11111/i"
+
+
+//region JS Code
+
+
+const val JS_HOVER_SIMULATOR = """
+    (function() {
+        console.log("JS_HOVER_SIMULATOR")
+        // Keep track of the last element we hovered over to correctly fire mouseout.
+        window.lastHoveredElement = null;
+
+        // The main function that Kotlin will call.
+        window.simulateHover = function(x, y) {
+            try {
+                // Find the element at the given viewport coordinates.
+                var currentElement = document.elementFromPoint(x, y);
+
+                // If the element under the cursor has changed...
+                if (currentElement !== window.lastHoveredElement) {
+                    // ...dispatch a 'mouseout' event on the old element (if it exists).
+                    if (window.lastHoveredElement) {
+                        var mouseOutEvent = new MouseEvent('mouseout', { bubbles: true, cancelable: true, view: window });
+                        window.lastHoveredElement.dispatchEvent(mouseOutEvent);
+                    }
+                    // ...and dispatch a 'mouseover' event on the new element (if it exists).
+                    if (currentElement) {
+                        var mouseOverEvent = new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window });
+                        currentElement.dispatchEvent(mouseOverEvent);
+                    }
+                }
+
+                // Always dispatch a 'mousemove' event on the current element for continuous effects.
+                if (currentElement) {
+                    var mouseMoveEvent = new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true, cancelable: true, view: window });
+                    currentElement.dispatchEvent(mouseMoveEvent);
+                }
+
+                // Update the last hovered element for the next call.
+                window.lastHoveredElement = currentElement;
+            } catch (e) {
+                // Fails silently if the page context is weird.
+            }
+        };
+    })();
+"""
+
+const val JS_POINTER_FINE_OVERRIDE = """
+    (function() {
+        // Save the original, native matchMedia function.
+        const originalMatchMedia = window.matchMedia;
+
+        // Create our new, fake matchMedia function.
+        window.matchMedia = function(query) {
+            // Check if the website is asking about the pointer.
+            if (query === '(pointer: fine)') {
+                // If so, lie and return an object saying we have a fine pointer!
+                return { matches: true, media: query };
+            }
+            // For any other query, use the original function to get the real result.
+            return originalMatchMedia.call(window, query);
+        };
+    })();
+"""
+//endregion
+
 //endregion
 
 //region Global Functions
+
+fun webViewCallWithDesktopModeHeader(view: CustomWebView?, url: String, isDesktopMode: Boolean) {
+    val extraHeaders = mutableMapOf<String, String>()
+    if (isDesktopMode) {
+        extraHeaders["simulated_cursor"] = "true"
+    }
+    view?.loadUrl(url, extraHeaders)
+
+}
 
 
 fun createNotificationChannel(context: Context) {
@@ -784,7 +858,7 @@ class WebViewManager(private val context: Context) {
                 allowContentAccess = true
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 javaScriptCanOpenWindowsAutomatically = true
-                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+                cacheMode = WebSettings.LOAD_NO_CACHE
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     // Use the modern, non-deprecated API on Android 13+
                     isAlgorithmicDarkeningAllowed = false
@@ -801,6 +875,8 @@ class WebViewManager(private val context: Context) {
                 setSupportZoom(true)
                 builtInZoomControls = true
                 displayZoomControls = false // Hide the on-screen +/- buttons
+
+                clearCache(true)
             }
 
             // Enable remote debugging for debug builds
@@ -819,6 +895,7 @@ class WebViewManager(private val context: Context) {
     // We can also move the client setup here.
     // Note: These now take lambdas to communicate back to the Composable.
     fun setWebViewClients(
+        browserSettings: BrowserSettings,
         webView: CustomWebView,
         tab: Tab,
         siteSettingsManager: SiteSettingsManager,
@@ -1186,10 +1263,50 @@ class WebViewManager(private val context: Context) {
 
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 super.onProgressChanged(view, newProgress)
+
+                if (browserSettings.isDesktopMode && newProgress < 25) {
+                    view?.evaluateJavascript(
+                        JS_POINTER_FINE_OVERRIDE.trimIndent().replace("\n", ""), null
+                    )
+                }
+
                 // Inject our JavaScript helper as the page is loading.
+
                 val js =
                     "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
                 view?.evaluateJavascript(js, null)
+
+                if (browserSettings.isDesktopMode) {
+                    // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
+                    val jsEnforceViewport = """
+            (function() {
+                function enforceDesktopViewport() {
+                    var meta = document.querySelector('meta[name=viewport]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.setAttribute('name', 'viewport');
+                        document.getElementsByTagName('head')[0].appendChild(meta);
+                    }
+                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
+                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
+                    }
+                }
+                enforceDesktopViewport();
+                var observer = new MutationObserver(function(mutations) {
+                    enforceDesktopViewport();
+                });
+                var head = document.getElementsByTagName('head')[0];
+                if (head) {
+                    observer.observe(head, { childList: true, subtree: true });
+                }
+            })();
+        """.trimIndent().replace("\n", "") // 2. Remove all newlines to create a single line.
+
+                    // 3. Evaluate the clean, single-line script.
+                    view?.evaluateJavascript(jsEnforceViewport, null)
+
+                }
+
             }
 
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
@@ -1234,7 +1351,19 @@ class WebViewManager(private val context: Context) {
                 val urlString = url.toString()
 
                 if (url.scheme == "http" || url.scheme == "https") {
-                    return false // Let the WebView handle normal web links
+                    if (browserSettings.isDesktopMode) {
+                        val extraHeaders = mutableMapOf<String, String>()
+                        extraHeaders["simulated_cursor"] = "true"
+
+                        // Manually load the URL with the extra header
+                        view?.loadUrl(urlString, extraHeaders)
+
+                        // Return true to tell the WebView we've handled the loading.
+                        return true
+                    } else {
+                        // Not in desktop mode, so no header needed. Let the WebView handle it normally.
+                        return false
+                    }
                 }
 
                 if (url.scheme == "intent") {
@@ -1431,7 +1560,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             // If the tab was frozen, its WebView was just created and needs to load its URL
             if (tab.state == TabState.FROZEN || this.url == null) {
                 Log.d("BrowserScreen", "Loading URL for previously frozen tab: ${tab.currentUrl}")
-                this.loadUrl(tab.currentUrl ?: browserSettings.defaultUrl)
+//                this.loadUrl(tab.currentUrl ?: browserSettings.defaultUrl)
+                webViewCallWithDesktopModeHeader(this, tab.currentUrl ?: browserSettings.defaultUrl, browserSettings.isDesktopMode)
             }
         }
     }
@@ -1525,8 +1655,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 ) else cutoutBottom,
         label = "WebView Top Padding Animation"
     )
-
-
 
 
     var pendingPermissionRequest by remember {
@@ -1652,13 +1780,12 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     val isKeyboardVisible = keyboardHeight > 0.dp
 
     val cursorPadHeight by animateDpAsState(
-        targetValue = if (isKeyboardVisible) ( (screenSizeDp.height.dp - webViewTopPadding) / 8
+        targetValue = if (isKeyboardVisible) ((screenSizeDp.height.dp - webViewTopPadding) / 8
                 ) else (screenSizeDp.height.dp - webViewTopPadding) / 2,
         label = "Cursor Pad Height Animation"
     )
 
     val urlBarFocusRequester = remember { FocusRequester() } // <-- CREATE IT HERE
-
 
 
     //endregion
@@ -1714,7 +1841,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 // 3. Get the WebView instance and load the URL
                 val webView = webViewManager.getWebView(updatedTab)
                 val urlToLoad = updatedHistory.items[historyIndex].url
-                webView.loadUrl(urlToLoad)
+                webViewCallWithDesktopModeHeader(webView, urlToLoad, browserSettings.isDesktopMode)
+//                webView.loadUrl(urlToLoad)
 
                 // 4. Update the text field and close the panel
                 textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
@@ -1947,7 +2075,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         tabs.add(insertAtIndex, newTab)
 
         val newWebView = webViewManager.getWebView(newTab)
-        newWebView.loadUrl(url)
+//        newWebView.loadUrl(url)
+        webViewCallWithDesktopModeHeader(newWebView, url, browserSettings.isDesktopMode)
+
         inspectingTabId = newTab.id
 
         activeTabIndex.intValue = insertAtIndex
@@ -1971,7 +2101,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     history.items.getOrNull(newIndex)
                         ?.let { itemToLoad ->
                             isNavigateInProgress = true
-                            activeWebView?.loadUrl(itemToLoad.url)
+//                            activeWebView?.loadUrl(itemToLoad.url)
+                            webViewCallWithDesktopModeHeader(activeWebView, itemToLoad.url, browserSettings.isDesktopMode)
+
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
                                     historyState = history.copy(
@@ -2000,7 +2132,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     history.items.getOrNull(newIndex)
                         ?.let { itemToLoad ->
                             isNavigateInProgress = true
-                            activeWebView?.loadUrl(itemToLoad.url)
+//                            activeWebView?.loadUrl(itemToLoad.url)
+                            webViewCallWithDesktopModeHeader(activeWebView, itemToLoad.url, browserSettings.isDesktopMode)
+
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
                                     historyState = history.copy(
@@ -2033,7 +2167,9 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     tabs[nextTabIndex].state = TabState.ACTIVE
 
                     val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
-                    activeWebView?.loadUrl(urlToLoad)
+//                    activeWebView?.loadUrl(urlToLoad)
+                    webViewCallWithDesktopModeHeader(activeWebView, urlToLoad, browserSettings.isDesktopMode)
+
                     textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
                     saveTrigger++
                 } else {
@@ -2341,6 +2477,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
             // Set up all the clients for the *current* active WebView.
             webViewManager.setWebViewClients(
+                browserSettings = browserSettings,
                 webView = webView,
                 tab = tab, // Pass the active tab
                 siteSettingsManager = siteSettingsManager,
@@ -2411,41 +2548,46 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         }
                     }
                     isLoading = true
+
+
                 },
                 onPageFinishedFun = { view, currentUrlString ->
                     isLoading = false
                     isNavigateInProgressWithTabDataPanel = false
 
 
-                    if (browserSettings.isDesktopMode) {
-                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
-                        val jsEnforceViewport = """
-            (function() {
-                function enforceDesktopViewport() {
-                    var meta = document.querySelector('meta[name=viewport]');
-                    if (!meta) {
-                        meta = document.createElement('meta');
-                        meta.setAttribute('name', 'viewport');
-                        document.getElementsByTagName('head')[0].appendChild(meta);
-                    }
-                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
-                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
-                    }
-                }
-                enforceDesktopViewport();
-                var observer = new MutationObserver(function(mutations) {
-                    enforceDesktopViewport();
-                });
-                var head = document.getElementsByTagName('head')[0];
-                if (head) {
-                    observer.observe(head, { childList: true, subtree: true });
-                }
-            })();
-        """.trimIndent().replace("\n", "") // 2. Remove all newlines to create a single line.
+                    view.evaluateJavascript(JS_HOVER_SIMULATOR.trimIndent().replace("\n", ""), null)
 
-                        // 3. Evaluate the clean, single-line script.
-                        view.evaluateJavascript(jsEnforceViewport, null)
-                    }
+//                    if (browserSettings.isDesktopMode) {
+//                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
+//                        val jsEnforceViewport = """
+//            (function() {
+//                function enforceDesktopViewport() {
+//                    var meta = document.querySelector('meta[name=viewport]');
+//                    if (!meta) {
+//                        meta = document.createElement('meta');
+//                        meta.setAttribute('name', 'viewport');
+//                        document.getElementsByTagName('head')[0].appendChild(meta);
+//                    }
+//                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
+//                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
+//                    }
+//                }
+//                enforceDesktopViewport();
+//                var observer = new MutationObserver(function(mutations) {
+//                    enforceDesktopViewport();
+//                });
+//                var head = document.getElementsByTagName('head')[0];
+//                if (head) {
+//                    observer.observe(head, { childList: true, subtree: true });
+//                }
+//            })();
+//        """.trimIndent().replace("\n", "") // 2. Remove all newlines to create a single line.
+//
+//                        // 3. Evaluate the clean, single-line script.
+//                        view.evaluateJavascript(jsEnforceViewport, null)
+//
+//                    }
 
                 },
                 onDoUpdateVisitedHistoryFun = { view, url, isReload ->
@@ -2918,18 +3060,26 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
 
     LaunchedEffect(browserSettings.isDesktopMode) {
+        val extraHeaders = mutableMapOf<String, String>()
+
         if (browserSettings.isDesktopMode) {
             activeWebView?.settings?.userAgentString = desktopUserAgent
             activeWebView?.settings?.useWideViewPort = true
             activeWebView?.settings?.loadWithOverviewMode = true
+            extraHeaders["simulated_cursor"] = "true"
+            webViewCallWithDesktopModeHeader(activeWebView, activeWebView?.url?: "", browserSettings.isDesktopMode)
         } else {
             activeWebView?.settings?.userAgentString = mobileUserAgent
             activeWebView?.settings?.useWideViewPort = false
             activeWebView?.settings?.loadWithOverviewMode = false
+            activeWebView?.reload()
         }
 
-        // This reload is still essential to get the new HTML from the server.
-        activeWebView?.reload()
+//        // This reload is still essential to get the new HTML from the server.
+////        activeWebView?.reload()
+//        activeWebView?.url?.let { currentUrl ->
+//            activeWebView.loadUrl(currentUrl, extraHeaders)
+//        }
     }
     LaunchedEffect(Unit) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
@@ -2969,7 +3119,8 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
         if (!initialLoadDone) {
 
             val urlToLoad = tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
-            activeWebView?.loadUrl(urlToLoad)
+//            activeWebView?.loadUrl(urlToLoad)
+            webViewCallWithDesktopModeHeader(activeWebView, urlToLoad, browserSettings.isDesktopMode)
             initialLoadDone = true
 
         }
@@ -3030,7 +3181,10 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                     history.items.getOrNull(newIndex)
                         ?.let { itemToLoad ->
                             isNavigateInProgress = true
-                            activeWebView?.loadUrl(itemToLoad.url)
+//                            activeWebView?.loadUrl(itemToLoad.url)
+
+                            webViewCallWithDesktopModeHeader(activeWebView, itemToLoad.url, browserSettings.isDesktopMode)
+
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
                                     historyState = history.copy(
@@ -3087,6 +3241,13 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             .fillMaxSize()
 
                     ) {
+
+                        val desktopModeContainer = remember {
+                            FrameLayout(context).apply {
+                                // Initially, it's not attached to anything.
+                            }
+                        }
+
                         AndroidView(
                             // The factory now ONLY creates the container. It's simple.
                             factory = { context ->
@@ -3115,6 +3276,76 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                     )
                                 }
                             },
+
+//                            update = { viewContainer ->
+//                                // This 'viewContainer' is the FrameLayout from the factory.
+//
+//                                // --- THIS IS THE CORE LOGIC CHANGE ---
+//                                if (browserSettings.isDesktopMode) {
+//                                    // --- DESKTOP MODE ---
+//
+//                                    // a. Ensure the WebView's parent is our fixed-size container.
+//                                    if (activeWebView?.parent != desktopModeContainer) {
+//                                        (activeWebView?.parent as? ViewGroup)?.removeView(
+//                                            activeWebView
+//                                        )
+//                                        desktopModeContainer.addView(activeWebView)
+//                                    }
+//
+//                                    // b. Ensure the fixed-size container is the only child of the view from the factory.
+//                                    if (desktopModeContainer.parent != viewContainer) {
+//                                        (desktopModeContainer.parent as? ViewGroup)?.removeView(
+//                                            desktopModeContainer
+//                                        )
+//                                        viewContainer.removeAllViews()
+//                                        viewContainer.addView(desktopModeContainer)
+//                                    }
+//
+//                                    // c. Force the layout parameters of our container.
+//                                    val desktopWidthPx =
+//                                        with(density) { browserSettings.desktopModeWidth.dp.toPx() }
+//                                    desktopModeContainer.layoutParams = FrameLayout.LayoutParams(
+//                                        desktopWidthPx.roundToInt(),
+////                                        desktopWidthPx.roundToInt()
+//                                        FrameLayout.LayoutParams.MATCH_PARENT // Let height be flexible
+//
+//                                    )
+//
+//                                    // d. Scale the container down to fit the screen.
+//                                    viewContainer.post { // Use post to wait for layout pass
+//                                        if (viewContainer.width > 0) {
+//                                            val scale =
+//                                                viewContainer.width.toFloat() / desktopWidthPx
+//                                            desktopModeContainer.scaleX = scale
+////                                            desktopModeContainer.scaleY = scale
+//                                            // Adjust pivot to scale from the top-left corner.
+//                                            desktopModeContainer.pivotX = 0f
+//                                            desktopModeContainer.pivotY = 0f
+//                                        }
+//                                    }
+//
+//                                } else {
+//                                    // --- MOBILE MODE ---
+//
+//                                    // a. If the WebView is in the desktop container, move it back.
+//                                    if (activeWebView?.parent == desktopModeContainer) {
+//                                        desktopModeContainer.removeView(activeWebView)
+//                                    }
+//
+//                                    // b. Ensure the WebView is the direct child of the factory's view.
+//                                    if (activeWebView?.parent != viewContainer) {
+//                                        (activeWebView?.parent as? ViewGroup)?.removeView(
+//                                            activeWebView
+//                                        )
+//                                        viewContainer.removeAllViews()
+//                                        viewContainer.addView(activeWebView)
+//                                    }
+//
+//                                    // c. Reset any scaling on the container.
+//                                    desktopModeContainer.scaleX = 1f
+//                                    desktopModeContainer.scaleY = 1f
+//                                }
+//                            },
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -3133,7 +3364,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
             BottomPanel(
                 urlBarFocusRequester = urlBarFocusRequester,
-            isCursorPadVisible = isCursorPadVisible,
+                isCursorPadVisible = isCursorPadVisible,
                 isCursorMode = isCursorMode,
                 setIsCursorMode = {
                     isCursorMode = it
@@ -3251,8 +3482,13 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 toggleOptionsPanel = { isOptionsPanelVisible = it },
                 changeTextFieldValue = { textFieldValue = it },
                 onNewUrl = { newUrl ->
-                    activeWebView?.loadUrl(newUrl)
-//                            }
+                    webViewCallWithDesktopModeHeader(activeWebView, newUrl, browserSettings.isDesktopMode)
+//                    val extraHeaders = mutableMapOf<String, String>()
+//                    if (browserSettings.isDesktopMode) {
+//                        extraHeaders["simulated_cursor"] = "true"
+//                    }
+//                    activeWebView?.loadUrl(newUrl, extraHeaders)
+
                 },
                 setIsFocusOnTextField = { isFocusOnTextField = it },
                 handleHistoryNavigation = handleHistoryNavigation,
@@ -6459,10 +6695,10 @@ fun CursorPad(
     ) {
 
 
-
         Box(
             modifier =
-                Modifier.fillMaxSize()
+                Modifier
+                    .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.ime)
 
 
@@ -6470,7 +6706,8 @@ fun CursorPad(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height( cursorPadHeight
+                    .height(
+                        cursorPadHeight
                     )
                     .align(Alignment.BottomCenter)
                     .pointerInput(Unit) {
@@ -6681,7 +6918,16 @@ fun CursorPad(
                                                 if (newY < 0) newY = 0f
                                                 if (newY > screenSize.height) newY =
                                                     screenSize.height.toFloat()
+
                                                 cursorPointerPosition.value = Offset(newX, newY)
+                                                activeWebView?.let { webView ->
+
+                                                    webView.evaluateJavascript(
+                                                        "window.simulateHover($newX, $newY)",
+                                                        null
+                                                    )
+
+                                                }
 //                                            cursorPointerPosition.value += Offset(
 //                                                changeSpaceX,
 //                                                changeSpaceY

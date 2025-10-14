@@ -1,3 +1,5 @@
+import org.gradle.kotlin.dsl.support.kotlinCompilerOptions
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -38,7 +40,16 @@ android {
     buildFeatures {
         compose = true
     }
+    kotlin {
+        target {
+            compilerOptions {
+                optIn.add("kotlin.RequiresOptIn")
+            }
+        }
+    }
 }
+
+
 
 dependencies {
 
