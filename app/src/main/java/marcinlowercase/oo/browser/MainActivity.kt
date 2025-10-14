@@ -3242,11 +3242,11 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
                     ) {
 
-                        val desktopModeContainer = remember {
-                            FrameLayout(context).apply {
-                                // Initially, it's not attached to anything.
-                            }
-                        }
+//                        val desktopModeContainer = remember {
+//                            FrameLayout(context).apply {
+//                                // Initially, it's not attached to anything.
+//                            }
+//                        }
 
                         AndroidView(
                             // The factory now ONLY creates the container. It's simple.
@@ -6920,14 +6920,10 @@ fun CursorPad(
                                                     screenSize.height.toFloat()
 
                                                 cursorPointerPosition.value = Offset(newX, newY)
-                                                activeWebView?.let { webView ->
-
-                                                    webView.evaluateJavascript(
-                                                        "window.simulateHover($newX, $newY)",
-                                                        null
-                                                    )
-
-                                                }
+                                                activeWebView?.evaluateJavascript(
+                                                    "window.simulateHover($newX, $newY)",
+                                                    null
+                                                )
 //                                            cursorPointerPosition.value += Offset(
 //                                                changeSpaceX,
 //                                                changeSpaceY
