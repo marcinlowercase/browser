@@ -59,7 +59,10 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -231,15 +234,15 @@ const val JS_POINTER_FINE_OVERRIDE = """
 
 //region Global Functions
 
-fun webViewCallWithDesktopModeHeader(view: CustomWebView?, url: String, isDesktopMode: Boolean) {
-    val extraHeaders = mutableMapOf<String, String>()
-    if (isDesktopMode) {
-        extraHeaders["simulated_cursor"] = "true"
-    }
-    view?.loadUrl(url, extraHeaders)
 
+fun webViewLoad(view: CustomWebView?, url: String, browserSettings: BrowserSettings) {
+    val headerinlowercase = mutableMapOf<String, String>()
+
+    // i want it send the string of "device_corner_radius" with the value of browserSettings.deviceCornerRadius
+    headerinlowercase["device_corner_radius"] = browserSettings.deviceCornerRadius.toString()
+
+    view?.loadUrl(url, headerinlowercase)
 }
-
 
 fun createNotificationChannel(context: Context) {
     val name = "downloads"
@@ -522,7 +525,7 @@ data class BrowserSettings(
     val animationSpeed: Int,
     val singleLineHeight: Int,
     val isDesktopMode: Boolean,
-    val desktopModeWidth: Int,
+//    val desktopModeWidth: Int,
     val isSharpMode: Boolean,
     val topSharpEdge: Float,
     val bottomSharpEdge: Float,
@@ -869,7 +872,6 @@ class WebViewManager(private val context: Context) {
                 }
 
                 mediaPlaybackRequiresUserGesture = false
-
 
                 // CRITICAL: Zoom must be supported for overview mode to work reliably.
                 setSupportZoom(true)
@@ -1276,36 +1278,38 @@ class WebViewManager(private val context: Context) {
                     "document.documentElement.style.setProperty('--vh', window.innerHeight + 'px');"
                 view?.evaluateJavascript(js, null)
 
-                if (browserSettings.isDesktopMode) {
-                    // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
-                    val jsEnforceViewport = """
-            (function() {
-                function enforceDesktopViewport() {
-                    var meta = document.querySelector('meta[name=viewport]');
-                    if (!meta) {
-                        meta = document.createElement('meta');
-                        meta.setAttribute('name', 'viewport');
-                        document.getElementsByTagName('head')[0].appendChild(meta);
-                    }
-                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
-                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
-                    }
-                }
-                enforceDesktopViewport();
-                var observer = new MutationObserver(function(mutations) {
-                    enforceDesktopViewport();
-                });
-                var head = document.getElementsByTagName('head')[0];
-                if (head) {
-                    observer.observe(head, { childList: true, subtree: true });
-                }
-            })();
-        """.trimIndent().replace("\n", "") // 2. Remove all newlines to create a single line.
 
-                    // 3. Evaluate the clean, single-line script.
-                    view?.evaluateJavascript(jsEnforceViewport, null)
-
-                }
+//                // Discontinue Desktop Mode
+//                if (browserSettings.isDesktopMode) {
+//                    // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
+//                    val jsEnforceViewport = """
+//            (function() {
+//                function enforceDesktopViewport() {
+//                    var meta = document.querySelector('meta[name=viewport]');
+//                    if (!meta) {
+//                        meta = document.createElement('meta');
+//                        meta.setAttribute('name', 'viewport');
+//                        document.getElementsByTagName('head')[0].appendChild(meta);
+//                    }
+//                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
+//                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
+//                    }
+//                }
+//                enforceDesktopViewport();
+//                var observer = new MutationObserver(function(mutations) {
+//                    enforceDesktopViewport();
+//                });
+//                var head = document.getElementsByTagName('head')[0];
+//                if (head) {
+//                    observer.observe(head, { childList: true, subtree: true });
+//                }
+//            })();
+//        """.trimIndent().replace("\n", "") // 2. Remove all newlines to create a single line.
+//
+//                    // 3. Evaluate the clean, single-line script.
+//                    view?.evaluateJavascript(jsEnforceViewport, null)
+//
+//                }
 
             }
 
@@ -1524,7 +1528,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 animationSpeed = sharedPrefs.getInt("animation_speed", 300),
                 singleLineHeight = sharedPrefs.getInt("single_line_height", 64),
                 isDesktopMode = sharedPrefs.getBoolean("is_desktop_mode", false),
-                desktopModeWidth = sharedPrefs.getInt("desktop_mode_width", 820),
+//                desktopModeWidth = sharedPrefs.getInt("desktop_mode_width", 820),
                 isSharpMode = sharedPrefs.getBoolean("is_sharp_mode", false),
 //                topSharpEdge = sharedPrefs.getFloat("top_sharp_edge", 65.90476f),
 //                bottomSharpEdge = sharedPrefs.getFloat("bottom_sharp_edge", 65.90476f),
@@ -1561,7 +1565,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             if (tab.state == TabState.FROZEN || this.url == null) {
                 Log.d("BrowserScreen", "Loading URL for previously frozen tab: ${tab.currentUrl}")
 //                this.loadUrl(tab.currentUrl ?: browserSettings.defaultUrl)
-                webViewCallWithDesktopModeHeader(this, tab.currentUrl ?: browserSettings.defaultUrl, browserSettings.isDesktopMode)
+                webViewLoad(this, tab.currentUrl ?: browserSettings.defaultUrl, browserSettings)
             }
         }
     }
@@ -1841,7 +1845,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 // 3. Get the WebView instance and load the URL
                 val webView = webViewManager.getWebView(updatedTab)
                 val urlToLoad = updatedHistory.items[historyIndex].url
-                webViewCallWithDesktopModeHeader(webView, urlToLoad, browserSettings.isDesktopMode)
+                webViewLoad(webView, urlToLoad, browserSettings)
 //                webView.loadUrl(urlToLoad)
 
                 // 4. Update the text field and close the panel
@@ -2076,7 +2080,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
         val newWebView = webViewManager.getWebView(newTab)
 //        newWebView.loadUrl(url)
-        webViewCallWithDesktopModeHeader(newWebView, url, browserSettings.isDesktopMode)
+        webViewLoad(newWebView, url, browserSettings)
 
         inspectingTabId = newTab.id
 
@@ -2102,7 +2106,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         ?.let { itemToLoad ->
                             isNavigateInProgress = true
 //                            activeWebView?.loadUrl(itemToLoad.url)
-                            webViewCallWithDesktopModeHeader(activeWebView, itemToLoad.url, browserSettings.isDesktopMode)
+                            webViewLoad(activeWebView, itemToLoad.url, browserSettings)
 
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
@@ -2133,7 +2137,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         ?.let { itemToLoad ->
                             isNavigateInProgress = true
 //                            activeWebView?.loadUrl(itemToLoad.url)
-                            webViewCallWithDesktopModeHeader(activeWebView, itemToLoad.url, browserSettings.isDesktopMode)
+                            webViewLoad(activeWebView, itemToLoad.url, browserSettings)
 
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
@@ -2168,7 +2172,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
                     val urlToLoad = tabs[nextTabIndex].currentUrl ?: browserSettings.defaultUrl
 //                    activeWebView?.loadUrl(urlToLoad)
-                    webViewCallWithDesktopModeHeader(activeWebView, urlToLoad, browserSettings.isDesktopMode)
+                    webViewLoad(activeWebView, urlToLoad, browserSettings)
 
                     textFieldValue = TextFieldValue(urlToLoad, TextRange(urlToLoad.length))
                     saveTrigger++
@@ -2322,8 +2326,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             isUrlBarVisible = false
 
         }
-        Log.e("isCursorMode", "isCursorMode: $isCursorMode")
-        Log.e("isCursorMode", "isCursorPadVisible: $isCursorPadVisible")
     }
 
     LaunchedEffect(Unit) {
@@ -2557,37 +2559,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
 
                     view.evaluateJavascript(JS_HOVER_SIMULATOR.trimIndent().replace("\n", ""), null)
-
-//                    if (browserSettings.isDesktopMode) {
-//                        // --- THIS IS THE FINAL, AGGRESSIVE SCRIPT ---
-//                        val jsEnforceViewport = """
-//            (function() {
-//                function enforceDesktopViewport() {
-//                    var meta = document.querySelector('meta[name=viewport]');
-//                    if (!meta) {
-//                        meta = document.createElement('meta');
-//                        meta.setAttribute('name', 'viewport');
-//                        document.getElementsByTagName('head')[0].appendChild(meta);
-//                    }
-//                    if (meta.getAttribute('content') !== 'width=${browserSettings.desktopModeWidth}') {
-//                        meta.setAttribute('content', 'width=${browserSettings.desktopModeWidth}');
-//                    }
-//                }
-//                enforceDesktopViewport();
-//                var observer = new MutationObserver(function(mutations) {
-//                    enforceDesktopViewport();
-//                });
-//                var head = document.getElementsByTagName('head')[0];
-//                if (head) {
-//                    observer.observe(head, { childList: true, subtree: true });
-//                }
-//            })();
-//        """.trimIndent().replace("\n", "") // 2. Remove all newlines to create a single line.
-//
-//                        // 3. Evaluate the clean, single-line script.
-//                        view.evaluateJavascript(jsEnforceViewport, null)
-//
-//                    }
 
                 },
                 onDoUpdateVisitedHistoryFun = { view, url, isReload ->
@@ -2982,6 +2953,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             isTabsPanelVisible = false
         } else {
             if (tabsPanelLock) isTabsPanelVisible = true
+            if (isCursorMode) isCursorMode = false
         }
     }
     LaunchedEffect(jsDialogState) {
@@ -3060,14 +3032,11 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
     }
 
     LaunchedEffect(browserSettings.isDesktopMode) {
-        val extraHeaders = mutableMapOf<String, String>()
-
         if (browserSettings.isDesktopMode) {
             activeWebView?.settings?.userAgentString = desktopUserAgent
             activeWebView?.settings?.useWideViewPort = true
             activeWebView?.settings?.loadWithOverviewMode = true
-            extraHeaders["simulated_cursor"] = "true"
-            webViewCallWithDesktopModeHeader(activeWebView, activeWebView?.url?: "", browserSettings.isDesktopMode)
+            webViewLoad(activeWebView, activeWebView?.url ?: "", browserSettings)
         } else {
             activeWebView?.settings?.userAgentString = mobileUserAgent
             activeWebView?.settings?.useWideViewPort = false
@@ -3075,11 +3044,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             activeWebView?.reload()
         }
 
-//        // This reload is still essential to get the new HTML from the server.
-////        activeWebView?.reload()
-//        activeWebView?.url?.let { currentUrl ->
-//            activeWebView.loadUrl(currentUrl, extraHeaders)
-//        }
     }
     LaunchedEffect(Unit) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
@@ -3120,7 +3084,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
             val urlToLoad = tabs[activeTabIndex.intValue].currentUrl ?: browserSettings.defaultUrl
 //            activeWebView?.loadUrl(urlToLoad)
-            webViewCallWithDesktopModeHeader(activeWebView, urlToLoad, browserSettings.isDesktopMode)
+            webViewLoad(activeWebView, urlToLoad, browserSettings)
             initialLoadDone = true
 
         }
@@ -3134,7 +3098,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
             putString("default_url", browserSettings.defaultUrl)
             putInt("animation_speed", browserSettings.animationSpeed)
             putInt("single_line_height", browserSettings.singleLineHeight)
-            putInt("desktop_mode_width", browserSettings.desktopModeWidth)
+//            putInt("desktop_mode_width", browserSettings.desktopModeWidth)
             putBoolean("is_sharp_mode", browserSettings.isSharpMode)
             putFloat("top_sharp_edge", browserSettings.topSharpEdge)
             putFloat("bottom_sharp_edge", browserSettings.bottomSharpEdge)
@@ -3183,7 +3147,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             isNavigateInProgress = true
 //                            activeWebView?.loadUrl(itemToLoad.url)
 
-                            webViewCallWithDesktopModeHeader(activeWebView, itemToLoad.url, browserSettings.isDesktopMode)
+                            webViewLoad(activeWebView, itemToLoad.url, browserSettings)
 
                             val updatedTab =
                                 tabs[activeTabIndex.intValue].copy(
@@ -3242,11 +3206,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
 
                     ) {
 
-//                        val desktopModeContainer = remember {
-//                            FrameLayout(context).apply {
-//                                // Initially, it's not attached to anything.
-//                            }
-//                        }
 
                         AndroidView(
                             // The factory now ONLY creates the container. It's simple.
@@ -3276,76 +3235,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                     )
                                 }
                             },
-
-//                            update = { viewContainer ->
-//                                // This 'viewContainer' is the FrameLayout from the factory.
-//
-//                                // --- THIS IS THE CORE LOGIC CHANGE ---
-//                                if (browserSettings.isDesktopMode) {
-//                                    // --- DESKTOP MODE ---
-//
-//                                    // a. Ensure the WebView's parent is our fixed-size container.
-//                                    if (activeWebView?.parent != desktopModeContainer) {
-//                                        (activeWebView?.parent as? ViewGroup)?.removeView(
-//                                            activeWebView
-//                                        )
-//                                        desktopModeContainer.addView(activeWebView)
-//                                    }
-//
-//                                    // b. Ensure the fixed-size container is the only child of the view from the factory.
-//                                    if (desktopModeContainer.parent != viewContainer) {
-//                                        (desktopModeContainer.parent as? ViewGroup)?.removeView(
-//                                            desktopModeContainer
-//                                        )
-//                                        viewContainer.removeAllViews()
-//                                        viewContainer.addView(desktopModeContainer)
-//                                    }
-//
-//                                    // c. Force the layout parameters of our container.
-//                                    val desktopWidthPx =
-//                                        with(density) { browserSettings.desktopModeWidth.dp.toPx() }
-//                                    desktopModeContainer.layoutParams = FrameLayout.LayoutParams(
-//                                        desktopWidthPx.roundToInt(),
-////                                        desktopWidthPx.roundToInt()
-//                                        FrameLayout.LayoutParams.MATCH_PARENT // Let height be flexible
-//
-//                                    )
-//
-//                                    // d. Scale the container down to fit the screen.
-//                                    viewContainer.post { // Use post to wait for layout pass
-//                                        if (viewContainer.width > 0) {
-//                                            val scale =
-//                                                viewContainer.width.toFloat() / desktopWidthPx
-//                                            desktopModeContainer.scaleX = scale
-////                                            desktopModeContainer.scaleY = scale
-//                                            // Adjust pivot to scale from the top-left corner.
-//                                            desktopModeContainer.pivotX = 0f
-//                                            desktopModeContainer.pivotY = 0f
-//                                        }
-//                                    }
-//
-//                                } else {
-//                                    // --- MOBILE MODE ---
-//
-//                                    // a. If the WebView is in the desktop container, move it back.
-//                                    if (activeWebView?.parent == desktopModeContainer) {
-//                                        desktopModeContainer.removeView(activeWebView)
-//                                    }
-//
-//                                    // b. Ensure the WebView is the direct child of the factory's view.
-//                                    if (activeWebView?.parent != viewContainer) {
-//                                        (activeWebView?.parent as? ViewGroup)?.removeView(
-//                                            activeWebView
-//                                        )
-//                                        viewContainer.removeAllViews()
-//                                        viewContainer.addView(activeWebView)
-//                                    }
-//
-//                                    // c. Reset any scaling on the container.
-//                                    desktopModeContainer.scaleX = 1f
-//                                    desktopModeContainer.scaleY = 1f
-//                                }
-//                            },
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -3482,12 +3371,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 toggleOptionsPanel = { isOptionsPanelVisible = it },
                 changeTextFieldValue = { textFieldValue = it },
                 onNewUrl = { newUrl ->
-                    webViewCallWithDesktopModeHeader(activeWebView, newUrl, browserSettings.isDesktopMode)
-//                    val extraHeaders = mutableMapOf<String, String>()
-//                    if (browserSettings.isDesktopMode) {
-//                        extraHeaders["simulated_cursor"] = "true"
-//                    }
-//                    activeWebView?.loadUrl(newUrl, extraHeaders)
+                    webViewLoad(activeWebView, newUrl, browserSettings)
 
                 },
                 setIsFocusOnTextField = { isFocusOnTextField = it },
@@ -3497,8 +3381,27 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 )
 
 
+
+            CursorPad(
+                urlBarFocusRequester = urlBarFocusRequester,
+                screenSize = screenSize,
+                isCursorPadVisible = isCursorPadVisible,
+                setIsCursorPadVisible = { isCursorMode = it },
+                browserSettings = browserSettings,
+                coroutineScope = coroutineScope,
+                activeWebView = activeWebView,
+                cursorPointerPosition = cursorPointerPosition,
+                webViewTopPadding = webViewTopPadding,
+                hapticFeedback = hapticFeedback,
+                setIsUrlBarVisible = { isUrlBarVisible = it },
+                isLongPressDrag = isLongPressDrag,
+                cursorPadHeight = cursorPadHeight,
+
+                )
+
             LaunchedEffect(screenSize) {
                 Log.i("BackSquare", "Screen Size : $screenSize")
+
             }
             // BackSquare
             AnimatedVisibility(
@@ -3518,7 +3421,15 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                             "Screen Size: ${screenSize.width}x${screenSize.height} px | ${screenSizeDp.width}x${screenSizeDp.height} dp"
                         )
                     },
-                enter = fadeIn(
+                enter = slideInHorizontally(
+                    animationSpec = tween(
+                        animationSpeedForLayer(
+                            0,
+                            browserSettings.animationSpeed
+                        )
+                    ),
+                    initialOffsetX = { if (squareAlignment == Alignment.BottomEnd) it else (-it) }
+                ) + fadeIn(
                     animationSpec = tween(
                         animationSpeedForLayer(
                             0,
@@ -3526,14 +3437,25 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         )
                     )
                 ),
-                exit = fadeOut(
-                    animationSpec = tween(
-                        animationSpeedForLayer(
-                            0,
-                            browserSettings.animationSpeed
+                exit =
+                    slideOutHorizontally(
+                        animationSpec = tween(
+                            animationSpeedForLayer(
+                                0,
+                                browserSettings.animationSpeed
+                            )
+
+                        ),
+                        targetOffsetX = { if (squareAlignment == Alignment.BottomEnd) it else (-it) }
+                    )
+                            + fadeOut(
+                        animationSpec = tween(
+                            animationSpeedForLayer(
+                                0,
+                                browserSettings.animationSpeed
+                            )
                         )
                     )
-                )
             ) {
 
 
@@ -3698,6 +3620,43 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                                         }
                                     }
                                 }
+                                else awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+
+
+                                    val drag = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+
+                                        change.consume()
+                                    }
+
+                                    if (drag != null) {
+                                        // SHORT-DRAG
+                                        var horizontalDragAccumulator = 0f
+                                        var verticalDragAccumulator = 0f
+                                        drag(drag.id) { change ->
+                                            change.consume()
+                                            horizontalDragAccumulator += change.position.x - change.previousPosition.x
+                                            verticalDragAccumulator += change.position.y - change.previousPosition.y
+
+                                            if (abs(horizontalDragAccumulator) > abs(
+                                                    verticalDragAccumulator
+                                                )
+                                            ) {
+                                                squareAlignment =
+                                                    if (horizontalDragAccumulator < 0) Alignment.BottomStart else Alignment.BottomEnd
+                                            } else {
+                                                if (!isUrlBarVisible) {
+                                                    isUrlBarVisible = true
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // TAP
+                                        coroutineScope.launch {
+                                            triggerBlinkEffect()
+                                        }
+                                    }
+                                }
                             }
                             .padding(
                                 end = browserSettings.paddingDp.dp,
@@ -3728,7 +3687,7 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            painter = painterResource(if (isCursorPadVisible) R.drawable.ic_trackpad_input else R.drawable.ic_language),
+                            painter = painterResource(R.drawable.ic_link),
                             contentDescription = "Back",
                             tint = Color.White
                         )
@@ -3736,22 +3695,6 @@ fun BrowserScreen(newUrlFlow: StateFlow<String?>, modifier: Modifier = Modifier)
                 }
             }
 
-            CursorPad(
-                urlBarFocusRequester = urlBarFocusRequester,
-                screenSize = screenSize,
-                isCursorPadVisible = isCursorPadVisible,
-                setIsCursorPadVisible = { isCursorMode = it },
-                browserSettings = browserSettings,
-                coroutineScope = coroutineScope,
-                activeWebView = activeWebView,
-                cursorPointerPosition = cursorPointerPosition,
-                webViewTopPadding = webViewTopPadding,
-                hapticFeedback = hapticFeedback,
-                setIsUrlBarVisible = { isUrlBarVisible = it },
-                isLongPressDrag = isLongPressDrag,
-                cursorPadHeight = cursorPadHeight,
-
-                )
 
         }
 
@@ -3853,21 +3796,23 @@ fun BottomPanel(
     AnimatedVisibility(
         modifier = modifier,
         visible = isBottomPanelVisible,
-        enter = fadeIn(
+        enter = slideInVertically(
             animationSpec = tween(
                 animationSpeedForLayer(
                     0,
                     browserSettings.animationSpeed
                 )
-            )
+            ),
+            initialOffsetY = { it }
         ),
-        exit = fadeOut(
+        exit = slideOutVertically(
             animationSpec = tween(
                 animationSpeedForLayer(
-                    0,
+                    1,
                     browserSettings.animationSpeed
                 )
-            )
+            ),
+            targetOffsetY = { it }
         )
     ) {
 
@@ -3988,26 +3933,12 @@ fun BottomPanel(
 
                     },
                 visible = isUrlBarVisible,
-                enter = expandVertically(
-                    tween(
-                        animationSpeedForLayer(
-                            1,
-                            browserSettings.animationSpeed
-                        )
-                    )
-                ) + fadeIn(
+                enter = fadeIn(
                     tween(
                         animationSpeedForLayer(1, browserSettings.animationSpeed)
                     )
                 ),
-                exit = shrinkVertically(
-                    tween(
-                        animationSpeedForLayer(
-                            1,
-                            browserSettings.animationSpeed
-                        )
-                    )
-                ) + fadeOut(
+                exit = fadeOut(
                     tween(
                         animationSpeedForLayer(1, browserSettings.animationSpeed)
                     )
@@ -4513,13 +4444,13 @@ fun OptionsPanel(
 
                     setIsCursorMode(!isCursorMode)
                 },
-                OptionItem(
-                    if (browserSettings.isDesktopMode) R.drawable.ic_mobile else R.drawable.ic_desktop,
-                    "Desktop layout",
-                    browserSettings.isDesktopMode
-                ) {
-                    updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
-                },
+//                OptionItem(
+//                    if (browserSettings.isDesktopMode) R.drawable.ic_mobile else R.drawable.ic_desktop,
+//                    "Desktop layout",
+//                    browserSettings.isDesktopMode
+//                ) {
+//                    updateBrowserSettings(browserSettings.copy(isDesktopMode = !browserSettings.isDesktopMode))
+//                },
                 OptionItem(
                     R.drawable.ic_tabs, // You'll need an icon for this
                     "Show Tabs Panel", // Display the number of open tabs
